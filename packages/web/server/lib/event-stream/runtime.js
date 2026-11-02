@@ -19,6 +19,16 @@ import {
   DEFAULT_UPSTREAM_STALL_TIMEOUT_MS,
 } from './upstream-reader.js';
 
+function messageStreamPayloadByteLength(data) {
+  if (typeof data === 'string') {
+    return Buffer.byteLength(data);
+  }
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+  return data?.byteLength ?? Number.POSITIVE_INFINITY;
+}
+
 export function createGlobalUiEventBroadcaster({
   sseClients,
   wsClients,
@@ -102,6 +112,17 @@ export function createMessageStreamWsRuntime({
   });
 
   wsServer.on('connection', (socket, req) => {
+    socket.on('message', (data) => {
+      if (messageStreamPayloadByteLength(data) <= MESSAGE_STREAM_WS_MAX_PAYLOAD_BYTES) {
+        return;
+      }
+
+      try {
+        socket.close(1009, 'Message stream frame too large');
+      } catch {
+      }
+    });
+
     const rawUrl = typeof req?.url === 'string' ? req.url : MESSAGE_STREAM_GLOBAL_WS_PATH;
     const pathname = parseRequestPathname(rawUrl);
     const requestUrl = new URL(rawUrl, 'http://127.0.0.1');
