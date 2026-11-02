@@ -106,6 +106,14 @@ and OpenChamber resolves the directory itself.
   `theme-archive.js` reads selected JSON entries in memory with bounded decompression.
   JSON includes and token references stay inside the package. Each failed variant
   is reported separately so valid siblings remain available. No extension code runs.
+
+### Project icon discovery
+
+The discover route opens the selected favicon once, checks its size through that handle, reads at most 5 MiB + 1 byte, and closes the handle before storing the icon. A file that grows after the size check is rejected with the existing over-limit response without being buffered past the cap. Empty files and files already over the cap keep their existing 400 responses.
+
+#### Why discovery reads through one handle
+
+Stat and read on a path resolve it independently, so replacing or growing the favicon between those calls can bypass the size gate and buffer the whole file. The open handle fixes the file identity, and the extra byte detects growth beyond 5 MiB while bounding the read.
 - `packages/web/server/lib/opencode/proxy.js`: OpenCode API/SSE forwarding and readiness-gate route registration. An SSE stream (`/api/event`, `/api/global/event`) forwards whole blocks with their `id:` lines and keeps a cursor (`../event-stream/sse-cursor.js`) of the last id it forwarded. When OpenCode closes its stream between blocks, or the connection fails, the browser response stays open and the proxy reconnects with `Last-Event-ID` set to that cursor, backing off up to 2 s and giving up after `SSE_RESUME_WINDOW_MS` (30 s) without a forwarded block. A `server.resync` frame (OpenCode sends it when a cursor belongs to another instance, is malformed, is from the future, or has aged out of its replay window) passes through unchanged, and the cursor restarts from the head id it carries. A stall still ends the stream, and a cut in the middle of a block ends it too, since those bytes already reached the browser and EventSource discards the fragment on end-of-stream; the browser then reconnects with its own last id. An upstream that answers the event route with a non-SSE content type is streamed through chunk by chunk with backpressure under the same stall window, so a large or never-ending body cannot buffer whole in the proxy (#759).
 - `packages/web/server/lib/opencode/session-runtime.js`: session status/attention/activity runtime for OpenCode SSE events.
 - `packages/web/server/lib/opencode/watcher.js`: global SSE watcher runtime for push/session event fanout.

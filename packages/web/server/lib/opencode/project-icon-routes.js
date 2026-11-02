@@ -25,11 +25,50 @@ export const registerProjectIconRoutes = (app, dependencies) => {
   );
   const projectIconSupportedMimes = new Set(Object.keys(projectIconMimeToExtension));
   const projectIconMaxBytes = 5 * 1024 * 1024;
+  const projectIconReadChunkBytes = 64 * 1024;
   const projectIconThemeColors = {
     light: '#111111',
     dark: '#f5f5f5',
   };
   const projectIconHexColorPattern = /^#(?:[\da-fA-F]{3}|[\da-fA-F]{4}|[\da-fA-F]{6}|[\da-fA-F]{8})$/;
+
+  const readDiscoveredIcon = async (filePath) => {
+    const handle = await fsPromises.open(filePath, 'r');
+    try {
+      const stats = await handle.stat();
+      if (stats.size === 0) {
+        return { ok: false, reason: 'empty' };
+      }
+      if (stats.size > projectIconMaxBytes) {
+        return { ok: false, reason: 'too-large' };
+      }
+
+      const chunks = [];
+      let total = 0;
+      while (total <= projectIconMaxBytes) {
+        const chunk = Buffer.alloc(Math.min(
+          projectIconReadChunkBytes,
+          projectIconMaxBytes + 1 - total,
+        ));
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+        if (bytesRead === 0) {
+          break;
+        }
+        chunks.push(chunk.subarray(0, bytesRead));
+        total += bytesRead;
+      }
+
+      if (total === 0) {
+        return { ok: false, reason: 'empty' };
+      }
+      if (total > projectIconMaxBytes) {
+        return { ok: false, reason: 'too-large' };
+      }
+      return { ok: true, bytes: Buffer.concat(chunks, total) };
+    } finally {
+      await handle.close();
+    }
+  };
 
   const normalizeProjectIconMime = (value) => {
     if (typeof value !== 'string') {
@@ -412,21 +451,14 @@ export const registerProjectIconRoutes = (app, dependencies) => {
         return res.status(415).json({ error: 'Unsupported favicon format' });
       }
 
-      const stats = await fsPromises.stat(selected.path);
-      if (stats.size === 0) {
+      const discovered = await readDiscoveredIcon(selected.path);
+      if (!discovered.ok && discovered.reason === 'empty') {
         return res.status(400).json({ error: 'Discovered icon is empty' });
       }
-      if (stats.size > projectIconMaxBytes) {
+      if (!discovered.ok && discovered.reason === 'too-large') {
         return res.status(400).json({ error: 'Discovered icon exceeds size limit (5 MB)' });
       }
-
-      const bytes = await fsPromises.readFile(selected.path);
-      if (bytes.length === 0) {
-        return res.status(400).json({ error: 'Discovered icon is empty' });
-      }
-      if (bytes.length > projectIconMaxBytes) {
-        return res.status(400).json({ error: 'Discovered icon exceeds size limit (5 MB)' });
-      }
+      const { bytes } = discovered;
 
       const iconPath = projectIconPathForMime(projectId, mime);
       if (!iconPath) {
