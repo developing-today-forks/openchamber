@@ -11,7 +11,10 @@ on:
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  # queue: max cannot pair with cancel-in-progress: true; GitHub rejects
+  # the combo and every run dies at startup with zero jobs. Keep false
+  # so comment runs queue instead of failing validation.
+  cancel-in-progress: false
   queue: max
 
 jobs:
