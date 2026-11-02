@@ -860,11 +860,20 @@ const findWorktreeRoot = (startDir?: string): string | null => {
   }
 };
 
+// At most this many directories one walk visits per root, the root itself
+// included. Past the cap the walk stops opening new directories and returns
+// the SKILL.md paths found so far. The web twin in shared.js uses the same
+// value; the skills tests pin the two together.
+export const SKILL_WALK_MAX_DIRS = 5000;
+
 const walkSkillMdFiles = (rootDir?: string | null): string[] => {
   if (!rootDir || !fs.existsSync(rootDir)) return [];
 
   const results: string[] = [];
+  let visitedDirs = 0;
   const walkDir = (dir: string) => {
+    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return;
+    visitedDirs += 1;
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });

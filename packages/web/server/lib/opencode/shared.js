@@ -927,6 +927,13 @@ async function pathExists(target) {
 // At most this many file-system calls of one walk are in flight at once.
 const SKILL_WALK_CONCURRENCY = 8;
 
+// At most this many directories one walk visits per root, the root itself
+// included. A skills root is project-controlled, and a link inside it can
+// point at a tree with tens of thousands of directories; past the cap the
+// walk stops opening new directories and returns the SKILL.md paths found
+// so far. The VS Code twin in opencodeConfig.ts uses the same value.
+const SKILL_WALK_MAX_DIRS = 5000;
+
 // Async so a skills tree with tens of thousands of entries (a bundled `.venv`
 // or `node_modules`) does not hold the server's event loop for seconds.
 // Sibling directories are read in parallel, a few calls at a time, and their
@@ -953,7 +960,13 @@ async function walkSkillMdFiles(rootDir) {
   // back to one of its own ancestors is skipped instead of recursing forever.
   // Two links to the same target elsewhere in the tree are both walked, as the
   // top level always did.
+  let visitedDirs = 0;
   const walk = async (dir, ancestors) => {
+    // Counted before the first await, so sibling directories are counted
+    // in readdir order and the total never passes the cap.
+    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return [];
+    visitedDirs += 1;
+
     let realDir;
     try {
       realDir = await limited(() => fs.promises.realpath(dir));
@@ -1217,6 +1230,7 @@ export {
   resolvePromptFilePath,
   writePromptFile,
   walkSkillMdFiles,
+  SKILL_WALK_MAX_DIRS,
   addSkillFromMdFile,
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,

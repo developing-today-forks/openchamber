@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, MAX_CONFIG_FILE_BYTES } from './shared.js';
+import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, SKILL_WALK_MAX_DIRS, MAX_CONFIG_FILE_BYTES } from './shared.js';
 import { updateAgent } from './agents.js';
 import { updateMcpConfig, createMcpConfig, deleteMcpConfig } from './mcp.js';
 
@@ -587,6 +587,52 @@ describe('walkSkillMdFiles', () => {
     try {
       linkDirectory(path.join(outside, 'deep-skill'), path.join('group', 'linked'));
       expect(await foundRelative()).toEqual(['group/linked/SKILL.md']);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('pins the directory-visit cap the VS Code twin shares', () => {
+    expect(SKILL_WALK_MAX_DIRS).toBe(5000);
+  });
+
+  it('stops at the directory cap and returns the partial results found so far', async () => {
+    // One leaf past the cap: the root plus SKILL_WALK_MAX_DIRS - 1 leaves
+    // are visited, so exactly that many leaves report their SKILL.md.
+    const leafCount = SKILL_WALK_MAX_DIRS + 10;
+    for (let i = 0; i < leafCount; i += 1) {
+      writeSkill(`d${String(i).padStart(4, '0')}`);
+    }
+
+    const found = await foundRelative();
+
+    expect(found).toHaveLength(SKILL_WALK_MAX_DIRS - 1);
+  });
+
+  it('returns complete results for a tree exactly at the directory cap', async () => {
+    const leafCount = SKILL_WALK_MAX_DIRS - 1;
+    for (let i = 0; i < leafCount; i += 1) {
+      writeSkill(`d${String(i).padStart(4, '0')}`);
+    }
+
+    expect(await foundRelative()).toHaveLength(leafCount);
+  });
+
+  it('keeps a link to a large external tree under the same directory cap', async () => {
+    const outside = `${FIXTURE_DIR}-outside`;
+    fs.rmSync(outside, { recursive: true, force: true });
+    const leafCount = SKILL_WALK_MAX_DIRS + 10;
+    for (let i = 0; i < leafCount; i += 1) {
+      const leaf = path.join(outside, `d${String(i).padStart(4, '0')}`);
+      fs.mkdirSync(leaf, { recursive: true });
+      fs.writeFileSync(path.join(leaf, 'SKILL.md'), STANDARD_MD);
+    }
+    fs.mkdirSync(path.join(FIXTURE_DIR, 'group'), { recursive: true });
+    try {
+      linkDirectory(outside, path.join('group', 'linked'));
+      // Visited: the root, group, the linked external root, then leaves
+      // until the cap; every visited leaf reports one SKILL.md.
+      expect(await foundRelative()).toHaveLength(SKILL_WALK_MAX_DIRS - 3);
     } finally {
       fs.rmSync(outside, { recursive: true, force: true });
     }
