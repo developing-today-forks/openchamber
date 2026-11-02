@@ -21,6 +21,9 @@ const GITHUB_OAUTH_INSTANCE = 'github.com';
 const GITHUB_BRANCH_PAGE_SIZE = 100;
 const GITHUB_BRANCH_MAX_PAGES = 20;
 const GITHUB_BRANCH_MAX_COUNT = GITHUB_BRANCH_PAGE_SIZE * GITHUB_BRANCH_MAX_PAGES;
+const GITHUB_PR_CONTEXT_PAGE_SIZE = 100;
+const GITHUB_PR_CONTEXT_MAX_PAGES = 20;
+const GITHUB_PR_CONTEXT_MAX_COUNT = GITHUB_PR_CONTEXT_PAGE_SIZE * GITHUB_PR_CONTEXT_MAX_PAGES;
 
 const githubAuthRoutePaths = (suffix) => [
   `/api/github${suffix}`,
@@ -115,6 +118,29 @@ function invalidProviderPayload(message) {
 function requireProviderArray(value, message) {
   if (!Array.isArray(value)) throw invalidProviderPayload(message);
   return value;
+}
+
+// Reads one /pulls/context collection page by page until a short page,
+// under the same named-cap discipline as the branches route above: one
+// probe past the cap, and an explicit error when the probe is non-empty,
+// so a partial list is never returned as if it were complete (#1375).
+async function readPullContextCollection(label, invalidMessage, fetchPage) {
+  const items = [];
+  for (let page = 1; page <= GITHUB_PR_CONTEXT_MAX_PAGES; page += 1) {
+    const payload = requireProviderArray((await fetchPage(page))?.data, invalidMessage);
+    items.push(...payload);
+    if (payload.length < GITHUB_PR_CONTEXT_PAGE_SIZE) {
+      return items;
+    }
+    if (page === GITHUB_PR_CONTEXT_MAX_PAGES) {
+      const probe = requireProviderArray((await fetchPage(page + 1))?.data, invalidMessage);
+      if (probe.length === 0) {
+        return items;
+      }
+      throw new Error(`GitHub ${label} list reached the ${GITHUB_PR_CONTEXT_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return items;
 }
 
 function requireGitHubRepoNetwork(value, primaryRepo) {
@@ -3105,13 +3131,13 @@ export function registerGitHubRoutes(app, options = {}) {
         updatedAt: prData.updated_at,
       };
 
-      const issueCommentsResp = await octokit.rest.issues.listComments({
+      const issueCommentPayload = await readPullContextCollection('issue comment', 'GitHub returned an invalid issue comment list', (page) => octokit.rest.issues.listComments({
         owner: repo.owner,
         repo: repo.repo,
         issue_number: number,
-        per_page: 100,
-      });
-      const issueCommentPayload = requireProviderArray(issueCommentsResp?.data, 'GitHub returned an invalid issue comment list');
+        per_page: GITHUB_PR_CONTEXT_PAGE_SIZE,
+        page,
+      }));
       const issueComments = issueCommentPayload.map((comment) => requireGitHubComment(comment, 'GitHub returned an invalid issue comment')).map((comment) => ({
         id: comment.id,
         url: comment.html_url,
@@ -3121,13 +3147,13 @@ export function registerGitHubRoutes(app, options = {}) {
         author: comment.user ? { login: comment.user.login, id: comment.user.id, avatarUrl: comment.user.avatar_url } : null,
       }));
 
-      const reviewCommentsResp = await octokit.rest.pulls.listReviewComments({
+      const reviewCommentPayload = await readPullContextCollection('review comment', 'GitHub returned an invalid review comment list', (page) => octokit.rest.pulls.listReviewComments({
         owner: repo.owner,
         repo: repo.repo,
         pull_number: number,
-        per_page: 100,
-      });
-      const reviewCommentPayload = requireProviderArray(reviewCommentsResp?.data, 'GitHub returned an invalid review comment list');
+        per_page: GITHUB_PR_CONTEXT_PAGE_SIZE,
+        page,
+      }));
       const reviewComments = reviewCommentPayload.map((comment) => requireGitHubReviewComment(comment)).map((comment) => ({
         id: comment.id,
         url: comment.html_url,
@@ -3140,13 +3166,13 @@ export function registerGitHubRoutes(app, options = {}) {
         author: comment.user ? { login: comment.user.login, id: comment.user.id, avatarUrl: comment.user.avatar_url } : null,
       }));
 
-      const filesResp = await octokit.rest.pulls.listFiles({
+      const filePayload = await readPullContextCollection('pull request file', 'GitHub returned an invalid pull request file list', (page) => octokit.rest.pulls.listFiles({
         owner: repo.owner,
         repo: repo.repo,
         pull_number: number,
-        per_page: 100,
-      });
-      const filePayload = requireProviderArray(filesResp?.data, 'GitHub returned an invalid pull request file list');
+        per_page: GITHUB_PR_CONTEXT_PAGE_SIZE,
+        page,
+      }));
       const files = filePayload.map((file) => requireGitHubPullFile(file)).map((f) => ({
         filename: f.filename,
         status: f.status,
