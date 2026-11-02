@@ -18,6 +18,9 @@ const PR_CONTEXT_CACHE_MAX_ENTRIES = 50;
 const prContextCache = new Map();
 const pendingPrContextWrites = new Map();
 const GITHUB_OAUTH_INSTANCE = 'github.com';
+const GITHUB_BRANCH_PAGE_SIZE = 100;
+const GITHUB_BRANCH_MAX_PAGES = 20;
+const GITHUB_BRANCH_MAX_COUNT = GITHUB_BRANCH_PAGE_SIZE * GITHUB_BRANCH_MAX_PAGES;
 
 const githubAuthRoutePaths = (suffix) => [
   `/api/github${suffix}`,
@@ -2088,9 +2091,13 @@ export function registerGitHubRoutes(app, options = {}) {
       if (!selectedRepo) return res.json({ branches: [] });
 
       const branches = [];
-      let page = 1;
-      while (true) {
-        const response = await octokit.rest.repos.listBranches({ owner: selectedRepo.owner, repo: selectedRepo.repo, per_page: 100, page });
+      for (let page = 1; page <= GITHUB_BRANCH_MAX_PAGES; page += 1) {
+        const response = await octokit.rest.repos.listBranches({
+          owner: selectedRepo.owner,
+          repo: selectedRepo.repo,
+          per_page: GITHUB_BRANCH_PAGE_SIZE,
+          page,
+        });
         const payload = requireProviderArray(response?.data, 'GitHub returned an invalid branch list');
         if (payload.length === 0) break;
         for (const branch of payload) {
@@ -2099,8 +2106,10 @@ export function registerGitHubRoutes(app, options = {}) {
           }
           if (isProviderString(branch?.name) && branch.name.trim()) branches.push(branch.name);
         }
-        if (payload.length < 100) break;
-        page++;
+        if (payload.length < GITHUB_BRANCH_PAGE_SIZE) break;
+        if (page === GITHUB_BRANCH_MAX_PAGES) {
+          throw new Error(`GitHub branch list reached the ${GITHUB_BRANCH_MAX_COUNT}-branch safety limit and may be incomplete`);
+        }
       }
 
       return res.json({ branches });

@@ -173,6 +173,41 @@ describe('GitHub account routes', () => {
       .query(boundQuery('github.com#999', { owner: 'owner', repo: 'repo' })).expect(401);
   });
 
+  it('returns every branch from a finite multi-page response', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const pages = [100, 100, 50].map((count, page) =>
+      Array.from({ length: count }, (_, index) => ({ name: `branch-${page + 1}-${index}` })));
+    const fetch = vi.fn(async (url) => {
+      const page = Number(new URL(String(url)).searchParams.get('page'));
+      return Response.json(pages[page - 1] ?? []);
+    });
+    vi.stubGlobal('fetch', fetch);
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'owner', repo: 'repo' } })),
+    });
+
+    const response = await request(app).get('/api/source-control/github/repo/branches')
+      .query(boundQuery(account.accountId, { owner: 'owner', repo: 'repo' })).expect(200);
+
+    expect(response.body).toEqual({ branches: pages.flat().map(({ name }) => name) });
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('fails explicitly after the branch pagination page cap', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const fetch = vi.fn(async () => Response.json(Array.from({ length: 100 }, (_, index) => ({ name: `branch-${index}` }))));
+    vi.stubGlobal('fetch', fetch);
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'owner', repo: 'repo' } })),
+    });
+
+    const response = await request(app).get('/api/source-control/github/repo/branches')
+      .query(boundQuery(account.accountId, { owner: 'owner', repo: 'repo' })).expect(500);
+
+    expect(response.body.error).toBe('GitHub branch list reached the 2000-branch safety limit and may be incomplete');
+    expect(fetch).toHaveBeenCalledTimes(20);
+  });
+
   it('checks an exact account before serving its cached PR status', async () => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
     const app = makeApp();
