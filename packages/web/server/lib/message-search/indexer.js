@@ -154,6 +154,10 @@ export const createMessageSearchIndexer = ({
   let draining = null;
   let backfill = { state: 'idle', total: 0, done: 0 };
   let backfillRun = 0;
+  // Where a page-capped session-list walk stopped, with the sessions it had
+  // already listed: the next backfill resumes there instead of restarting,
+  // so a list longer than the cap is still walked to the end, in chunks.
+  let backfillContinuation = null;
   let stopped = false;
 
   const syncSession = async (sessionId, directoryHint, { retried = false } = {}) => {
@@ -205,6 +209,7 @@ export const createMessageSearchIndexer = ({
     };
 
     const readingSession = store.readSession(sessionId);
+    let walkTruncated = false;
     for (const role of ROLES) {
       // While reverted, the tail beyond the boundary will change: read from
       // the start each time and keep no cursor.
@@ -265,10 +270,12 @@ export const createMessageSearchIndexer = ({
         pages += 1;
         if (next === cursor || seenCursors.has(next)) {
           logger.warn?.(`[message-search] message pagination for session ${sessionId} (${role}) repeated a cursor; stopping the walk`);
+          walkTruncated = true;
           break;
         }
         if (pages >= MAX_PAGES_PER_WALK) {
           logger.warn?.(`[message-search] message pagination for session ${sessionId} (${role}) hit the ${MAX_PAGES_PER_WALK}-page cap; stopping the walk`);
+          walkTruncated = true;
           break;
         }
         if (cursor) seenCursors.add(cursor);
@@ -276,7 +283,11 @@ export const createMessageSearchIndexer = ({
         cursor = next;
       }
     }
-    store.markSynced(sessionId, session.time?.updated ?? null);
+    // A walk the guard or the cap stopped is not a completed sync: the
+    // per-page cursors were stored as they were read, so leaving the
+    // session un-marked lets a later sync resume from the last stored
+    // cursor instead of skipping the unread remainder as if it were read.
+    if (!walkTruncated) store.markSynced(sessionId, session.time?.updated ?? null);
   };
 
   const takeNext = () => {
@@ -307,7 +318,7 @@ export const createMessageSearchIndexer = ({
           if (backfillPauseMs > 0) await new Promise((resolve) => setTimeout(resolve, backfillPauseMs));
         }
       }
-      if (backfill.state === 'running' && backfillQueue.size === 0) backfill = { ...backfill, state: 'done' };
+      if (backfill.state === 'running' && backfillQueue.size === 0 && !backfillContinuation) backfill = { ...backfill, state: 'done' };
     })().finally(() => {
       draining = null;
       if (!stopped && (liveQueue.size > 0 || backfillQueue.size > 0)) void drain();
@@ -335,8 +346,8 @@ export const createMessageSearchIndexer = ({
     const run = ++backfillRun;
     runSignal();
     const client = createClient('');
-    const listed = new Map();
-    let cursor = null;
+    const listed = backfillContinuation?.listed ?? new Map();
+    let cursor = backfillContinuation?.cursor ?? null;
     let listComplete = false;
     try {
       const seenCursors = new Set();
@@ -350,15 +361,23 @@ export const createMessageSearchIndexer = ({
         const next = page.cursor?.next ?? null;
         if (!next || page.data.length < SESSION_PAGE_SIZE) {
           listComplete = true;
+          backfillContinuation = null;
           break;
         }
         pages += 1;
         if (next === cursor || seenCursors.has(next)) {
           logger.warn?.('[message-search] session list pagination repeated a cursor; stopping the backfill walk with a partial list');
+          // A cursor that repeats will repeat again on a resume; drop the
+          // continuation so the next walk starts fresh.
+          backfillContinuation = null;
           break;
         }
         if (pages >= MAX_PAGES_PER_WALK) {
           logger.warn?.(`[message-search] session list pagination hit the ${MAX_PAGES_PER_WALK}-page cap; stopping the backfill walk with a partial list`);
+          // A healthy list longer than the cap is not finished: keep the
+          // place so the next backfill resumes past this chunk rather than
+          // re-reading the same first pages and never reaching the rest.
+          backfillContinuation = { cursor: next, listed };
           break;
         }
         if (cursor) seenCursors.add(cursor);
@@ -386,7 +405,7 @@ export const createMessageSearchIndexer = ({
       backfillQueue.set(session.id, session.location?.directory ?? '');
       queued += 1;
     }
-    backfill = { state: queued > 0 ? 'running' : 'done', total: queued, done: 0 };
+    backfill = { state: queued > 0 || backfillContinuation ? 'running' : 'done', total: queued, done: 0 };
     void drain();
   };
 

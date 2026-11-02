@@ -487,6 +487,8 @@ describe.skipIf(!open)('message search index', () => {
     expect(userCalls).toBe(2);
     expect(warnings.some((args) => String(args[0]).includes('repeated a cursor'))).toBe(true);
     expect(search('looping').map((hit) => hit.id)).toEqual(['u2', 'u1']);
+    // A guard-stopped walk is not a completed sync.
+    expect(store.readSession('a')?.synced_updated_at ?? null).toBeNull();
   });
 
   it('caps a sync whose message pages keep returning distinct cursors', async () => {
@@ -515,6 +517,13 @@ describe.skipIf(!open)('message search index', () => {
     expect(userCalls).toBe(20);
     expect(warnings.some((args) => String(args[0]).includes('page cap'))).toBe(true);
     expect(search('capped')).toHaveLength(40);
+    // A capped walk is not a completed sync either: the session stays
+    // un-marked, and the next sync resumes from the stored cursor (another
+    // capped chunk of pages) instead of skipping the unread remainder.
+    expect(store.readSession('a')?.synced_updated_at ?? null).toBeNull();
+    await local.syncSession('a', '');
+    expect(userCalls).toBe(40);
+    expect(store.readSession('a')?.synced_updated_at ?? null).toBeNull();
   });
 
   it('finishes a backfill whose session list repeats a cursor, without deleting sessions from the partial list', async () => {
@@ -549,6 +558,53 @@ describe.skipIf(!open)('message search index', () => {
     expect(store.counts().sessions).toBe(201);
     // ...and the session the partial list never mentioned was not deleted.
     expect(search('stale').map((hit) => hit.id)).toEqual(['u1']);
+  });
+
+  it('resumes a capped session-list walk on the next connect instead of restarting it', async () => {
+    fake.session('stale');
+    fake.user('stale', 'u1', 'stale words kept');
+    await backfill();
+    expect(search('stale')).toHaveLength(1);
+
+    const PAGE = 200;
+    const all = Array.from({ length: 20 * PAGE + 10 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));
+    const byId = new Map(all.map((session) => [session.id, session]));
+    let listCalls = 0;
+    const client = {
+      session: {
+        get: async ({ sessionID }) => byId.get(sessionID) ?? fake.client.session.get({ sessionID }),
+        list: async ({ cursor }) => {
+          listCalls += 1;
+          const start = cursor ? Number(cursor.split('-')[1]) : 0;
+          const data = all.slice(start, start + PAGE);
+          const end = start + data.length;
+          return { data, cursor: end < all.length ? { next: `page-${end}` } : {} };
+        },
+        message: fake.client.session.message,
+      },
+      message: { list: async () => ({ data: [], cursor: {} }) },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
+    const connect = async () => {
+      local.onConnected();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await local.idle();
+    };
+
+    // First connect: the walk stops at the page cap with 4,000 sessions
+    // read; the partial list queues them but deletes nothing.
+    await connect();
+    expect(listCalls).toBe(20);
+    expect(store.counts().sessions).toBe(4001);
+    expect(search('stale')).toHaveLength(1);
+
+    // Second connect: the walk resumes past the cap, reaches the end of
+    // the list, and only the now-complete assembled list deletes.
+    await connect();
+    expect(listCalls).toBe(21);
+    expect(store.counts().sessions).toBe(4010);
+    expect(search('stale')).toEqual([]);
+    expect(local.status().backfill.state).toBe('done');
   });
 
   it('does not mark a session synced when the revert-boundary lookup times out', async () => {
