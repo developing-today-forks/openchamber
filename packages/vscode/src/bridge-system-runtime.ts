@@ -19,6 +19,7 @@ import { reconstructOriginalContentFromPatch } from './patchReconstruction';
 import type { BridgeContext, BridgeResponse } from './bridge';
 import { ENTERPRISE_MODE_ERROR, isEnterpriseMode, publicEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
 import { discoverProviderModels } from './model-discovery';
+import { readOpenCodeInfoResponse } from './opencode-info-runtime';
 
 // Update answers are small JSON documents; anything past this cap is not one.
 // The web twin caps the same endpoint at the same size
@@ -252,7 +253,7 @@ export async function handleSystemBridgeMessage(
           headers: { Accept: 'application/json', ...ctx?.manager?.getOpenCodeAuthHeaders() },
           signal: AbortSignal.timeout(versionProbeDeadlineMs),
         });
-        const health = await response.json().catch(() => null) as { version?: unknown; error?: unknown } | null;
+        const health = await readOpenCodeInfoResponse(response);
         if (!response.ok) {
           const message = typeof health?.error === 'string' ? health.error : response.statusText || 'Failed to read OpenCode version';
           return { id, type, success: true, data: { version: null, error: message } };

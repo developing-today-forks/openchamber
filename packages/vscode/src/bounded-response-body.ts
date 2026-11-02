@@ -1,4 +1,9 @@
+import type { ZodType } from 'zod';
+
 export const API_PROXY_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+export const OPENCODE_SKILLS_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+export const OPENCODE_INFO_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
+export const OPENCODE_DIAGNOSTICS_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
 
 // Quota payloads are small JSON documents, so the quota surface caps its
 // response bodies far below the API-proxy cap (see #1298 / #1282).
@@ -68,13 +73,25 @@ export const readBoundedResponseBody = async (
   return body.subarray(0, totalBytes);
 };
 
-// Reads a response body as JSON under a byte cap, mirroring the
-// `response.json().catch(() => null)` shape the quota modules already use:
-// an over-cap body, a non-JSON body, and a parse failure all yield null, so
-// each caller's existing failure path produces its normal failure result
-// instead of a buffered whole-body parse. A leading UTF-8 BOM is stripped,
-// matching what `response.json()` accepts.
-export const readBoundedResponseJson = async (response: Response, maxBytes: number): Promise<unknown> => {
+// Reads a response body as JSON under a byte cap. Without a schema this
+// mirrors the `response.json().catch(() => null)` shape the quota modules
+// already use: an over-cap body, a non-JSON body, and a parse failure all
+// yield null, so each caller's existing failure path produces its normal
+// failure result instead of a buffered whole-body parse. A leading UTF-8
+// BOM is stripped, matching what `response.json()` accepts. With a schema,
+// the parsed value is schema-validated and errors (including
+// ResponseBodyTooLargeError) propagate to the caller.
+export function readBoundedResponseJson(response: Response, maxBytes: number): Promise<unknown>;
+export function readBoundedResponseJson<T>(response: Response, maxBytes: number, schema: ZodType<T>): Promise<T>;
+export async function readBoundedResponseJson<T>(
+  response: Response,
+  maxBytes: number,
+  schema?: ZodType<T>,
+): Promise<unknown> {
+  if (schema) {
+    const body = await readBoundedResponseBody(response, maxBytes);
+    return schema.parse(JSON.parse(new TextDecoder().decode(body)));
+  }
   try {
     const bytes = await readBoundedResponseBody(response, maxBytes);
     const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, '');
@@ -82,4 +99,4 @@ export const readBoundedResponseJson = async (response: Response, maxBytes: numb
   } catch {
     return null;
   }
-};
+}

@@ -7,6 +7,7 @@ import { BUILT_IN_SKILL_LOCATION, type DiscoveredSkill, type SkillScope, type Sk
 import type { BridgeContext } from './bridge';
 import { filterPersistableSettingsChanges, withoutSecretSettings } from './settings-registry-gate';
 import { renameSyncWithRetry, renameWithRetry } from './bridge-atomic-write';
+import { readOpenCodeSkillsPayload } from './opencode-skills-response';
 import {
   buildPreferencesFields,
   flattenPreferences,
@@ -134,7 +135,7 @@ export const fetchOpenCodeSkillsFromApi = async (
       return null;
     }
 
-    const payload = await response.json() as { data?: unknown } | null;
+    const payload = await readOpenCodeSkillsPayload(response);
     const skills = payload?.data;
     if (!Array.isArray(skills)) {
       return null;

@@ -1,6 +1,7 @@
 import { afterEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { getOpenCodeUpgradeStatus, setInfoProbeDeadlineForTest, upgradeManagedOpenCode, type OpenCodeUpgradeManager } from './opencode-upgrade-runtime';
+import { OPENCODE_INFO_RESPONSE_MAX_BYTES } from './bounded-response-body';
 
 const originalFetch = globalThis.fetch;
 const originalLowerRegistry = process.env.npm_config_registry;
@@ -231,6 +232,45 @@ describe('VS Code OpenCode upgrade status registry body cap (#1051)', () => {
 
     const status = await getOpenCodeUpgradeStatus(createManager());
     assert.equal(status.latestVersion, '2.0.23');
+    assert.equal(status.available, true);
+  });
+});
+
+describe('VS Code OpenCode upgrade status /api/info body cap', () => {
+  const streamBody = (totalBytes: number, state: { pulledBytes: number; cancelled: boolean }) => new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (state.pulledBytes >= totalBytes) { controller.close(); return; }
+      const size = Math.min(64 * 1024, totalBytes - state.pulledBytes);
+      controller.enqueue(new Uint8Array(size).fill(0x20));
+      state.pulledBytes += size;
+    },
+    cancel() { state.cancelled = true; },
+  });
+
+  test('returns an unavailable error instead of draining an oversized /api/info response', async () => {
+    const state = { pulledBytes: 0, cancelled: false };
+    globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => String(input).endsWith('/api/info')
+      ? new Response(streamBody(2 * OPENCODE_INFO_RESPONSE_MAX_BYTES, state), { headers: { 'content-type': 'application/json' } })
+      : Response.json({ version: '2.0.32' });
+
+    const status = await getOpenCodeUpgradeStatus(createManager());
+
+    assert.equal(status.available, null);
+    assert.match(String(status.error ?? ''), /exceeded the 1 MiB limit/);
+    assert.equal(state.cancelled, true);
+    assert.ok(state.pulledBytes < 2 * OPENCODE_INFO_RESPONSE_MAX_BYTES);
+  });
+
+  test('accepts /api/info at exactly 1 MiB', async () => {
+    const prefix = JSON.stringify({ version: '2.0.1' });
+    const body = prefix + ' '.repeat(OPENCODE_INFO_RESPONSE_MAX_BYTES - Buffer.byteLength(prefix));
+    globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => String(input).endsWith('/api/info')
+      ? new Response(body)
+      : Response.json({ version: '2.0.2' });
+
+    const status = await getOpenCodeUpgradeStatus(createManager());
+
+    assert.equal(status.currentVersion, '2.0.1');
     assert.equal(status.available, true);
   });
 });
