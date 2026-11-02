@@ -50,7 +50,17 @@ permissions:
   contents: write
 
 jobs:
+  require-main-gate:
+    name: Require successful main gate
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/require-main-gate.yml
+    with:
+      release_sha: ${{ github.sha }}
+
   create-release:
+    needs: require-main-gate
     timeout-minutes: 15
     runs-on: ubuntu-latest
     outputs:
@@ -87,6 +97,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ steps.get_version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           # A release being finished is already public; keep it that way.
           # Every later upload step sets draft: true. Without it the action
           # publishes the draft after uploading, and updaters would see the
@@ -623,6 +634,9 @@ jobs:
 
   mobile-release:
     needs: create-release
+    permissions:
+      actions: read
+      contents: write
     if: ${{ github.event.inputs.dry_run != 'true' }}
     uses: ./.github/workflows/mobile-release.yml
     with:

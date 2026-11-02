@@ -86,6 +86,26 @@ In this repository its `eval` job is skipped outright — the job is
 gated to `openchamber/openchamber`, so a dispatch here validates
 nothing until the flakes are reconciled.
 
+## Release gate
+
+`release.yml` and `mobile-release.yml` call
+`require-main-gate.yml` before creating a release or uploading mobile
+release assets. The check requires a successful `oc-review.yml` run,
+named `pr checks`, for the exact release SHA. New release tags point to
+that checked SHA. Failed, cancelled, pending, missing, or unreadable
+results stop the workflow before it publishes.
+
+The hotfix override path for a missing run is to dispatch `oc-review.yml`
+against the exact commit, using an existing branch at that SHA or a
+temporary branch pointing to it. Once that full-suite run succeeds,
+retry the release. There is no bypass for a failed or unreadable gate;
+fix the commit or release a known-green SHA.
+
+`build-macos-arm64-dmg.yml` is exempt because it only uploads a
+seven-day Actions artifact. It does not create a GitHub Release or
+upload to TestFlight. Use the gated `release.yml` workflow to distribute
+a DMG.
+
 ## Concurrency rules (design §4, Phase 1)
 
 Standard pattern for check workflows:
