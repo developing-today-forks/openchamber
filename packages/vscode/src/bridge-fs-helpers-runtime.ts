@@ -229,6 +229,7 @@ const FILE_SEARCH_EXCLUDED_DIRS = new Set([
 ]);
 
 const FILE_SEARCH_MAX_VISITED_FILES = 10_000;
+const FILE_SEARCH_MAX_VISITED_DIRS = 50_000;
 
 const shouldSkipSearchDirectory = (name: string, includeHidden: boolean) => {
   if (!name) {
@@ -327,6 +328,12 @@ const searchFilesystemFiles = async (
   const reachedSearchStop = () => (matchAll
     ? candidates.length >= limit
     : inspectedFiles >= FILE_SEARCH_MAX_VISITED_FILES);
+  // Mirrors the web server's directory ceiling in `search.js`: the visited
+  // set holds every directory that will ever be read, so refusing enqueues
+  // at the ceiling bounds the whole walk (including the empty-query path,
+  // which passes no time budget), while directories already queued are
+  // still read to completion.
+  const directoryVisitCapReached = () => visited.size >= FILE_SEARCH_MAX_VISITED_DIRS;
   const MAX_CONCURRENCY = 10;
 
   while (queue.length > 0 && !reachedSearchStop()) {
@@ -365,7 +372,7 @@ const searchFilesystemFiles = async (
           if (shouldSkipSearchDirectory(entryName, includeHidden)) {
             continue;
           }
-          if (!visited.has(absolute)) {
+          if (!visited.has(absolute) && !directoryVisitCapReached()) {
             visited.add(absolute);
             queue.push(entryUri);
           }

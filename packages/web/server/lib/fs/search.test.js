@@ -66,6 +66,77 @@ describe('filesystem search', () => {
     }
   });
 
+  it('bounds a directory-heavy walk at the directory-visit cap and returns partial results', async () => {
+    const rootPath = '/virtual-dir-cap';
+    const fileDirent = { name: 'favicon.ico', isDirectory: () => false, isFile: () => true };
+    const emptyDirs = Array.from({ length: 60_000 }, (_, index) => ({
+      name: `dir_${index}`,
+      isDirectory: () => true,
+      isFile: () => false,
+    }));
+    let readdirCalls = 0;
+    const readdir = async (dirPath) => {
+      readdirCalls += 1;
+      return dirPath === rootPath ? [fileDirent, ...emptyDirs] : [];
+    };
+    const search = createFsSearchRuntime({
+      fsPromises: { readdir },
+      path,
+      spawn: neverSpawn,
+      resolveGitBinaryForSpawn: () => 'git',
+    });
+
+    const files = await search.searchFilesystemFiles(rootPath, {
+      query: 'favicon',
+      limit: 10,
+      respectGitignore: false,
+    });
+
+    // The root plus the 49,999 directories admitted under the 50,000
+    // directory-visit ceiling are read; the remaining offered directories
+    // are never enqueued, and the match found before the ceiling is kept.
+    expect(files.map((file) => file.relativePath)).toEqual(['favicon.ico']);
+    expect(readdirCalls).toBe(50_000);
+  });
+
+  it('returns complete results from a tree that exactly reaches the directory cap', async () => {
+    const rootPath = '/virtual-at-cap';
+    const targetPath = path.join(rootPath, 'target');
+    const needleDirent = { name: 'needle.txt', isDirectory: () => false, isFile: () => true };
+    const rootEntries = [
+      { name: 'target', isDirectory: () => true, isFile: () => false },
+      ...Array.from({ length: 49_998 }, (_, index) => ({
+        name: `empty_${index}`,
+        isDirectory: () => true,
+        isFile: () => false,
+      })),
+    ];
+    let readdirCalls = 0;
+    const readdir = async (dirPath) => {
+      readdirCalls += 1;
+      if (dirPath === rootPath) return rootEntries;
+      if (dirPath === targetPath) return [needleDirent];
+      return [];
+    };
+    const search = createFsSearchRuntime({
+      fsPromises: { readdir },
+      path,
+      spawn: neverSpawn,
+      resolveGitBinaryForSpawn: () => 'git',
+    });
+
+    const files = await search.searchFilesystemFiles(rootPath, {
+      query: 'needle',
+      limit: 10,
+      respectGitignore: false,
+    });
+
+    // Root + target + 49,998 empty directories reach the ceiling exactly;
+    // every admitted directory is still read, so the deep match is found.
+    expect(files.map((file) => file.relativePath)).toEqual(['target/needle.txt']);
+    expect(readdirCalls).toBe(50_000);
+  });
+
   it('kills a stuck git check-ignore instead of hanging the search', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-fs-search-'));
     const previousTimeout = process.env.OPENCHAMBER_GIT_CHECK_IGNORE_TIMEOUT_MS;
