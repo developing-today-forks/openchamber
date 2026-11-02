@@ -53,6 +53,14 @@ function Row({ item }) {
     </div>;
 }
 const renderTimelineItem = ({ item }) => <Row item={item} />;
+// The production logTimelineReadiness sits above the sliced component and is
+// gated on a localStorage debug flag. The fixture records every call instead,
+// so the footer scenario can count readiness cycles directly.
+const timelineReadinessLog = [];
+window.__timelineReadinessLog = timelineReadinessLog;
+const logTimelineReadiness = (event, entries, footerSize, cycle) => {
+    timelineReadinessLog.push({ event, entries, footerSize, cycle });
+};
 ${source.slice(start, end)}
 const frames = async count => {
     for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame);
@@ -117,6 +125,58 @@ function App() {
             missingFrames: samples.filter(value => value === null).length,
             maxShift: Math.max(...samples.filter(value => value !== null).map(value => Math.abs(value - before))),
             tailGrowthShift,
+        };
+    };
+    window.runFooterResizeScenario = async () => {
+        const readyCount = () => timelineReadinessLog.filter(entry => entry.event === 'ready').length;
+        // Resize in the same beat as a data change, as in production (a
+        // permission arrives, a turn ends): the list still holds its preserved
+        // end target then, which is exactly the window where a footer present
+        // at mount used to re-run readiness and blank the transcript (#52).
+        // A resize long after the list settles touches no initial-scroll
+        // state in either version and would prove nothing.
+        for (let i = 0; i < 200 && readyCount() === 0; i++) await frames(1);
+        setRows(current => [...current, ...rowsFrom(80, 1)]);
+        for (let i = 0; i < 200 && list.getState().data.length !== 61; i++) await frames(1);
+        await frames(5);
+        const scroller = list.getScrollableNode();
+        const anchor = [...scroller.querySelectorAll('[data-probe-id]')].find(node => {
+            const rect = node.getBoundingClientRect();
+            const bounds = scroller.getBoundingClientRect();
+            return rect.bottom > bounds.top + 1 && rect.top < bounds.bottom - 1;
+        });
+        if (!anchor) throw new Error('No visible anchor');
+        const key = anchor.dataset.probeId;
+        const read = () => {
+            const node = scroller.querySelector('[data-probe-id="' + key + '"]');
+            if (!node) return null;
+            let opacity = 1;
+            for (let current = node; current && current !== scroller; current = current.parentElement) {
+                opacity = Math.min(opacity, Number(getComputedStyle(current).opacity));
+            }
+            return { top: node.getBoundingClientRect().top - scroller.getBoundingClientRect().top, opacity };
+        };
+        const before = read();
+        if (!before) throw new Error('Anchor vanished before the resize');
+        const readyBefore = readyCount();
+        const samples = [];
+        setFooterHeight(500);
+        for (let i = 0; i < 70; i++) {
+            await frames(1);
+            // Match the history scenario: read after layout/ResizeObserver work.
+            await new Promise(resolve => setTimeout(resolve, 0));
+            samples.push(read());
+        }
+        await frames(20);
+        return {
+            key,
+            dataCount: list.getState().data.length,
+            readyBefore,
+            readyAfter: readyCount(),
+            footerSizes: timelineReadinessLog.filter(entry => entry.event === 'footer').map(entry => entry.footerSize),
+            missingFrames: samples.filter(value => value === null).length,
+            blankFrames: samples.filter(value => value !== null && value.opacity === 0).length,
+            maxShift: Math.max(...samples.filter(value => value !== null).map(value => Math.abs(value.top - before.top))),
         };
     };
     return <TimelineList
@@ -197,6 +257,32 @@ try {
         assert.ok(result.maxShift <= 1, `History shifted the visible anchor by ${result.maxShift}px`);
         assert.ok(Math.abs(result.tailGrowthShift) <= 1, 'Content below the reader must not move them');
     }
+        // Footer-deferral regression (#872, PR #721): on a fresh end-aligned
+        // mount, resizing the footer must not blank the transcript (the #52
+        // bug) or re-run readiness for the same row count.
+        const [footerPeriod, footerStep] = heightProfiles[0];
+        const footerLoaded = client.once('Page.loadEventFired');
+        await client.send('Page.navigate', {
+            url: `http://127.0.0.1:${server.port}/?moving=false&period=${footerPeriod}&step=${footerStep}`,
+        });
+        await footerLoaded;
+        let footerReady = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+            footerReady = await evaluateValue(client, 'typeof window.runFooterResizeScenario === "function"');
+            if (footerReady) break;
+            await wait(100);
+        }
+        assert.ok(footerReady, 'The browser fixture mounted for the footer scenario');
+        const footerResult = await evaluateValue(client, 'window.runFooterResizeScenario()');
+        console.log(JSON.stringify({ scenario: 'footer-resize', period: footerPeriod, step: footerStep, ...footerResult }));
+        assert.deepEqual(exceptions, [], 'No browser runtime errors');
+        assert.equal(footerResult.dataCount, 61, 'The footer scenario appended exactly one row before the resize');
+        assert.ok(footerResult.readyBefore >= 1, 'Readiness instrumentation recorded the mount cycle');
+        assert.ok(footerResult.footerSizes.includes(500), 'The footer resize was actually measured');
+        assert.equal(footerResult.readyAfter, footerResult.readyBefore, 'A footer resize must not re-run readiness for the same row count');
+        assert.equal(footerResult.missingFrames, 0, 'The visible row stayed mounted during the footer resize');
+        assert.equal(footerResult.blankFrames, 0, 'No row container rendered at opacity 0 during the footer resize');
+        assert.ok(footerResult.maxShift <= 1, `Footer resize shifted the visible anchor by ${footerResult.maxShift}px`);
 } finally {
     client?.socket.close();
     if (chrome.exitCode === null && chrome.signalCode === null) {
