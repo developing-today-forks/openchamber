@@ -71,6 +71,7 @@ This module provides notification message preparation utilities for the web serv
   - `updateUiVisibility(token, visible)`
   - `isAnyUiVisible()`
   - `isUiVisible(token)`
+- The push subscription store rides the shared durable-store primitive (`../shared/durable-json-store.js`, #976/#978): a file that is not a JSON object at version 1 is malformed and is preserved aside under the primitive's collision-proof name before any write replaces it; a serialized write whose preservation fails is refused. An absent or empty file is the empty store.
 
 ### APNs runtime API (apns-runtime.js)
 - `createApnsRuntime(dependencies)`: creates runtime for native iOS APNs push and device-token state. Dependencies: `fsPromises`, `path`, `crypto`, `http2`, `APNS_TOKENS_FILE_PATH`, `readSettingsFromDiskMigrated`, `writeSettingsToDisk` (persists the auto-generated relay signing keypair).
