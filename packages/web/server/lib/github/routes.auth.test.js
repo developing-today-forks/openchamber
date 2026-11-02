@@ -581,6 +581,96 @@ describe('GitHub account routes', () => {
     expect(resolveGitHubRepoFromDirectory).toHaveBeenCalledWith(directory, 'upstream');
   });
 
+  it('merges every page of the pull context collections instead of truncating at the first 100 (#1375)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = { files: [], issueComments: [], reviewComments: [] };
+    const pageOf = (url, total, make, record) => {
+      const page = Number(url.searchParams.get('page') ?? 1);
+      const per = Number(url.searchParams.get('per_page') ?? 100);
+      record.push(page);
+      const start = (page - 1) * per;
+      const items = [];
+      for (let i = start; i < Math.min(start + per, total); i += 1) items.push(make(i));
+      return Response.json(items);
+    };
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, changed_files: 250, merged: false,
+        });
+      }
+      if (pathname === '/repos/team/project/pulls/5/files') {
+        return pageOf(url, 250, (i) => ({ filename: `src/file-${i}.js`, status: 'modified', additions: 1, deletions: 1, changes: 2, patch: '@@ -1 +1 @@' }), requestedPages.files);
+      }
+      if (pathname === '/repos/team/project/issues/5/comments') {
+        return pageOf(url, 130, (i) => ({ id: 1000 + i, html_url: `https://github.com/team/project/pull/5#issuecomment-${i}`, body: `issue comment ${i}`, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', user }), requestedPages.issueComments);
+      }
+      if (pathname === '/repos/team/project/pulls/5/comments') {
+        return pageOf(url, 120, (i) => ({ id: 2000 + i, html_url: `https://github.com/team/project/pull/5#discussion-${i}`, body: `review comment ${i}`, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', user, path: 'src/file-0.js', line: 1, position: 1 }), requestedPages.reviewComments);
+      }
+      if (pathname.endsWith('/check-runs')) return Response.json({ total_count: 0, check_runs: [] });
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(200);
+
+    expect(response.body.files).toHaveLength(250);
+    expect(response.body.files[0].filename).toBe('src/file-0.js');
+    expect(response.body.files[249].filename).toBe('src/file-249.js');
+    expect(response.body.issueComments).toHaveLength(130);
+    expect(response.body.reviewComments).toHaveLength(120);
+    // Pages are followed until a short page, then stop: no page 4/3/3 probes.
+    expect(requestedPages.files).toEqual([1, 2, 3]);
+    expect(requestedPages.issueComments).toEqual([1, 2]);
+    expect(requestedPages.reviewComments).toEqual([1, 2]);
+  });
+
+  it('fails pull context explicitly when a collection crosses the pagination safety limit (#1375)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname === '/repos/team/project/pulls/5/files') {
+        // Every page is full, including the probe past the cap.
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const items = Array.from({ length: 100 }, (_, i) => ({
+          filename: `src/file-${(page - 1) * 100 + i}.js`, status: 'modified', additions: 1, deletions: 1, changes: 2, patch: '@@ -1 +1 @@',
+        }));
+        return Response.json(items);
+      }
+      if (pathname.endsWith('/check-runs')) return Response.json({ total_count: 0, check_runs: [] });
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(500);
+
+    expect(response.body.error).toContain('safety limit');
+    expect(response.body.error).toContain('pull request file');
+  });
+
   it.each(['10junk', '2.9', '1e3'])('rejects malformed canonical pull context number %s', async (number) => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
     const fetch = vi.fn();
