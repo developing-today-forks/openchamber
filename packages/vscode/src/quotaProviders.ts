@@ -9,7 +9,7 @@ import { readOpenCodeCredentials } from './opencodeAuth';
 import { readConfig } from './opencodeConfig';
 import { isRecord, toProviderEntity } from './opencode-config-v2';
 import { fetchExeDevUsage } from './exeDevQuota';
-import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseBody, ResponseBodyTooLargeError } from './bounded-response-body';
+import { readQuotaBytes, readQuotaJson } from './quota-response-body';
 import { refreshGoogleAccessToken } from '../../web/server/lib/quota/providers/google/oauth.js';
 import { antigravityHeaders, warnIfGeminiGroupMissing } from '../../web/server/lib/quota/providers/antigravity/client.js';
 
@@ -393,45 +393,6 @@ const asNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
-};
-
-/**
- * Reads a quota provider answer as JSON under QUOTA_RESPONSE_MAX_BYTES
- * (the shared cap in bounded-response-body.ts, #1282), preserving the old
- * bare response.json() semantics for in-cap bodies: a malformed body
- * throws from JSON.parse exactly as response.json() did, and an over-cap
- * body throws ResponseBodyTooLargeError instead of being buffered whole,
- * so each caller's existing failure path produces the provider's normal
- * failure result. The web twin is readQuotaJson in
- * packages/web/server/lib/quota/utils/response-body.js.
- */
-type QuotaJsonValue = string | number | boolean | null | QuotaJsonValue[] | { [key: string]: QuotaJsonValue };
-
-const readQuotaJson = async (response: Response): Promise<QuotaJsonValue> => {
-  // Test doubles pass a plain { ok, json } without a body; real responses
-  // go through the bounded reader.
-  if (!response.body) {
-    // SAFETY: only test doubles reach this fallback (a real Response always
-    // has a body); their json() returns an already-parsed JSON value, which
-    // is exactly the QuotaJsonValue shape.
-    return (await response.json()) as QuotaJsonValue;
-  }
-  const bytes = await readBoundedResponseBody(response, QUOTA_RESPONSE_MAX_BYTES);
-  const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, '');
-  return JSON.parse(text);
-};
-
-/**
- * The same bounded read for the one binary quota answer (xAI's protobuf
- * usage body): the cap is enforced while the body streams in.
- */
-const readQuotaBytes = async (response: Response): Promise<Uint8Array> => {
-  if (!response.body) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > QUOTA_RESPONSE_MAX_BYTES) throw new ResponseBodyTooLargeError(QUOTA_RESPONSE_MAX_BYTES);
-    return bytes;
-  }
-  return readBoundedResponseBody(response, QUOTA_RESPONSE_MAX_BYTES);
 };
 
 /**
@@ -2966,7 +2927,7 @@ const attachZaiGiftResets = async (windows: Record<string, UsageWindow>, apiKey:
       },
     });
     if (!response.ok) return;
-    // SAFETY: readQuotaJson is untyped; only the two record arrays are consumed,
+    // SAFETY: readQuotaJson(response) is untyped; only the two record arrays are consumed,
     // and every field they carry is re-checked by pickZaiGiftReset before use.
     const payload = await readQuotaJson(response) as ZaiGiftResetPayload;
     const data = payload?.data;
@@ -3112,7 +3073,7 @@ const activateZaiGiftReset = async (input: { recordId: number; resetType: QuotaG
     }),
   });
 
-  // SAFETY: readQuotaJson is untyped; only success/msg are consumed and both
+  // SAFETY: readQuotaJson(response) is untyped; only success/msg are consumed and both
   // are re-checked before use.
   const payload = await readQuotaJson(response).catch(() => null) as ZaiGiftResetUsePayload | null;
   if (!response.ok || payload?.success !== true) {
@@ -4674,7 +4635,7 @@ export const fetchXaiQuota = async ({ readAuth = readOpenCodeCredentials, fetchI
       throw new Error(`xAI billing API error: ${response.status}`);
     }
 
-    const parsed = parseXaiUsage(await readQuotaBytes(response));
+    const parsed = parseXaiUsage(new Uint8Array(await readQuotaBytes(response)));
     return buildResult({
       providerId: 'xai',
       providerName: 'xAI',
