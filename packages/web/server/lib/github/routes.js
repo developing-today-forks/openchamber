@@ -2108,6 +2108,14 @@ export function registerGitHubRoutes(app, options = {}) {
         }
         if (payload.length < GITHUB_BRANCH_PAGE_SIZE) break;
         if (page === GITHUB_BRANCH_MAX_PAGES) {
+          const probeResponse = await octokit.rest.repos.listBranches({
+            owner: selectedRepo.owner,
+            repo: selectedRepo.repo,
+            per_page: GITHUB_BRANCH_PAGE_SIZE,
+            page: GITHUB_BRANCH_MAX_PAGES + 1,
+          });
+          const probePayload = requireProviderArray(probeResponse?.data, 'GitHub returned an invalid branch list');
+          if (probePayload.length === 0) break;
           throw new Error(`GitHub branch list reached the ${GITHUB_BRANCH_MAX_COUNT}-branch safety limit and may be incomplete`);
         }
       }

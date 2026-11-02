@@ -205,7 +205,28 @@ describe('GitHub account routes', () => {
       .query(boundQuery(account.accountId, { owner: 'owner', repo: 'repo' })).expect(500);
 
     expect(response.body.error).toBe('GitHub branch list reached the 2000-branch safety limit and may be incomplete');
-    expect(fetch).toHaveBeenCalledTimes(20);
+    expect(fetch).toHaveBeenCalledTimes(21);
+  });
+
+  it('returns the complete branch list at exactly the pagination cap', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const fetch = vi.fn(async (url) => {
+      const page = Number(new URL(String(url)).searchParams.get('page'));
+      if (page > 20) return Response.json([]);
+      return Response.json(Array.from({ length: 100 }, (_, index) => ({ name: `branch-${page}-${index}` })));
+    });
+    vi.stubGlobal('fetch', fetch);
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'owner', repo: 'repo' } })),
+    });
+
+    const response = await request(app).get('/api/source-control/github/repo/branches')
+      .query(boundQuery(account.accountId, { owner: 'owner', repo: 'repo' })).expect(200);
+
+    expect(response.body.branches).toHaveLength(2000);
+    expect(response.body.branches[0]).toBe('branch-1-0');
+    expect(response.body.branches[1999]).toBe('branch-20-99');
+    expect(fetch).toHaveBeenCalledTimes(21);
   });
 
   it('checks an exact account before serving its cached PR status', async () => {
