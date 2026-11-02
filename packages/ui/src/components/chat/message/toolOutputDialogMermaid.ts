@@ -36,13 +36,11 @@ const decodeMermaidDataUrl = (value: string): string => {
 
 export const getMermaidDataUrlSourcePromise = (value: string): Promise<string> => Promise.resolve().then(() => decodeMermaidDataUrl(value));
 
-// The remote-URL branch loads from a host named by tool output, not from the
-// user's own server, so it gets the same treatment as the other remote loads
-// (#851/#854/#855, McpxDashboard in #980): an explicit deadline plus a byte
-// cap, instead of a bare fetch that can stall the dialog in `loading` forever
-// or buffer an unbounded body into the renderer (#931).
+// Diagram sources named by tool output need bounded reads. Remote URLs also
+// need a deadline because a stalled host can leave the dialog loading forever.
 export const MERMAID_REMOTE_LOAD_TIMEOUT_MS = 15_000;
 export const MERMAID_REMOTE_MAX_BYTES = 1024 * 1024;
+export const MERMAID_FILE_MAX_BYTES = 1024 * 1024;
 
 export interface MermaidRemoteLoadOptions {
     /** Caller lifecycle: aborting it (load superseded, dialog closed) aborts the request. */
@@ -54,11 +52,7 @@ export interface MermaidRemoteLoadOptions {
 
 const readMermaidBodyWithCap = async (response: Response, maxBytes: number, abort: () => void): Promise<string> => {
     if (!response.body) {
-        const text = await response.text();
-        if (new TextEncoder().encode(text).byteLength > maxBytes) {
-            throw mermaidLoadFailure('chat.toolOutputDialog.mermaid.loadFailed');
-        }
-        return text;
+        return '';
     }
 
     const reader = response.body.getReader();
@@ -73,6 +67,7 @@ const readMermaidBodyWithCap = async (response: Response, maxBytes: number, abor
             total += value.byteLength;
             if (total > maxBytes) {
                 abort();
+                await reader.cancel().catch(() => undefined);
                 throw mermaidLoadFailure('chat.toolOutputDialog.mermaid.loadFailed');
             }
             chunks.push(value);
@@ -86,6 +81,27 @@ const readMermaidBodyWithCap = async (response: Response, maxBytes: number, abor
         offset += chunk.byteLength;
     }
     return new TextDecoder().decode(merged);
+};
+
+export interface MermaidFileLoadOptions {
+    controller: AbortController;
+    fetchImpl: (signal: AbortSignal) => Promise<Response>;
+    maxBytes?: number;
+}
+
+export const getMermaidFileSourcePromise = async (options: MermaidFileLoadOptions): Promise<string> => {
+    try {
+        const response = await options.fetchImpl(options.controller.signal);
+        if (!response.ok) {
+            throw mermaidLoadFailure('chat.toolOutputDialog.mermaid.readFileFailedWithStatus', { status: response.status });
+        }
+        return await readMermaidBodyWithCap(response, options.maxBytes ?? MERMAID_FILE_MAX_BYTES, () => options.controller.abort());
+    } catch (error) {
+        if (isMermaidLoadFailure(error)) {
+            throw error;
+        }
+        throw mermaidLoadFailure('chat.toolOutputDialog.mermaid.loadFailed');
+    }
 };
 
 export const getMermaidRemoteSourcePromise = async (url: string, options: MermaidRemoteLoadOptions = {}): Promise<string> => {

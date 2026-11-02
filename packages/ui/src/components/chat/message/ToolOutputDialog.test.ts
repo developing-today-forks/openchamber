@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { MERMAID_REMOTE_LOAD_TIMEOUT_MS, MERMAID_REMOTE_MAX_BYTES, MermaidLoadFailure, getMermaidDataUrlSourcePromise, getMermaidRemoteSourcePromise, isCurrentMermaidLoadRequest, nextMermaidLoadRequestId, type MermaidRemoteLoadOptions } from './toolOutputDialogMermaid';
+import { MERMAID_FILE_MAX_BYTES, MERMAID_REMOTE_LOAD_TIMEOUT_MS, MERMAID_REMOTE_MAX_BYTES, MermaidLoadFailure, getMermaidDataUrlSourcePromise, getMermaidFileSourcePromise, getMermaidRemoteSourcePromise, isCurrentMermaidLoadRequest, nextMermaidLoadRequestId, type MermaidFileLoadOptions, type MermaidRemoteLoadOptions } from './toolOutputDialogMermaid';
 
 describe('getMermaidDataUrlSourcePromise', () => {
     test('turns malformed data URLs into rejected promises', async () => {
@@ -90,6 +90,97 @@ describe('getMermaidRemoteSourcePromise (#931)', () => {
         );
         expect(error).toBeInstanceOf(MermaidLoadFailure);
         expect(error.key).toBe('chat.toolOutputDialog.mermaid.loadFailedWithStatus');
+        expect(error.params).toEqual({ status: 503 });
+    });
+});
+
+describe('getMermaidFileSourcePromise (#1308)', () => {
+    const streamingResponse = (stream: ReadableStream<Uint8Array>, status = 200): Response => new Response(stream, { status });
+
+    test('uses the same one-MiB default cap as remote diagrams', () => {
+        expect(MERMAID_FILE_MAX_BYTES).toBe(MERMAID_REMOTE_MAX_BYTES);
+    });
+
+    test('rejects an oversized file, aborts its request, and cancels the body stream', async () => {
+        let cancelled = false;
+        const body = new ReadableStream<Uint8Array>({
+            pull(controller) {
+                controller.enqueue(new Uint8Array(9));
+            },
+            cancel() {
+                cancelled = true;
+            },
+        });
+        const response = streamingResponse(body);
+        let textRead = false;
+        Object.defineProperty(response, 'text', {
+            value: async () => {
+                textRead = true;
+                return '';
+            },
+        });
+        const controller = new AbortController();
+        const options: MermaidFileLoadOptions = {
+            controller,
+            fetchImpl: async () => response,
+            maxBytes: 8,
+        };
+
+        const error = await getMermaidFileSourcePromise(options).then(
+            () => { throw new Error('expected oversized file to reject'); },
+            (caught) => caught,
+        );
+
+        expect(error).toBeInstanceOf(MermaidLoadFailure);
+        expect(error.key).toBe('chat.toolOutputDialog.mermaid.loadFailed');
+        expect(controller.signal.aborted).toBe(true);
+        expect(cancelled).toBe(true);
+        expect(textRead).toBe(false);
+    });
+
+    test('passes its abort signal and preserves a file at the byte cap', async () => {
+        const source = 'graph TD; A["diägram"]';
+        const bytes = new TextEncoder().encode(source);
+        const splitAt = bytes.indexOf(0xc3) + 1;
+        const response = streamingResponse(new ReadableStream<Uint8Array>({
+            start(streamController) {
+                streamController.enqueue(bytes.slice(0, splitAt));
+                streamController.enqueue(bytes.slice(splitAt));
+                streamController.close();
+            },
+        }));
+        const controller = new AbortController();
+        let receivedSignal: AbortSignal | undefined;
+        const options: MermaidFileLoadOptions = {
+            controller,
+            fetchImpl: async (signal) => {
+                receivedSignal = signal;
+                return response;
+            },
+            maxBytes: bytes.byteLength,
+        };
+
+        const result = await getMermaidFileSourcePromise(options);
+
+        expect(result).toBe(source);
+        expect(receivedSignal).toBe(controller.signal);
+        expect(controller.signal.aborted).toBe(false);
+    });
+
+    test('preserves the file read status error', async () => {
+        const controller = new AbortController();
+        const options: MermaidFileLoadOptions = {
+            controller,
+            fetchImpl: async () => new Response(null, { status: 503 }),
+        };
+
+        const error = await getMermaidFileSourcePromise(options).then(
+            () => { throw new Error('expected failed file read to reject'); },
+            (caught) => caught,
+        );
+
+        expect(error).toBeInstanceOf(MermaidLoadFailure);
+        expect(error.key).toBe('chat.toolOutputDialog.mermaid.readFileFailedWithStatus');
         expect(error.params).toEqual({ status: 503 });
     });
 });
