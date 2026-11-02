@@ -1026,6 +1026,46 @@ describe('OpenChamber control service', () => {
     expect(drained.messages.map((message) => message.id)).toEqual(['msg_user']);
   });
 
+  it('caps the message walk when the cursor is always new', async () => {
+    const { service, client } = createService();
+    let page = 0;
+    client.message.list.mockImplementation(async () => {
+      page += 1;
+      return {
+        data: [{ id: `msg_${page}`, type: 'user', time: { created: page }, text: `Question ${page}` }],
+        cursor: { next: `cursor-${page}` },
+      };
+    });
+
+    const result = await service.execute('session.messages', { sessionId: 'ses_1', directory: '/repo', all: true });
+    // MAX_PAGES_PER_WALK in service.js: the walk stops at the cap and
+    // returns the partial history instead of looping on fresh cursors.
+    expect(client.message.list).toHaveBeenCalledTimes(20);
+    expect(result.messages).toHaveLength(20);
+    expect(result.messages[0].id).toBe('msg_1');
+    expect(result.messages[19].id).toBe('msg_20');
+  });
+
+  it('caps session directory resolution when the cursor is always new, and stops on an empty page', async () => {
+    const { service, client } = createService();
+    let page = 0;
+    client.session.list.mockImplementation(async () => {
+      page += 1;
+      return {
+        data: [{ id: 'ses_other', location: { directory: '/repo' } }],
+        cursor: { next: `cursor-${page}` },
+      };
+    });
+
+    await expect(service.resolveSessionDirectory('ses_target')).resolves.toBeNull();
+    expect(client.session.list).toHaveBeenCalledTimes(20);
+
+    client.session.list.mockReset();
+    client.session.list.mockImplementation(async () => ({ data: [], cursor: { next: 'cursor-empty' } }));
+    await expect(service.resolveSessionDirectory('ses_target')).resolves.toBeNull();
+    expect(client.session.list).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects actions outside the fixed contract', async () => {
     const { service } = createService();
     await expect(service.execute('session.explode')).rejects.toThrow('Unsupported OpenChamber action');

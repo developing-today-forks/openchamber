@@ -85,6 +85,12 @@ other.
 
 - Session status and messages come from official directory-scoped OpenCode
   APIs. Message output includes only ordered `text` parts.
+- Cursor walks always end: the message walk and the session-directory walk
+  stop on an empty page, a missing or repeated cursor, or the
+  `MAX_PAGES_PER_WALK` page cap, so a server that keeps handing out fresh
+  cursors cannot loop them forever. Past the cap the message walk returns
+  the partial history collected so far and directory resolution returns
+  null (unresolved), never a fabricated complete result.
 - Wait (CLI only; the agent tool refuses it) never treats an initial idle
   response as completion after dispatch. It requires observed activity or a
   newly completed assistant message.

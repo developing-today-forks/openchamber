@@ -621,6 +621,12 @@ export const createOpenChamberControlService = (dependencies) => {
   // cursor ends the walk. `extractTextMessages` sorts the gathered records
   // oldest-first for the caller.
   const MESSAGE_PAGE_LIMIT = 200;
+  // A cursor walk must always end: a repeated cursor or this many pages
+  // stops it, even when the server keeps handing out fresh cursors (the
+  // house cap order: the message-search indexer walk in #1315 caps at 20).
+  // Past the cap sessionMessages returns the partial history collected so
+  // far and resolveSessionDirectory returns null (directory unresolved).
+  const MAX_PAGES_PER_WALK = 20;
   const sessionMessages = async (client, sessionID, role, limit) => {
     // Room for the non-text records between text messages, within the page
     // size OpenCode accepts (a larger one is refused, which reads as an error
@@ -629,7 +635,7 @@ export const createOpenChamberControlService = (dependencies) => {
     const collected = [];
     const seenCursors = new Set();
     let cursor;
-    for (;;) {
+    for (let page = 0; page < MAX_PAGES_PER_WALK; page += 1) {
       const response = await client.message.list({
         sessionID,
         limit: fetchLimit ?? MESSAGE_PAGE_LIMIT,
@@ -683,16 +689,18 @@ export const createOpenChamberControlService = (dependencies) => {
       const client = await getClient();
       const seenCursors = new Set();
       let cursor;
-      for (;;) {
+      for (let page = 0; page < MAX_PAGES_PER_WALK; page += 1) {
         const response = await client.session.list(cursor ? { cursor } : {});
         const sessions = Array.isArray(response?.data) ? response.data : [];
         const session = sessions.find((item) => item?.id === sessionID);
         if (session) return asNonEmptyString(session?.location?.directory) || null;
+        if (sessions.length === 0) return null;
         const next = asNonEmptyString(response?.cursor?.next);
         if (!next || seenCursors.has(next)) return null;
         seenCursors.add(next);
         cursor = next;
       }
+      return null;
     } catch {
       return null;
     }
