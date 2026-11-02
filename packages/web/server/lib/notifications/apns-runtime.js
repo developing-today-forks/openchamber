@@ -39,6 +39,11 @@ const APNS_RELAY_REQUEST_TIMEOUT_MS = 10_000;
 // 100 tokens — a few KB at most); cap the body read at 1 MiB (the fleet's
 // small-JSON precedent) so an oversized relay body cannot be buffered whole.
 const APNS_RELAY_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
+// APNs error bodies are tiny JSON documents ({"reason": "..."}); cap the
+// direct-mode body read at the same 1 MiB as the relay path so an oversized
+// direct response cannot be buffered whole — the 30s deadline below bounds
+// time, not bytes.
+const APNS_DIRECT_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
 const APNS_DIRECT_REQUEST_TIMEOUT_MS = 30_000;
 
 // AbortController + explicit timer (the template-runtime.js pattern in this
@@ -483,17 +488,39 @@ export const createApnsRuntime = (deps) => {
 
       let status = 0;
       let responseBody = '';
+      let responseBodyBytes = 0;
+      let responseOverflow = false;
       req.on('response', (resHeaders) => {
         status = Number(resHeaders[':status']) || 0;
       });
       req.setEncoding('utf8');
       req.on('data', (chunk) => {
-        responseBody += chunk;
+        if (responseOverflow) return;
+        const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        responseBodyBytes += Buffer.byteLength(text, 'utf8');
+        if (responseBodyBytes > APNS_DIRECT_RESPONSE_MAX_BYTES) {
+          // Overflow: drop the buffered body (a partial body is never
+          // authoritative — in particular it must not trigger dead-token
+          // removal) and settle through the existing error terminal
+          // handler by destroying the request.
+          responseOverflow = true;
+          responseBody = '';
+          if (typeof req.destroy === 'function') {
+            req.destroy(new Error(`APNs response body exceeded ${APNS_DIRECT_RESPONSE_MAX_BYTES} bytes`));
+          }
+          return;
+        }
+        responseBody += text;
       });
       let terminal = false;
       req.on('end', async () => {
         terminal = true;
         clearTimeout(timeout);
+        if (responseOverflow) {
+          console.warn(`[APNs] push failed status=${status} reason=unknown (response body exceeded ${APNS_DIRECT_RESPONSE_MAX_BYTES} bytes)`);
+          resolve();
+          return;
+        }
         if (status === 200) {
           resolve();
           return;
