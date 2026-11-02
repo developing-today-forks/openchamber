@@ -184,15 +184,25 @@ describe('ui-passkeys store durability', () => {
     expect(siblingsMatching(storeFile, '.tmp-')).toEqual([]);
   });
 
-  it('treats an empty file as a missing store without preserving it', () => {
+  it('initializes an existing empty file in place so the userID stays stable', () => {
     const dir = fs.mkdtempSync(path.join(dataDir, 'empty-'));
     const storeFile = path.join(dir, 'ui-passkeys.json');
     fs.writeFileSync(storeFile, '');
     const controller = createController(storeFile);
 
     expect(controller.listPasskeys(requestFor())).toEqual([]);
-    expect(fs.readFileSync(storeFile, 'utf8')).toBe('');
+    // The empty file holds no bytes worth preserving, so no corrupt
+    // sibling appears; the fresh store is persisted in place instead,
+    // and a later load reuses the persisted userID rather than
+    // inventing a new one.
+    const initialized = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+    expect(typeof initialized.userID).toBe('string');
+    expect(initialized.userID.length).toBeGreaterThan(0);
+    expect(initialized.passkeys).toEqual([]);
     expect(siblingsMatching(storeFile, '.corrupt-')).toEqual([]);
+    const secondController = createController(storeFile);
+    expect(secondController.listPasskeys(requestFor())).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(storeFile, 'utf8')).userID).toBe(initialized.userID);
   });
 
   it('preserves a corrupt store before overwriting it instead of silently discarding passkeys', () => {

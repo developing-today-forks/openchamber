@@ -181,6 +181,20 @@ export const createUiPasskeys = ({
     passkeys: [],
   });
 
+  // An existing empty file reads as missing under the durable-store
+  // contract, but unlike a preserved corrupt file it is still on disk,
+  // so the existence check in loadStore must not suppress persisting
+  // the fresh store: otherwise every load invents a new userID and a
+  // registration begun in one load can be finished under another.
+  const storeFileIsEmpty = () => {
+    try {
+      const raw = storeFs.readFileSync(storeFile, 'utf8');
+      return typeof raw === 'string' && raw.trim() === '';
+    } catch {
+      return false;
+    }
+  };
+
   const loadStore = () => {
     let store = createEmptyStore();
 
@@ -213,7 +227,7 @@ export const createUiPasskeys = ({
       return store;
     }
 
-    if (!storeFs.existsSync(storeFile)) {
+    if (!storeFs.existsSync(storeFile) || storeFileIsEmpty()) {
       persistStore(store);
     }
 
