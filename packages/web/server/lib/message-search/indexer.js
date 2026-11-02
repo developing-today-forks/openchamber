@@ -19,6 +19,9 @@ import { combineAbortSignals } from '../shared/bounded-fetch.js';
 
 const PAGE_SIZE = 100;
 const SESSION_PAGE_SIZE = 200;
+// A cursor walk must always end: a repeated cursor or this many full
+// pages stops it (the house cap order: GitLab/Linear walks cap at 20).
+const MAX_PAGES_PER_WALK = 20;
 const LIVE_DEBOUNCE_MS = 1_500;
 const INDEXER_READ_TIMEOUT_MS = 5_000;
 const BACKFILL_PAUSE_MS = 25;
@@ -207,6 +210,8 @@ export const createMessageSearchIndexer = ({
       // the start each time and keep no cursor.
       let cursor = revertId ? null : (role === 'user' ? readingSession?.user_cursor : readingSession?.assistant_cursor) ?? null;
       let anchor = role === 'user' ? readingSession?.user_anchor : readingSession?.assistant_anchor;
+      const seenCursors = new Set();
+      let pages = 0;
       for (;;) {
         let page;
         try {
@@ -257,6 +262,17 @@ export const createMessageSearchIndexer = ({
           store.setCursor(sessionId, role, next, anchor);
         }
         if (!next || records.length < pageSize) break;
+        pages += 1;
+        if (next === cursor || seenCursors.has(next)) {
+          logger.warn?.(`[message-search] message pagination for session ${sessionId} (${role}) repeated a cursor; stopping the walk`);
+          break;
+        }
+        if (pages >= MAX_PAGES_PER_WALK) {
+          logger.warn?.(`[message-search] message pagination for session ${sessionId} (${role}) hit the ${MAX_PAGES_PER_WALK}-page cap; stopping the walk`);
+          break;
+        }
+        if (cursor) seenCursors.add(cursor);
+        seenCursors.add(next);
         cursor = next;
       }
     }
@@ -321,7 +337,10 @@ export const createMessageSearchIndexer = ({
     const client = createClient('');
     const listed = new Map();
     let cursor = null;
+    let listComplete = false;
     try {
+      const seenCursors = new Set();
+      let pages = 0;
       for (;;) {
         const page = sessionPageSchema.parse(await readWithDeadline((options) => client.session.list({ parentID: null, limit: SESSION_PAGE_SIZE, ...(cursor ? { cursor } : { order: 'desc' }) }, options)));
         for (const record of page.data) {
@@ -329,7 +348,21 @@ export const createMessageSearchIndexer = ({
           if (session.success && !session.data.parentID) listed.set(session.data.id, session.data);
         }
         const next = page.cursor?.next ?? null;
-        if (!next || page.data.length < SESSION_PAGE_SIZE) break;
+        if (!next || page.data.length < SESSION_PAGE_SIZE) {
+          listComplete = true;
+          break;
+        }
+        pages += 1;
+        if (next === cursor || seenCursors.has(next)) {
+          logger.warn?.('[message-search] session list pagination repeated a cursor; stopping the backfill walk with a partial list');
+          break;
+        }
+        if (pages >= MAX_PAGES_PER_WALK) {
+          logger.warn?.(`[message-search] session list pagination hit the ${MAX_PAGES_PER_WALK}-page cap; stopping the backfill walk with a partial list`);
+          break;
+        }
+        if (cursor) seenCursors.add(cursor);
+        seenCursors.add(next);
         cursor = next;
       }
     } catch (error) {
@@ -337,8 +370,13 @@ export const createMessageSearchIndexer = ({
       return;
     }
     if (run !== backfillRun || stopped) return;
-    for (const id of store.sessionIds()) {
-      if (!listed.has(id)) store.deleteSession(id);
+    // Only a complete list replaces the known set: a walk stopped by the
+    // repeated-cursor guard or the page cap read a partial list, and a
+    // partial list must not delete sessions it never reached.
+    if (listComplete) {
+      for (const id of store.sessionIds()) {
+        if (!listed.has(id)) store.deleteSession(id);
+      }
     }
     let queued = 0;
     for (const session of listed.values()) {

@@ -462,6 +462,95 @@ describe.skipIf(!open)('message search index', () => {
     expect(listCalls).toBe(0);
   });
 
+  it('settles a sync whose message pages repeat the same cursor', async () => {
+    fake.session('a');
+    const warnings = [];
+    let userCalls = 0;
+    const client = {
+      session: fake.client.session,
+      message: {
+        list: async ({ type }) => {
+          if (type !== 'user') return { data: [], cursor: {} };
+          userCalls += 1;
+          return {
+            data: [
+              { id: 'u1', type: 'user', text: 'looping words one', time: { created: 1001 } },
+              { id: 'u2', type: 'user', text: 'looping words two', time: { created: 1002 } },
+            ],
+            cursor: { next: 'loop-cursor' },
+          };
+        },
+      },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: (...args) => warnings.push(args) } });
+    await local.syncSession('a', '');
+    expect(userCalls).toBe(2);
+    expect(warnings.some((args) => String(args[0]).includes('repeated a cursor'))).toBe(true);
+    expect(search('looping').map((hit) => hit.id)).toEqual(['u2', 'u1']);
+  });
+
+  it('caps a sync whose message pages keep returning distinct cursors', async () => {
+    fake.session('a');
+    const warnings = [];
+    let userCalls = 0;
+    const client = {
+      session: fake.client.session,
+      message: {
+        list: async ({ type }) => {
+          if (type !== 'user') return { data: [], cursor: {} };
+          userCalls += 1;
+          const base = userCalls * 10;
+          return {
+            data: [
+              { id: `u${base}`, type: 'user', text: 'capped words first', time: { created: 1000 + base } },
+              { id: `u${base + 1}`, type: 'user', text: 'capped words second', time: { created: 1000 + base + 1 } },
+            ],
+            cursor: { next: `cursor-${userCalls}` },
+          };
+        },
+      },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: (...args) => warnings.push(args) } });
+    await local.syncSession('a', '');
+    expect(userCalls).toBe(20);
+    expect(warnings.some((args) => String(args[0]).includes('page cap'))).toBe(true);
+    expect(search('capped')).toHaveLength(40);
+  });
+
+  it('finishes a backfill whose session list repeats a cursor, without deleting sessions from the partial list', async () => {
+    fake.session('stale');
+    fake.user('stale', 'u1', 'stale words kept');
+    await backfill();
+    expect(search('stale')).toHaveLength(1);
+
+    const warnings = [];
+    let listCalls = 0;
+    const listedSessions = Array.from({ length: 200 }, (_, i) => ({ id: `loop${i}`, title: `Loop ${i}`, location: { directory: `/repo/loop${i}` }, time: { created: 1000, updated: 1000 } }));
+    const byId = new Map(listedSessions.map((session) => [session.id, session]));
+    const client = {
+      session: {
+        get: async ({ sessionID }) => byId.get(sessionID) ?? fake.client.session.get({ sessionID }),
+        list: async () => {
+          listCalls += 1;
+          return { data: listedSessions, cursor: { next: 'loop-cursor' } };
+        },
+        message: fake.client.session.message,
+      },
+      message: { list: async () => ({ data: [], cursor: {} }) },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: (...args) => warnings.push(args) } });
+    local.onConnected();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await local.idle();
+    expect(listCalls).toBe(2);
+    expect(warnings.some((args) => String(args[0]).includes('repeated a cursor'))).toBe(true);
+    // The sessions the partial walk did read were queued and synced...
+    expect(local.status().backfill.state).toBe('done');
+    expect(store.counts().sessions).toBe(201);
+    // ...and the session the partial list never mentioned was not deleted.
+    expect(search('stale').map((hit) => hit.id)).toEqual(['u1']);
+  });
+
   it('does not mark a session synced when the revert-boundary lookup times out', async () => {
     fake.session('a', { revert: { messageID: 'u2' } });
     fake.user('a', 'u1', 'keep this request');
