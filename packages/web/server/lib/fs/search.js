@@ -1,3 +1,5 @@
+import { StringDecoder } from 'node:string_decoder';
+
 import { parseBoundedIntWithDefault } from '../shared/parse-int.js';
 
 const FILE_SEARCH_MAX_CONCURRENCY = 5;
@@ -163,6 +165,7 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
               });
 
               let stdout = '';
+              const stdoutDecoder = new StringDecoder('utf8');
               let settled = false;
               let timeout = null;
               const finish = (value) => {
@@ -182,8 +185,8 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
                 }, gitCheckIgnoreTimeoutMs);
               }
 
-              child.stdout.on('data', (data) => { stdout += data.toString(); });
-              child.on('close', () => finish(stdout));
+              child.stdout.on('data', (data) => { stdout += stdoutDecoder.write(data); });
+              child.on('close', () => finish(stdout + stdoutDecoder.end()));
               child.on('error', () => finish(''));
             });
 

@@ -9,6 +9,7 @@ import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
 import crypto from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 import { fingerprintRemoteUrl } from '../source-control/url-redaction.js';
 import { readWorktreeDirectorySetting } from '../opencode/shared.js';
 import { readBoundedFile } from '../shared/bounded-file-read.js';
@@ -3040,6 +3041,7 @@ const listUntrackedFilesBounded = async (repoRoot, dirPath, limit) => {
       stdio: ['ignore', 'pipe', 'ignore'],
     });
     const paths = [];
+    const decoder = new StringDecoder('utf8');
     let pending = '';
     let truncated = false;
     let settled = false;
@@ -3067,7 +3069,7 @@ const listUntrackedFilesBounded = async (repoRoot, dirPath, limit) => {
     child.stdout.on('data', (chunk) => {
       armStallTimer();
       if (truncated) return;
-      pending += chunk.toString('utf8');
+      pending += decoder.write(chunk);
       const records = pending.split('\0');
       pending = records.pop() ?? '';
       for (const record of records) {
@@ -3091,6 +3093,7 @@ const listUntrackedFilesBounded = async (repoRoot, dirPath, limit) => {
         finish(new Error(`git ls-files exited with code ${code} for ${dirPath}`));
         return;
       }
+      pending += decoder.end();
       if (pending) paths.push(pending);
       finish();
     });
