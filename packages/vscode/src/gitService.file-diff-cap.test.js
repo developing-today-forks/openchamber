@@ -159,4 +159,45 @@ describe('VS Code getGitFileDiff working-tree size cap (#1057)', () => {
     expect(statCalls).toBe(0);
     expect(readFileCalls).toBe(0);
   });
+
+  it('answers file_too_large for an over-cap index blob read as the original', async () => {
+    const dir = makeRepo();
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'x'.repeat(MAX_FILE_DIFF_WORKING_TREE_BYTES + 1));
+    runGit(dir, ['add', 'big.txt']);
+    runGit(dir, ['commit', '-m', 'big']);
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'small edit\n');
+
+    const result = await getGitFileDiff(dir, 'big.txt', false);
+
+    expect(result.kind).toBe('unavailable');
+    expect(result.reason).toBe('file_too_large');
+  });
+
+  it('answers file_too_large for an over-cap HEAD blob on a staged diff', async () => {
+    const dir = makeRepo();
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'x'.repeat(MAX_FILE_DIFF_WORKING_TREE_BYTES + 1));
+    runGit(dir, ['add', 'big.txt']);
+    runGit(dir, ['commit', '-m', 'big']);
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'small edit\n');
+    runGit(dir, ['add', 'big.txt']);
+
+    const result = await getGitFileDiff(dir, 'big.txt', true);
+
+    expect(result.kind).toBe('unavailable');
+    expect(result.reason).toBe('file_too_large');
+  });
+
+  it('still diffs a committed blob at exactly the cap', async () => {
+    const dir = makeRepo();
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'x'.repeat(MAX_FILE_DIFF_WORKING_TREE_BYTES));
+    runGit(dir, ['add', 'big.txt']);
+    runGit(dir, ['commit', '-m', 'big']);
+    fs.writeFileSync(path.join(dir, 'big.txt'), 'small edit\n');
+
+    const result = await getGitFileDiff(dir, 'big.txt', false);
+
+    expect(result.kind).toBe('file-diff');
+    expect(result.original).toHaveLength(MAX_FILE_DIFF_WORKING_TREE_BYTES);
+    expect(result.modified).toBe('small edit\n');
+  });
 });

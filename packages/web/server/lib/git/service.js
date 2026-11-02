@@ -4048,6 +4048,30 @@ export async function readFileDiffWorkingTreeFile(absolutePath, filePath, maxByt
   throw error;
 }
 
+// Size of a git object (HEAD or index blob) without reading its content,
+// or null when the object cannot be sized (missing path, not a blob): the
+// caller's existing git.show flow decides what a missing object means.
+const gitBlobSize = async (git, spec) => {
+  try {
+    const raw = await git.raw(['cat-file', '-s', spec]);
+    const size = Number.parseInt(String(raw).trim(), 10);
+    return Number.isFinite(size) ? size : null;
+  } catch {
+    return null;
+  }
+};
+
+// The non-image git.show reads in getFileDiff buffer the whole blob, so an
+// over-cap committed or staged blob is rejected from its cat-file size
+// before any content is read, with the same coded error as the
+// working-tree cap (the route maps it to HTTP 413).
+const assertGitBlobWithinFileDiffCap = async (git, spec, filePath) => {
+  const size = await gitBlobSize(git, spec);
+  if (size !== null && size > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+    throw createFileDiffTooLargeError(filePath);
+  }
+};
+
 function isImageFile(filePath) {
   const ext = filePath.split('.').pop()?.toLowerCase();
   return IMAGE_EXTENSIONS.includes(ext || '');
@@ -4202,9 +4226,13 @@ export async function getFileDiff(directory, { path: filePath, staged = false } 
         original = '';
       }
     } else {
+      await assertGitBlobWithinFileDiffCap(git, `HEAD:${repoPath}`, filePath);
       original = await git.show([`HEAD:${repoPath}`]);
     }
-  } catch {
+  } catch (error) {
+    if (error?.code === FILE_DIFF_TOO_LARGE_CODE) {
+      throw error;
+    }
     original = '';
   }
 
@@ -4222,6 +4250,7 @@ export async function getFileDiff(directory, { path: filePath, staged = false } 
           modified = `data:${mimeType};base64,${stdout.toString('base64')}`;
         }
       } else {
+        await assertGitBlobWithinFileDiffCap(git, `:${repoPath}`, filePath);
         modified = await git.show([`:${repoPath}`]);
       }
     } else {
