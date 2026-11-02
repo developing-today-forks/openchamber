@@ -2781,13 +2781,13 @@ export function registerGitHubRoutes(app, options = {}) {
         return res.json({ connected: true, repo: null, comments: [] });
       }
 
-      const result = await octokit.rest.issues.listComments({
+      const payload = await readPullContextCollection('issue comment', 'GitHub returned an invalid issue comment list', (page) => octokit.rest.issues.listComments({
         owner: repo.owner,
         repo: repo.repo,
         issue_number: number,
-        per_page: 100,
-      });
-      const payload = requireProviderArray(result?.data, 'GitHub returned an invalid issue comment list');
+        per_page: GITHUB_PR_CONTEXT_PAGE_SIZE,
+        page,
+      }));
       const comments = payload
         .map((comment) => requireGitHubComment(comment, 'GitHub returned an invalid issue comment'))
         .map((comment) => ({
