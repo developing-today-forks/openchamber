@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PERMISSION_MODES, isAutoAnsweringMode, isPermissionMode, toPermissionMode } from './modes.js';
-import { readBoundedResponseJson } from '../shared/response-body.js';
+import { readBoundedResponseText } from '../shared/response-body.js';
 
 const SETTINGS_KEY = 'permissionAutoAccept';
 const DEFAULT_MODE_SETTINGS_KEY = 'permissionDefaultMode';
@@ -206,7 +206,22 @@ export function createPermissionAutoAcceptRuntime({
       error.status = response.status;
       throw error;
     }
-    return readBoundedResponseJson(response, OPEN_CODE_RESPONSE_MAX_BYTES);
+    // The bounded JSON reader reports an over-cap body as null, and a
+    // null session record reads as "no parent" to the lineage walk: an
+    // over-cap ancestor would silently resolve the session to `ask`, and
+    // its permission would be ignored instead of retried and left for
+    // the user. Reject a capped body as a failed request instead; an
+    // invalid JSON body keeps the historical null.
+    const bounded = await readBoundedResponseText(response, OPEN_CODE_RESPONSE_MAX_BYTES);
+    if (bounded.tooLarge) {
+      throw new Error(`OpenCode response exceeded the ${OPEN_CODE_RESPONSE_MAX_BYTES}-byte cap`);
+    }
+    const text = bounded.text.charCodeAt(0) === 0xfeff ? bounded.text.slice(1) : bounded.text;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
   };
 
   const getSession = async (sessionId, directory) => {
