@@ -1039,8 +1039,10 @@ describe('OpenChamber control service', () => {
 
     const result = await service.execute('session.messages', { sessionId: 'ses_1', directory: '/repo', all: true });
     // MAX_PAGES_PER_WALK in service.js: the walk stops at the cap and
-    // returns the partial history instead of looping on fresh cursors.
+    // returns the partial history instead of looping on fresh cursors,
+    // flagged truncated so the partial history is not read as complete.
     expect(client.message.list).toHaveBeenCalledTimes(20);
+    expect(result.truncated).toBe(true);
     expect(result.messages).toHaveLength(20);
     expect(result.messages[0].id).toBe('msg_1');
     expect(result.messages[19].id).toBe('msg_20');

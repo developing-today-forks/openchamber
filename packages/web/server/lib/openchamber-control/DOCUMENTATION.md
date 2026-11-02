@@ -89,7 +89,8 @@ other.
   stop on an empty page, a missing or repeated cursor, or the
   `MAX_PAGES_PER_WALK` page cap, so a server that keeps handing out fresh
   cursors cannot loop them forever. Past the cap the message walk returns
-  the partial history collected so far and directory resolution returns
+  the partial history collected so far with `truncated: true` on the
+  `session.messages` result, and directory resolution returns
   null (unresolved), never a fabricated complete result.
 - Wait (CLI only; the agent tool refuses it) never treats an initial idle
   response as completion after dispatch. It requires observed activity or a
