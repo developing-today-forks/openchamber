@@ -1,8 +1,15 @@
 export const API_PROXY_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
+// Quota payloads are small JSON documents, so the quota surface caps its
+// response bodies far below the API-proxy cap (see #1298 / #1282).
+export const QUOTA_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
+
+const formatLimit = (maxBytes: number) =>
+  maxBytes % (1024 * 1024) === 0 ? `${maxBytes / (1024 * 1024)} MiB` : `${maxBytes} bytes`;
+
 export class ResponseBodyTooLargeError extends Error {
-  constructor() {
-    super('OpenCode API response exceeded the 16 MiB limit');
+  constructor(maxBytes: number = API_PROXY_RESPONSE_MAX_BYTES) {
+    super(`OpenCode API response exceeded the ${formatLimit(maxBytes)} limit`);
     this.name = 'ResponseBodyTooLargeError';
   }
 }
@@ -16,12 +23,15 @@ const cancelBody = (body: ReadableStream<Uint8Array> | null): void => {
   }
 };
 
-export const readBoundedResponseBody = async (response: Response): Promise<Uint8Array> => {
+export const readBoundedResponseBody = async (
+  response: Response,
+  maxBytes: number = API_PROXY_RESPONSE_MAX_BYTES,
+): Promise<Uint8Array> => {
   const declaredLength = response.headers.get('content-length')?.trim();
   const declaredByteLength = declaredLength && /^\d+$/.test(declaredLength) ? Number(declaredLength) : null;
-  if (declaredByteLength !== null && declaredByteLength > API_PROXY_RESPONSE_MAX_BYTES) {
+  if (declaredByteLength !== null && declaredByteLength > maxBytes) {
     cancelBody(response.body);
-    throw new ResponseBodyTooLargeError();
+    throw new ResponseBodyTooLargeError(maxBytes);
   }
 
   if (!response.body) return new Uint8Array();
@@ -35,13 +45,13 @@ export const readBoundedResponseBody = async (response: Response): Promise<Uint8
       if (done) break;
       if (!value) continue;
       const requiredBytes = totalBytes + value.byteLength;
-      if (requiredBytes > API_PROXY_RESPONSE_MAX_BYTES) {
+      if (requiredBytes > maxBytes) {
         void reader.cancel().catch(() => {});
-        throw new ResponseBodyTooLargeError();
+        throw new ResponseBodyTooLargeError(maxBytes);
       }
       if (requiredBytes > body.byteLength) {
         const capacity = Math.min(
-          API_PROXY_RESPONSE_MAX_BYTES,
+          maxBytes,
           Math.max(requiredBytes, body.byteLength === 0 ? 64 * 1024 : body.byteLength * 2),
         );
         const expanded = new Uint8Array(capacity);
@@ -56,4 +66,20 @@ export const readBoundedResponseBody = async (response: Response): Promise<Uint8
   }
 
   return body.subarray(0, totalBytes);
+};
+
+// Reads a response body as JSON under a byte cap, mirroring the
+// `response.json().catch(() => null)` shape the quota modules already use:
+// an over-cap body, a non-JSON body, and a parse failure all yield null, so
+// each caller's existing failure path produces its normal failure result
+// instead of a buffered whole-body parse. A leading UTF-8 BOM is stripped,
+// matching what `response.json()` accepts.
+export const readBoundedResponseJson = async (response: Response, maxBytes: number): Promise<unknown> => {
+  try {
+    const bytes = await readBoundedResponseBody(response, maxBytes);
+    const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, '');
+    return JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
 };
