@@ -405,11 +405,16 @@ const asNonEmptyString = (value: unknown): string | null => {
  * failure result. The web twin is readQuotaJson in
  * packages/web/server/lib/quota/utils/response-body.js.
  */
-const readQuotaJson = async (response: Response): Promise<unknown> => {
+type QuotaJsonValue = string | number | boolean | null | QuotaJsonValue[] | { [key: string]: QuotaJsonValue };
+
+const readQuotaJson = async (response: Response): Promise<QuotaJsonValue> => {
   // Test doubles pass a plain { ok, json } without a body; real responses
   // go through the bounded reader.
   if (!response.body) {
-    return response.json();
+    // SAFETY: only test doubles reach this fallback (a real Response always
+    // has a body); their json() returns an already-parsed JSON value, which
+    // is exactly the QuotaJsonValue shape.
+    return (await response.json()) as QuotaJsonValue;
   }
   const bytes = await readBoundedResponseBody(response, QUOTA_RESPONSE_MAX_BYTES);
   const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, '');
