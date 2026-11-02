@@ -8,11 +8,14 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-const streamedResponse = (chunkText: string, repeats: number) => {
-  const encoder = new TextEncoder();
+const streamedResponse = (body: string, chunkCount: number) => {
+  const bytes = new TextEncoder().encode(body);
+  const chunkSize = Math.ceil(bytes.length / chunkCount);
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      for (let i = 0; i < repeats; i += 1) controller.enqueue(encoder.encode(chunkText));
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        controller.enqueue(bytes.subarray(offset, offset + chunkSize));
+      }
       controller.close();
     },
   });
@@ -28,8 +31,14 @@ describe('OpenCode Go quota', () => {
   });
 
   it('fails an over-cap streamed usage response instead of parsing it whole', async () => {
-    // 20 x 64 KiB = 1.25 MiB streamed with no content-length, over the 1 MiB quota cap.
-    globalThis.fetch = async () => streamedResponse('x'.repeat(64 * 1024), 20);
+    // A valid usage document padded past the cap with leading whitespace
+    // (which JSON permits), streamed in 20 chunks with no content-length.
+    // The document parses successfully if it is read whole, so this test
+    // fails if the 1 MiB quota cap is removed — an invalid-JSON fixture
+    // could not distinguish the cap failure from a parse failure.
+    const padding = ' '.repeat(1_280 * 1024);
+    const usage = JSON.stringify({ usage: { rolling: { percent: 25, resetsAt: 1_893_456_000_000 } } });
+    globalThis.fetch = async () => streamedResponse(`${padding}${usage}`, 20);
     await assert.rejects(
       fetchOpenCodeGoUsage({ apiKey: 'test-key', consoleKey: false }),
       /could not be parsed/,

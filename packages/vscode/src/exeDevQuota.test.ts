@@ -31,10 +31,19 @@ describe('exe.dev quota', () => {
 
 describe('exe.dev quota body cap', () => {
   it('fails an over-cap streamed body with the normal parse failure', async () => {
-    const chunk = new TextEncoder().encode('x'.repeat(64 * 1024));
+    // A valid usage document padded past the cap with leading whitespace
+    // (which JSON permits), streamed in 20 chunks with no content-length.
+    // The document parses successfully if it is read whole, so this test
+    // fails if the 1 MiB quota cap is removed — an invalid-JSON fixture
+    // could not distinguish the cap failure from a parse failure.
+    const body = `${' '.repeat(1_280 * 1024)}${JSON.stringify(payload)}`;
+    const bytes = new TextEncoder().encode(body);
+    const chunkSize = Math.ceil(bytes.length / 20);
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
-        for (let i = 0; i < 20; i += 1) controller.enqueue(chunk);
+        for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+          controller.enqueue(bytes.subarray(offset, offset + chunkSize));
+        }
         controller.close();
       },
     });
