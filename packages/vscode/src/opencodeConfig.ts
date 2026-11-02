@@ -16,6 +16,7 @@ import {
   type ParseError,
 } from 'jsonc-parser';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
+import { readBoundedResponseText } from '../../web/server/lib/shared/response-body.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
 import { toLoadablePluginSpec } from '../../web/server/lib/opencode/loadable-plugin-spec.js';
 import {
@@ -626,6 +627,8 @@ const getPrimaryUserConfigPath = (userPaths: string[]): string => {
 };
 
 const INVALID_JSONC = 'INVALID_JSONC';
+const CONFIG_FILE_TOO_LARGE = 'CONFIG_FILE_TOO_LARGE';
+const MAX_CONFIG_FILE_BYTES = 4 * 1024 * 1024;
 
 const formatJsoncParseError = (filePath: string, errors: ParseError[]): string => {
   const first = errors.length > 0 ? errors[0] : null;
@@ -635,8 +638,39 @@ const formatJsoncParseError = (filePath: string, errors: ParseError[]): string =
   return `OpenCode configuration at ${filePath} contains invalid JSONC and cannot be loaded safely${location}`;
 };
 
-const isInvalidJsoncError = (error: unknown): error is Error & { code: string } =>
-  Boolean(error && typeof error === 'object' && 'code' in error && error.code === INVALID_JSONC);
+const isConfigReadError = (error: unknown): error is Error & { code: string } =>
+  Boolean(error && typeof error === 'object' && 'code' in error
+    && (error.code === INVALID_JSONC || error.code === CONFIG_FILE_TOO_LARGE));
+
+const isConfigFileTooLargeError = (error: unknown): error is Error & { code: string } =>
+  Boolean(error && typeof error === 'object' && 'code' in error && error.code === CONFIG_FILE_TOO_LARGE);
+
+const readConfigFileContent = (filePath: string): string => {
+  // The stat is only a pre-read size gate. When it cannot answer (the file
+  // vanished after the exists check, or the filesystem view is partial), the
+  // read itself is the authority: fall through and gate on the bytes read
+  // instead of failing a config that existsSync just confirmed.
+  let statSize: number | null = null;
+  try {
+    statSize = fs.statSync(filePath).size;
+  } catch {
+    statSize = null;
+  }
+  if (statSize !== null && statSize > MAX_CONFIG_FILE_BYTES) {
+    throw codedError(
+      `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
+      CONFIG_FILE_TOO_LARGE,
+    );
+  }
+  const content = fs.readFileSync(filePath, 'utf8');
+  if (statSize === null && Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) {
+    throw codedError(
+      `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
+      CONFIG_FILE_TOO_LARGE,
+    );
+  }
+  return content;
+};
 
 // Comment-only / whitespace-only files parse to undefined with nothing but
 // ValueExpected. Any other error means real content we failed to understand
@@ -664,7 +698,7 @@ const parseConfigObject = (content: string, filePath: string): Record<string, un
 
 const readConfigFile = (filePath?: string | null): Record<string, unknown> => {
   if (!filePath || !fs.existsSync(filePath)) return {};
-  const content = fs.readFileSync(filePath, 'utf8');
+  const content = readConfigFileContent(filePath);
   const normalized = content.trim();
   if (!normalized) return {};
   // Refuse partial jsonc-parser trees. Ignoring errors previously let mutations
@@ -699,7 +733,7 @@ const readConfigLayer = (filePath?: string | null): {
   try {
     return { config: readConfigFile(filePath), error: null };
   } catch (error) {
-    if (isInvalidJsoncError(error)) {
+    if (isConfigReadError(error)) {
       console.error(error.message);
       return { config: {}, error };
     }
@@ -1069,10 +1103,24 @@ const writeConfig = (config: Record<string, unknown>, filePath: string = CONFIG_
   let existingParse: ConfigParseResult | null = null;
   if (fs.existsSync(filePath)) {
     // Defense in depth: never overwrite a file we cannot fully parse.
-    existingRaw = fs.readFileSync(filePath, 'utf8');
+    existingRaw = readConfigFileContent(filePath);
     if (existingRaw.trim()) {
       existingParse = parseConfigResult(existingRaw.trim(), filePath);
     }
+  }
+  // A JSON round-trip normalizes the config at the write boundary: it drops
+  // `undefined` values exactly like the serialized write would.
+  const desired: JsonValue = JSON.parse(JSON.stringify(config));
+  const content = buildConfigFileContent(desired, existingRaw, existingParse);
+  // Never save a config the read gate would refuse to load: validate the
+  // final serialized size before backing up or replacing the file.
+  if (Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) {
+    throw codedError(
+      `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be saved safely`,
+      CONFIG_FILE_TOO_LARGE,
+    );
+  }
+  if (fs.existsSync(filePath)) {
     const backupFile = `${filePath}.openchamber.backup`;
     try {
       fs.copyFileSync(filePath, backupFile);
@@ -1081,10 +1129,7 @@ const writeConfig = (config: Record<string, unknown>, filePath: string = CONFIG_
     }
   }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  // A JSON round-trip normalizes the config at the write boundary: it drops
-  // `undefined` values exactly like the serialized write would.
-  const desired: JsonValue = JSON.parse(JSON.stringify(config));
-  writeFileAtomic(filePath, buildConfigFileContent(desired, existingRaw, existingParse));
+  writeFileAtomic(filePath, content);
 };
 
 const codedError = (message: string, code: string): Error & { code: string } => {
@@ -1437,9 +1482,14 @@ export const listPluginDirFiles = (workingDirectory?: string): PluginFile[] => {
   return files.sort((a, b) => `${a.scope}:${a.fileName}`.localeCompare(`${b.scope}:${b.fileName}`));
 };
 
+export const MAX_PLUGIN_FILE_BYTES = 1024 * 1024;
+
 export const readPluginDirFile = (id: string, workingDirectory?: string): { fileName: string; scope: PluginScope; content: string } | null => {
   const target = getPluginFileTarget(id, workingDirectory);
   if (!fs.existsSync(target.filePath)) return null;
+  if (fs.statSync(target.filePath).size > MAX_PLUGIN_FILE_BYTES) {
+    throw codedError(`Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`, 'PLUGIN_FILE_TOO_LARGE');
+  }
   return {
     fileName: target.fileName,
     scope: target.scope,
@@ -1474,6 +1524,10 @@ type NpmLookupResult =
   | { ok: true; latest: string | null; versions: string[] }
   | { ok: false; status: number | 'network'; error: string };
 
+// Keep this in sync with NPM_PACKUMENT_MAX_BYTES in packages/web/server/lib/opencode/npm-registry.js.
+// Packuments can be large, and this lookup only needs the latest tag and version keys.
+const NPM_PACKUMENT_MAX_BYTES = 16 * 1024 * 1024;
+
 const npmInfoCache = new Map<string, { fetchedAt: number; payload: NpmLookupResult }>();
 const npmInfoInFlight = new Map<string, Promise<NpmLookupResult>>();
 const NPM_CACHE_TTL_MS = 3_600_000;
@@ -1505,7 +1559,11 @@ const lookupNpmPackage = async (name: string): Promise<NpmLookupResult> => {
       signal: AbortSignal.timeout(5000),
     });
     if (response.ok) {
-      const data = await response.json() as { versions?: unknown; 'dist-tags'?: { latest?: unknown } };
+      const bounded = await readBoundedResponseText(response, NPM_PACKUMENT_MAX_BYTES);
+      if (bounded.tooLarge) {
+        return { ok: false, status: 'network', error: 'Registry response exceeded size limit' };
+      }
+      const data = JSON.parse(bounded.text.replace(/^\uFEFF/, '')) as { versions?: unknown; 'dist-tags'?: { latest?: unknown } };
       return {
         ok: true,
         latest: typeof data['dist-tags']?.latest === 'string' ? data['dist-tags'].latest : null,
@@ -1939,7 +1997,8 @@ const readProjectConfigFiles = (workingDirectory?: string): Array<{ path: string
         if (!fs.existsSync(filePath)) continue;
         try {
           files.push({ path: filePath, config: readConfigFile(filePath) });
-        } catch {
+        } catch (error) {
+          if (isConfigFileTooLargeError(error)) throw error;
           // Skipped: an unreadable file can't be told apart from one without the key.
         }
       }
@@ -1977,7 +2036,23 @@ export const getAgentPermissions = (agentName: string, workingDirectory?: string
   };
 };
 
-const parseMdFile = (filePath: string): { frontmatter: Record<string, unknown>; body: string } => {
+// Agent, command, skill and snippet markdown files are hand-maintained;
+// nothing bounds their on-disk size, so never buffer one whole past this cap
+// (same 4 MiB precedent as MD_FILE_MAX_BYTES in the web parser,
+// packages/web/server/lib/opencode/shared.js). Judged from stat before any
+// read: a file over the cap is refused with a coded error, never truncated.
+// Discovery walks that call this parser already skip a file whose parse
+// throws; single-entity reads surface the error to the caller.
+export const MD_FILE_MAX_BYTES = 4 * 1024 * 1024;
+
+export const parseMdFile = (filePath: string): { frontmatter: Record<string, unknown>; body: string } => {
+  const stats = fs.statSync(filePath);
+  if (stats.size > MD_FILE_MAX_BYTES) {
+    throw codedError(
+      `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${filePath}`,
+      'ERR_MD_FILE_TOO_LARGE',
+    );
+  }
   const content = fs.readFileSync(filePath, 'utf8');
   // The closing fence may end the file: an agent with no system prompt has
   // nothing after it.
@@ -3315,10 +3390,52 @@ export const getSkillSources = (
   };
 };
 
+// Skill supporting files are hand-maintained docs and scripts shipped with
+// third-party skills; nothing OpenChamber writes bounds their size, so the
+// bridge GET must never buffer an arbitrary one whole. Judged from stat
+// before any read (the house stat-gate pattern): a file over this cap is
+// refused, never read. 1 MiB matches the web twin's
+// SKILL_SUPPORTING_FILE_MAX_BYTES (packages/web/server/lib/opencode/shared.js).
+export const SKILL_SUPPORTING_FILE_MAX_BYTES = 1024 * 1024;
+export const SKILL_SUPPORTING_FILE_TOO_LARGE_CODE = 'skill_supporting_file_too_large';
+
 export const readSkillSupportingFile = (skillDir: string, relativePath: string): string | null => {
   const fullPath = path.join(skillDir, relativePath);
-  if (!fs.existsSync(fullPath)) return null;
-  return fs.readFileSync(fullPath, 'utf8');
+  let fd: number;
+  try {
+    // O_NONBLOCK stops open() from waiting on a FIFO. Regular files ignore it.
+    fd = fs.openSync(fullPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+  } catch (error) {
+    // SAFETY: fs.openSync failures are Node system errors that carry a string code;
+    // anything without ENOENT/ENOTDIR is rethrown untouched below.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw error;
+  }
+  try {
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile()) {
+      throw new Error(`Skill file is not a regular file: ${relativePath}`);
+    }
+    // Read at most the cap plus one byte from the same descriptor, so a
+    // file swapped in after the open can never be buffered whole.
+    const buffer = Buffer.alloc(SKILL_SUPPORTING_FILE_MAX_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const bytesRead = fs.readSync(fd, buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+      throw codedError(
+        `Skill file is too large to read: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`,
+        SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
+      );
+    }
+    return buffer.toString('utf8', 0, total);
+  } finally {
+    fs.closeSync(fd);
+  }
 };
 
 export const writeSkillSupportingFile = (skillDir: string, relativePath: string, content: string): void => {

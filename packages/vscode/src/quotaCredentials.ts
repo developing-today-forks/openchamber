@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fetchExeDevUsage } from './exeDevQuota';
+import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseJson } from './bounded-response-body';
 import { renameSyncWithRetry } from './bridge-atomic-write';
 
 export type ManagedProvider = 'exe-dev' | 'cursor' | 'zenmux';
@@ -104,7 +105,7 @@ export const validateCredential = async (provider: ManagedProvider, credential: 
   if (provider === 'cursor') {
     if (!credential.accessToken && credential.refreshToken) {
       const refresh = await fetch('https://api2.cursor.sh/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grant_type: 'refresh_token', client_id: 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB', refresh_token: credential.refreshToken }), signal: AbortSignal.timeout(15_000) });
-      const payload = await refresh.json().catch(() => null) as { access_token?: string } | null;
+      const payload = (await readBoundedResponseJson(refresh, QUOTA_RESPONSE_MAX_BYTES)) as { access_token?: string } | null;
       if (!refresh.ok || !payload?.access_token) throw new Error('Cursor authentication failed');
       credential.accessToken = payload.access_token;
     }

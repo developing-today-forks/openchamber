@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { OPENCODE_CONFIG_DIR } from './opencodeConfigPaths';
+import { OPENCODE_CONFIG_DIR, OPENCODE_DATA_DIR } from './opencodeConfigPaths';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -271,7 +271,6 @@ type ProviderResult = {
   lastSuccessAt?: number | null;
 };
 
-const OPENCODE_DATA_DIR = path.join(os.homedir(), '.local', 'share', 'opencode');
 
 const XAI_USAGE_ENDPOINT = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig';
 const XAI_ACCESS_EXPIRY_SKEW_MS = 120_000;
@@ -1165,10 +1164,11 @@ const resolveAntigravityAuth = (): GoogleAuthSource | null => {
       const account = (accounts[index] as Record<string, unknown> | undefined) ?? (accounts[0] as Record<string, unknown> | undefined);
       if (account?.refreshToken) {
         const refreshParts = parseGoogleRefreshToken(account.refreshToken);
+        if (!refreshParts.refreshToken) continue;
         return {
           sourceId: 'antigravity',
           sourceLabel: 'Antigravity',
-          refreshToken: refreshParts.refreshToken ?? undefined,
+          refreshToken: refreshParts.refreshToken,
           projectId: asNonEmptyString(account.projectId)
             ?? asNonEmptyString(account.managedProjectId)
             ?? refreshParts.projectId

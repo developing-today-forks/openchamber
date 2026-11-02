@@ -19,6 +19,8 @@ process.env.XDG_CONFIG_HOME = path.join(scratchConfigRoot, 'xdg');
 process.env.OPENCODE_CONFIG_DIR = '';
 
 const { handleConfigBridgeMessage } = await import('./bridge-config-runtime.ts');
+const { MAX_PLUGIN_FILE_BYTES } = await import('./opencodeConfig.ts');
+const { SKILL_SUPPORTING_FILE_MAX_BYTES } = await import('./opencodeConfig.ts');
 
 const tempRoots = [];
 const originalOpencodeConfig = process.env.OPENCODE_CONFIG;
@@ -215,6 +217,157 @@ describe('VS Code config bridge plugin parity', () => {
     expect(read?.data).toEqual({ fileName: 'demo-plugin.ts', scope: 'project', content: 'export default {}' });
   });
 
+  test('refuses over-limit plugin files on GET and PUT without reading or overwriting them', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-limit-'));
+    tempRoots.push(root);
+    const ctx = createCtx(root);
+    const fileName = 'large-plugin.ts';
+    const pluginPath = path.join(root, '.opencode', 'plugins', fileName);
+    const content = 'x'.repeat(MAX_PLUGIN_FILE_BYTES + 1);
+
+    fs.mkdirSync(path.dirname(pluginPath), { recursive: true });
+    fs.writeFileSync(pluginPath, content, 'utf8');
+    const listed = await handleConfigBridgeMessage({
+      id: 'list-large-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'list', directory: root },
+    }, ctx, deps);
+    const file = listed?.data?.files?.find((candidate) => candidate.fileName === fileName);
+    const readPaths = [];
+    const originalReadFileSync = fs.readFileSync;
+    let read;
+    let updated;
+
+    fs.readFileSync = (...args) => {
+      readPaths.push(args[0]);
+      return originalReadFileSync.apply(fs, args);
+    };
+
+    try {
+      read = await handleConfigBridgeMessage({
+        id: 'read-large-file',
+        type: 'api:config/plugins',
+        payload: { method: 'GET', target: 'file', directory: root, pluginId: file?.id },
+      }, ctx, deps);
+      updated = await handleConfigBridgeMessage({
+        id: 'update-large-file',
+        type: 'api:config/plugins',
+        payload: {
+          method: 'PUT',
+          target: 'file',
+          directory: root,
+          pluginId: file?.id,
+          body: { content: 'replacement' },
+        },
+      }, ctx, deps);
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
+
+    const error = {
+      success: false,
+      error: `Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`,
+      code: 'PLUGIN_FILE_TOO_LARGE',
+    };
+    expect(read).toMatchObject({ id: 'read-large-file', type: 'api:config/plugins', ...error });
+    expect(updated).toMatchObject({ id: 'update-large-file', type: 'api:config/plugins', ...error });
+    expect(readPaths).not.toContain(pluginPath);
+    expect(fs.readFileSync(pluginPath, 'utf8')).toBe(content);
+  });
+
+  test('reads and updates plugin files exactly at the size limit', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-at-limit-'));
+    tempRoots.push(root);
+    const ctx = createCtx(root);
+    const fileName = 'at-limit-plugin.ts';
+    const content = 'x'.repeat(MAX_PLUGIN_FILE_BYTES);
+
+    const created = await handleConfigBridgeMessage({
+      id: 'create-at-limit-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'POST',
+        target: 'file',
+        directory: root,
+        body: { scope: 'project', fileName, content },
+      },
+    }, ctx, deps);
+    expect(created?.success).toBe(true);
+
+    const listed = await handleConfigBridgeMessage({
+      id: 'list-at-limit-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'list', directory: root },
+    }, ctx, deps);
+    const file = listed?.data?.files?.find((candidate) => candidate.fileName === fileName);
+    const pluginPath = path.join(root, '.opencode', 'plugins', fileName);
+
+    const read = await handleConfigBridgeMessage({
+      id: 'read-at-limit-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'file', directory: root, pluginId: file?.id },
+    }, ctx, deps);
+    expect(fs.statSync(pluginPath).size).toBe(MAX_PLUGIN_FILE_BYTES);
+    expect(read?.data).toEqual({ fileName, scope: 'project', content });
+
+    const updated = await handleConfigBridgeMessage({
+      id: 'update-at-limit-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'PUT',
+        target: 'file',
+        directory: root,
+        pluginId: file?.id,
+        body: { content },
+      },
+    }, ctx, deps);
+    expect(updated?.success).toBe(true);
+    expect(fs.readFileSync(pluginPath, 'utf8')).toBe(content);
+  });
+
+  test('keeps missing plugin files on the existing not-found path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-missing-'));
+    tempRoots.push(root);
+    const ctx = createCtx(root);
+    const fileName = 'missing-plugin.ts';
+
+    await handleConfigBridgeMessage({
+      id: 'create-missing-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'POST',
+        target: 'file',
+        directory: root,
+        body: { scope: 'project', fileName, content: 'export default {}' },
+      },
+    }, ctx, deps);
+    const listed = await handleConfigBridgeMessage({
+      id: 'list-missing-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'list', directory: root },
+    }, ctx, deps);
+    const file = listed?.data?.files?.find((candidate) => candidate.fileName === fileName);
+    fs.unlinkSync(path.join(root, '.opencode', 'plugins', fileName));
+
+    for (const method of ['GET', 'PUT']) {
+      const response = await handleConfigBridgeMessage({
+        id: `missing-${method.toLowerCase()}-file`,
+        type: 'api:config/plugins',
+        payload: {
+          method,
+          target: 'file',
+          directory: root,
+          pluginId: file?.id,
+          body: { content: 'replacement' },
+        },
+      }, ctx, deps);
+      expect(response).toMatchObject({
+        success: false,
+        error: 'Plugin file not found',
+      });
+    }
+  });
+
   test('updates and deletes user plugin entries from OPENCODE_CONFIG source', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-custom-config-'));
     tempRoots.push(root);
@@ -329,5 +482,163 @@ describe('VS Code config bridge plugin parity', () => {
       // v1 `enabled: false` becomes the inverse v2 `disabled: true`.
       disabled: true,
     });
+  });
+});
+
+describe('VS Code config bridge behavior AGENTS.md size gate', () => {
+  const agentsMdPath = path.join(scratchConfigRoot, 'xdg', 'opencode', 'AGENTS.md');
+  const CAP = 1024 * 1024;
+
+  const writeAgentsMd = (size) => {
+    fs.mkdirSync(path.dirname(agentsMdPath), { recursive: true });
+    fs.writeFileSync(agentsMdPath, 'x'.repeat(size), 'utf8');
+  };
+
+  afterEach(() => {
+    fs.rmSync(agentsMdPath, { force: true });
+  });
+
+  test('get refuses an over-cap AGENTS.md without returning its content', async () => {
+    writeAgentsMd(CAP + 1);
+    const ctx = createCtx(scratchConfigRoot);
+    const result = await handleConfigBridgeMessage({ id: 'get-big', type: 'api:behavior/agents-md:get' }, ctx, deps);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`maximum size of ${CAP} bytes`);
+    expect(result.data).toBeUndefined();
+  });
+
+  test('get returns an at-cap AGENTS.md byte-identically', async () => {
+    writeAgentsMd(CAP);
+    const ctx = createCtx(scratchConfigRoot);
+    const result = await handleConfigBridgeMessage({ id: 'get-cap', type: 'api:behavior/agents-md:get' }, ctx, deps);
+    expect(result.success).toBe(true);
+    expect(result.data.exists).toBe(true);
+    expect(result.data.content).toBe('x'.repeat(CAP));
+  });
+
+  test('save refuses multibyte content whose UTF-8 bytes exceed the cap', async () => {
+    const ctx = createCtx(scratchConfigRoot);
+    // 400,000 UTF-16 code units but 1,200,000 UTF-8 bytes: a length-based
+    // check would accept this and every later get would refuse it.
+    const content = '界'.repeat(400_000);
+    expect(content.length).toBeLessThan(CAP);
+    const result = await handleConfigBridgeMessage(
+      { id: 'save-multibyte-big', type: 'api:behavior/agents-md:save', payload: { content } },
+      ctx,
+      deps,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`maximum size of ${CAP} bytes`);
+    expect(fs.existsSync(agentsMdPath)).toBe(false);
+  });
+
+  test('save and get round-trip multibyte content under the byte cap', async () => {
+    const ctx = createCtx(scratchConfigRoot);
+    const content = '界'.repeat(300_000); // 900,000 UTF-8 bytes
+    const saved = await handleConfigBridgeMessage(
+      { id: 'save-multibyte-ok', type: 'api:behavior/agents-md:save', payload: { content } },
+      ctx,
+      deps,
+    );
+    expect(saved.success).toBe(true);
+
+    const loaded = await handleConfigBridgeMessage({ id: 'get-multibyte-ok', type: 'api:behavior/agents-md:get' }, ctx, deps);
+    expect(loaded.success).toBe(true);
+    expect(loaded.data.content).toBe(content);
+  });
+
+  test('get reports a missing AGENTS.md as not existing', async () => {
+    fs.rmSync(agentsMdPath, { force: true });
+    const ctx = createCtx(scratchConfigRoot);
+    const result = await handleConfigBridgeMessage({ id: 'get-missing', type: 'api:behavior/agents-md:get' }, ctx, deps);
+    expect(result).toEqual({
+      id: 'get-missing',
+      type: 'api:behavior/agents-md:get',
+      success: true,
+      data: { content: '', exists: false, path: agentsMdPath },
+    });
+  });
+});
+describe('VS Code config bridge skill supporting-file size gate (#1158)', () => {
+  const SKILL_FILE_CAP = SKILL_SUPPORTING_FILE_MAX_BYTES;
+
+  const createProjectSkill = (files) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-cap-'));
+    tempRoots.push(root);
+    const skillDir = path.join(root, '.opencode', 'skills', 'cap-test-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: cap-test-skill\ndescription: Size gate test skill\n---\n\nBody.\n',
+      'utf8',
+    );
+    for (const [name, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(skillDir, name), content, 'utf8');
+    }
+    return root;
+  };
+
+  const getSupportingFile = (root, filePath) => handleConfigBridgeMessage({
+    id: 'skill-file-get',
+    type: 'api:config/skills/files',
+    payload: { method: 'GET', name: 'cap-test-skill', filePath },
+  }, createCtx(root), deps);
+
+  test('refuses an over-cap supporting file with a clear too-large error', async () => {
+    const root = createProjectSkill({ 'big.txt': 'a'.repeat(SKILL_FILE_CAP + 1) });
+
+    const response = await getSupportingFile(root, 'big.txt');
+
+    expect(response?.success).toBe(false);
+    expect(response?.error).toContain('too large');
+    expect(response?.error).toContain(String(SKILL_FILE_CAP));
+  });
+
+  test('returns an at-cap supporting file byte-identically', async () => {
+    const content = 'a'.repeat(SKILL_FILE_CAP);
+    const root = createProjectSkill({ 'at-cap.txt': content });
+
+    const response = await getSupportingFile(root, 'at-cap.txt');
+
+    expect(response?.success).toBe(true);
+    expect(response?.data).toEqual({ content });
+  });
+
+  test('keeps the not-found shape for a missing supporting file', async () => {
+    const root = createProjectSkill({ 'small.txt': 'hello' });
+
+    const missing = await getSupportingFile(root, 'nope.txt');
+    expect(missing?.success).toBe(false);
+    expect(missing?.error).toContain('not found');
+
+    const small = await getSupportingFile(root, 'small.txt');
+    expect(small?.success).toBe(true);
+    expect(small?.data).toEqual({ content: 'hello' });
+  });
+
+  test('preserves supporting-file PUT and DELETE behavior', async () => {
+    const root = createProjectSkill({});
+
+    const mutateSupportingFile = (method, filePath, content) => handleConfigBridgeMessage({
+      id: 'skill-file-mutate',
+      type: 'api:config/skills/files',
+      payload: { method, name: 'cap-test-skill', filePath, content },
+    }, createCtx(root), deps);
+
+    const written = await mutateSupportingFile('PUT', 'nested/file.txt', 'hello');
+    expect(written?.success).toBe(true);
+    expect(written?.data).toEqual({ success: true });
+
+    const read = await getSupportingFile(root, 'nested/file.txt');
+    expect(read?.success).toBe(true);
+    expect(read?.data).toEqual({ content: 'hello' });
+
+    const deleted = await mutateSupportingFile('DELETE', 'nested/file.txt');
+    expect(deleted?.success).toBe(true);
+    expect(deleted?.data).toEqual({ success: true });
+
+    const afterDelete = await getSupportingFile(root, 'nested/file.txt');
+    expect(afterDelete?.success).toBe(false);
+    expect(afterDelete?.error).toContain('not found');
   });
 });

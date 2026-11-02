@@ -65,11 +65,14 @@ after(() => {
   fs.rmSync(temporaryQuotaDataDirectory, { recursive: true, force: true });
 });
 
-const mockResponse = (body: unknown, init: MockResponseInit = {}): Response => ({
-  ok: 'ok' in init ? init.ok! : true,
-  status: init.status ?? 200,
-  json: async () => body,
-} as unknown as Response);
+// A real Response, not a json()-only stand-in: quota modules that read the
+// body through the bounded reader need genuine headers/body streams, and a
+// faithful mock keeps every provider honest about the Fetch surface it uses.
+const mockResponse = (body: unknown, init: MockResponseInit = {}): Response =>
+  new Response(JSON.stringify(body), {
+    status: init.status ?? 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
 
 // Documented NeuralWatt payload from https://portal.neuralwatt.com/docs/api/quota.
 // plan="standard", kwh_included=20.0, kwh_used=13.9023.

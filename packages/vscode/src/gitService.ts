@@ -1557,7 +1557,14 @@ const worktreeStartCommandTimeoutMs = (): number => {
     return WORKTREE_START_COMMAND_TIMEOUT_MS;
   }
   const parsed = Number(raw);
-  return parsed > 0 ? parsed : WORKTREE_START_COMMAND_TIMEOUT_MS;
+  // The value feeds a raw setTimeout in runWorktreeStartCommand, which
+  // cannot honour more than 2^31-1 ms: a larger delay overflows Node's
+  // timer to ~1 ms and kills every start command instantly, so fall back
+  // to the default instead (the web reader in
+  // packages/web/server/lib/git/service.js is bounded the same way, #884).
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 2_147_483_647
+    ? parsed
+    : WORKTREE_START_COMMAND_TIMEOUT_MS;
 };
 
 const runWorktreeStartCommand = async (directory: string, command: string): Promise<{ success: boolean; message?: string; stdout?: string; stderr?: string }> => {
@@ -2782,6 +2789,19 @@ export async function getGitRangeFiles(
     .filter(Boolean);
 }
 
+// Working-tree reads for a file diff are capped at 20 MiB, the same limit
+// the git-show sides of this function already carry through the bridge git
+// exec runtime (GIT_EXEC_DEFAULT_MAX_OUTPUT_BYTES). An over-cap file answers
+// with the unavailable shape below; the webview turns it into a
+// GitPathUnavailableError and DiffView shows the too-large message.
+export const MAX_FILE_DIFF_WORKING_TREE_BYTES = 20 * 1024 * 1024;
+
+const fileDiffTooLarge = (filePath: string): GitPathUnavailable => ({
+  kind: 'unavailable',
+  reason: 'file_too_large',
+  message: `File is too large to diff: ${filePath} exceeds the 20 MiB working-tree limit for file diffs`,
+});
+
 /**
  * Get file diff with original and modified content
  */
@@ -2805,8 +2825,25 @@ export async function getGitFileDiff(
     };
   }
 
+  if (!staged) {
+    // The size gate runs ahead of the repository gate and any repo.show
+    // reads: for an untracked file repo.show throws before the in-repo
+    // gate below can run, and with no repository there is no gate at
+    // all, so an oversized file on either path used to fall through to
+    // the silent empty-diff fallback (#1065). A stat failure (e.g. a
+    // deleted file) falls through to the existing handling.
+    try {
+      const earlyStat = await vscode.workspace.fs.stat(vscode.Uri.file(path.join(directory, filePath)));
+      if (earlyStat.size > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+        return fileDiffTooLarge(filePath);
+      }
+    } catch {
+      // Fall through: the repo path and fallback decide the answer.
+    }
+  }
+
   const repo = await getRepository(directory);
-  
+
   if (repo) {
     try {
       // For staged files, get content from HEAD
@@ -2830,7 +2867,16 @@ export async function getGitFileDiff(
         modified = stagedResult.exitCode === 0 ? stagedResult.stdout : '';
       } else {
         const fileUri = vscode.Uri.file(path.join(directory, filePath));
+        const fileStat = await vscode.workspace.fs.stat(fileUri);
+        if (fileStat.size > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+          return fileDiffTooLarge(filePath);
+        }
         const modifiedBytes = await vscode.workspace.fs.readFile(fileUri);
+        // The file can grow between the stat and the read; never hand back
+        // more than the cap even when the stat said it fit.
+        if (modifiedBytes.byteLength > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+          return fileDiffTooLarge(filePath);
+        }
         modified = Buffer.from(modifiedBytes).toString('utf8');
       }
       
@@ -3617,11 +3663,19 @@ async function resolveBaseRefForLog(
 // unlimited, and a fractional value is rejected as not-an-integer, so an
 // invalid value must never pass through (#641). Normalizing here, in the
 // service, mirrors the web git service (#463).
-const normalizeMaxCount = (maxCount?: number): number => {
+//
+// A huge FINITE value needs a ceiling too (#1121): it is a valid integer,
+// so the #641 guard passed it straight to --max-count and the extension
+// host buffered the repository's entire history whole for one bridge
+// call. Legitimate callers ask for at most 100 (the UI's LOG_SIZE_OPTIONS
+// plus load-more steps), so 10,000 is generous headroom. Keep this value
+// in lockstep with the web log route's ceiling (#1120).
+export const MAX_LOG_COUNT = 10_000;
+export const normalizeMaxCount = (maxCount?: number): number => {
   if (maxCount === undefined || !Number.isInteger(maxCount) || maxCount <= 0) {
     return 50;
   }
-  return maxCount;
+  return Math.min(maxCount, MAX_LOG_COUNT);
 };
 
 /**

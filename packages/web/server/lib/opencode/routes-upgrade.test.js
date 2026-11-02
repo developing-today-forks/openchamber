@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { OPENCODE_LATEST_VERSION_MAX_BYTES, registerOpenCodeRoutes, setOpenCodeInfoDeadlineForTest } from './routes.js';
+import { OPENCODE_INFO_MAX_BYTES, OPENCODE_LATEST_VERSION_MAX_BYTES, registerOpenCodeRoutes, setOpenCodeInfoDeadlineForTest } from './routes.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -14,6 +14,21 @@ const jsonResponse = (payload, status = 200) => new Response(JSON.stringify(payl
   status,
   headers: { 'Content-Type': 'application/json' },
 });
+
+const oversizedInfoResponse = () => {
+  let cancelled = false;
+  let pulls = 0;
+  const response = new Response(new ReadableStream({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(pulls === 1 ? OPENCODE_INFO_MAX_BYTES : 1).fill(32));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  }), { headers: { 'Content-Type': 'application/json' } });
+  return { response, wasCancelled: () => cancelled };
+};
 
 const supportedCapability = { supported: true, manager: 'opencode', reason: null };
 
@@ -109,27 +124,37 @@ describe('OpenCode upgrade routes', () => {
   });
 
   it('never announces a newer version for a bundled binary: it updates with the desktop app', async () => {
+    const previousRegistry = process.env.npm_config_registry;
+    const previousUserConfig = process.env.npm_config_userconfig;
+    process.env.npm_config_userconfig = `${import.meta.dirname}/missing-test.npmrc`;
+    process.env.npm_config_registry = 'https://registry.npmjs.org';
     globalThis.fetch = vi.fn(async (url) => {
       if (String(url).includes('registry.npmjs.org')) return jsonResponse({ version: '2.0.3' });
       if (String(url).includes('api.github.com')) return jsonResponse({ tag_name: 'v2.0.3' });
       return jsonResponse({ version: '1.18.8', pid: 1, urls: [], paths: { tmp: '/tmp' } });
     });
     const { app } = createApp();
+    try {
+      const response = await request(app)
+        .get('/api/opencode/upgrade-status')
+        .expect(200);
 
-    const response = await request(app)
-      .get('/api/opencode/upgrade-status')
-      .expect(200);
-
-    expect(response.body).toEqual({
-      available: false,
-      currentVersion: '1.18.8',
-      latestVersion: '2.0.3',
-      upgrade: {
-        supported: false,
-        manager: 'openchamber',
-        reason: 'bundled',
-      },
-    });
+      expect(response.body).toEqual({
+        available: false,
+        currentVersion: '1.18.8',
+        latestVersion: '2.0.3',
+        upgrade: {
+          supported: false,
+          manager: 'openchamber',
+          reason: 'bundled',
+        },
+      });
+    } finally {
+      if (previousRegistry === undefined) delete process.env.npm_config_registry;
+      else process.env.npm_config_registry = previousRegistry;
+      if (previousUserConfig === undefined) delete process.env.npm_config_userconfig;
+      else process.env.npm_config_userconfig = previousUserConfig;
+    }
   });
 
   it('never claims an upgrade for a malformed version on either side', async () => {
@@ -255,17 +280,18 @@ describe('OpenCode version route probe deadlines (#796)', () => {
     setOpenCodeInfoDeadlineForTest(50);
     globalThis.fetch = vi.fn(async (input, init) => {
       if (String(input).endsWith('/api/info')) {
-        return {
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => {
-            // A real aborted response rejects its body read; the prompt
-            // answer must already be consumed by then.
-            if (init?.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-            return { version: '2.0.21', pid: 1, urls: [], paths: { tmp: '/tmp' } };
+        const body = JSON.stringify({ version: '2.0.21', pid: 1, urls: [], paths: { tmp: '/tmp' } });
+        const stream = new ReadableStream({
+          pull(controller) {
+            if (init?.signal?.aborted) {
+              controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+              return;
+            }
+            controller.enqueue(new TextEncoder().encode(body));
+            controller.close();
           },
-        };
+        });
+        return new Response(stream, { headers: { 'content-type': 'application/json' } });
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
       return jsonResponse({ version: '2.0.22' });
@@ -293,5 +319,27 @@ describe('OpenCode version route probe deadlines (#796)', () => {
     const { app } = createApp();
     const response = await request(app).get('/api/opencode/version').expect(200);
     expect(response.body).toEqual({ version: '2.0.21' });
+  });
+
+  it('does not treat an oversized /api/info body as a version answer', async () => {
+    const oversized = oversizedInfoResponse();
+    globalThis.fetch = vi.fn(async () => oversized.response);
+    const { app } = createApp();
+
+    const response = await request(app).get('/api/opencode/version').expect(200);
+
+    expect(response.body).toEqual({ version: null });
+    expect(oversized.wasCancelled()).toBe(true);
+  });
+
+  it('does not treat an oversized /api/info body as a healthy probe', async () => {
+    const oversized = oversizedInfoResponse();
+    globalThis.fetch = vi.fn(async () => oversized.response);
+    const { app } = createApp();
+
+    const response = await request(app).get('/api/opencode/health').expect(200);
+
+    expect(response.body).toEqual({ healthy: false });
+    expect(oversized.wasCancelled()).toBe(true);
   });
 });

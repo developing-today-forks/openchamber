@@ -5,6 +5,7 @@ import { runAsUserAction } from '../environment/refresh-scope.js';
 import { redactRemoteUrl } from '../source-control/url-redaction.js';
 import { parsePublicGitIdentityProfile, toPublicGitIdentityProfile } from './identity-storage.js';
 import { WorktreeCreationError, createWorktreeCreation, hasClientContributorAuthority } from './worktree-creation.js';
+import { MAX_GIT_LOG_COUNT } from './log-limits.js';
 
 const NETWORK_OPERATION_ID = /^[A-Za-z0-9_-]{1,200}$/;
 const toGitIdentitySummary = (identity) => identity ? {
@@ -27,20 +28,33 @@ const WORKTREE_INSTANCE_DISPOSE_TIMEOUT_MS = 5_000;
 // to its numeric options. Bare parseInt reinterpreted '10junk' as 10 and
 // let '-5' through, and Number + isFinite let '2.9' reach git as -U2.9,
 // which git rejects.
-// Diff context: a non-negative integer, else the 3-line default.
+// Diff context: a non-negative integer, else the 3-line default. Digits
+// alone are not enough (#1079): a 309-digit string parses to Infinity and a
+// merely huge one asks git for an absurd -U value, so the parsed number
+// must be a safe integer, clamped to a generous ceiling — 100k lines of
+// context covers a whole-file view of any file these endpoints
+// realistically serve. Oversized finite requests clamp instead of falling
+// back to 3: the UI's full-context callers ask for 1,000,000 lines
+// (FULL_CONTEXT_DIFF_LINES) and must still get a whole-file patch.
+const MAX_DIFF_CONTEXT_LINES = 100_000;
 const parseDiffContextLines = (value) => {
   const text = String(value ?? '');
-  return /^\d+$/.test(text) ? Number(text) : 3;
+  if (!/^\d+$/.test(text)) return 3;
+  const contextLines = Number(text);
+  return Number.isSafeInteger(contextLines) ? Math.min(contextLines, MAX_DIFF_CONTEXT_LINES) : 3;
 };
 
-// Log maxCount: a positive integer, else undefined so the service applies
-// its default. A negative must never reach git: --max-count=-5 asks git
-// for the repository's entire history.
+// Digits alone are not enough for log maxCount (#1120): a huge decimal string
+// can exceed JavaScript's safe integer range or ask git to return the entire
+// history. Unsafe or invalid values use the service default; safe values clamp
+// to the shared ceiling so the route and direct service callers stay bounded.
 const parseLogMaxCount = (value) => {
   const text = String(value ?? '');
   if (!/^\d+$/.test(text)) return undefined;
   const maxCount = Number(text);
-  return maxCount > 0 ? maxCount : undefined;
+  return Number.isSafeInteger(maxCount) && maxCount > 0
+    ? Math.min(maxCount, MAX_GIT_LOG_COUNT)
+    : undefined;
 };
 
 /**
@@ -112,7 +126,7 @@ export function registerGitRoutes(app, {
   // row or a nested repository, not a server fault.
   // The client splits a larger changeset into requests of this size.
   const GIT_DIFFS_MAX_PATHS = 1000;
-  const GIT_PATH_ERROR_STATUS = new Map([['path_not_found', 404], ['nested_repository', 422], ['untracked_directory', 422], ['file_too_large', 413]]);
+  const GIT_PATH_ERROR_STATUS = new Map([['path_not_found', 404], ['nested_repository', 422], ['untracked_directory', 422], ['file_too_large', 413], ['diff_too_large', 413]]);
   const sendGitPathError = (res, error) => {
     const status = GIT_PATH_ERROR_STATUS.get(error?.code);
     if (!status) return false;
@@ -1022,6 +1036,7 @@ export function registerGitRoutes(app, {
 
       res.json({ diff });
     } catch (error) {
+      if (sendGitPathError(res, error)) return;
       console.error('Failed to get git range diff:', error);
       res.status(500).json({ error: error.message || 'Failed to get git range diff' });
     }
@@ -1931,6 +1946,7 @@ export function registerGitRoutes(app, {
       });
       res.json({ diff });
     } catch (error) {
+      if (sendGitPathError(res, error)) return;
       res.status(500).json({ error: error.message || 'Failed to get commit diff' });
     }
   });

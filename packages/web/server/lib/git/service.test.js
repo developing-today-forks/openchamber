@@ -10,6 +10,8 @@ import { registerGitRoutes } from './routes.js';
 import { isUserAction } from '../environment/refresh-scope.js';
 import { normalizeGitOutputPath } from './output-path.js';
 import { configureProjectStartCommandSource } from '../opencode/project-start-command.js';
+import { killLiveTrees, liveTreeCount } from '../spaces/run-command.js';
+import { MAX_GIT_LOG_COUNT } from './log-limits.js';
 
 import {
   configureGitEnvironment,
@@ -69,6 +71,7 @@ import {
   listUntrackedPaths,
   getFileDiff,
   MAX_FILE_DIFF_WORKING_TREE_BYTES,
+  MAX_DIFF_OUTPUT_BYTES,
   readFileDiffWorkingTreeFile,
   hasLocalIdentity,
   validateWorktreeCreate,
@@ -198,6 +201,25 @@ async function createTempRepo() {
   return { tmpDir, git };
 }
 
+const fastImportEmptyCommits = (repository, count) => {
+  const commits = [];
+  for (let index = 1; index <= count; index += 1) {
+    const message = `commit ${index}`;
+    const parent = index > 1 ? `from :${index - 1}\n` : '';
+    commits.push(
+      `commit refs/heads/main\nmark :${index}\n` +
+      'committer Test User <test@example.com> 1700000000 +0000\n' +
+      `data ${Buffer.byteLength(message)}\n${message}\n${parent}\n`,
+    );
+  }
+  execFileSync('git', ['fast-import', '--quiet'], {
+    cwd: repository,
+    encoding: 'utf8',
+    input: commits.join(''),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+};
+
 // ---------------------------------------------------------------------------
 // resolveBaseRefForLog
 // ---------------------------------------------------------------------------
@@ -247,8 +269,19 @@ describe('getLog maxCount guard (#463)', () => {
     expect((await getLog(tmpDir, { maxCount: -5 })).all).toHaveLength(50);
     expect((await getLog(tmpDir, { maxCount: 0 })).all).toHaveLength(50);
     expect((await getLog(tmpDir, { maxCount: 2.5 })).all).toHaveLength(50);
+    expect((await getLog(tmpDir, { maxCount: Number.MAX_SAFE_INTEGER + 1 })).all).toHaveLength(50);
     expect((await getLog(tmpDir, {})).all).toHaveLength(50);
     expect((await getLog(tmpDir, { maxCount: 7 })).all).toHaveLength(7);
+  });
+
+  it('clamps direct maxCount values to the shared ceiling', async () => {
+    const { tmpDir } = await createTempRepo();
+    fastImportEmptyCommits(tmpDir, MAX_GIT_LOG_COUNT + 5);
+
+    const history = await getLog(tmpDir, { maxCount: 1_000_000_000 });
+
+    expect(history.all).toHaveLength(MAX_GIT_LOG_COUNT);
+    expect(history.total).toBe(MAX_GIT_LOG_COUNT);
   });
 });
 
@@ -883,12 +916,92 @@ describe.runIf(canRunGit())('untracked diffs', () => {
     fs.writeFileSync(path.join(tmpDir, 'large.txt'), 'x'.repeat(21 * 1024 * 1024) + '\n');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await expect(getDiff(tmpDir, { path: 'large.txt' })).rejects.toThrow('maxBuffer');
+      await expect(getDiff(tmpDir, { path: 'large.txt' })).rejects.toMatchObject({ code: 'diff_too_large' });
       expect(await getUntrackedDiffs(tmpDir, ['large.txt'])).toEqual(['']);
     } finally {
       errorSpy.mockRestore();
     }
   });
+});
+
+describe.runIf(canRunGit())('local diff output cap (#1301)', () => {
+  const SMALL_CAP = 4096;
+  const bigLines = (prefix) => Array.from({ length: 400 }, (_, index) => `${prefix}-${index}-${'x'.repeat(24)}`);
+
+  const repoWithCommittedFile = async () => {
+    const { tmpDir, git } = await createTempRepo();
+    await writeFile(tmpDir, 'big.txt', bigLines('line').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Initial');
+    await git.raw(['branch', 'base-branch']);
+    return { tmpDir, git };
+  };
+
+  it('rejects a whole-tree diff over the cap with diff_too_large and returns it under the cap', async () => {
+    const { tmpDir } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await expect(getDiff(tmpDir, { maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    await expect(getDiff(tmpDir, { path: 'big.txt', maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    const underCap = await getDiff(tmpDir, { maxBytes: MAX_DIFF_OUTPUT_BYTES });
+    expect(underCap).toBe(await getDiff(tmpDir));
+    expect(underCap).toContain('diff --git');
+  });
+
+  it('rejects a committed range diff over the cap', async () => {
+    const { tmpDir, git } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Change');
+    await expect(getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', maxBytes: SMALL_CAP }))
+      .rejects.toMatchObject({ code: 'diff_too_large' });
+    expect(await getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', maxBytes: MAX_DIFF_OUTPUT_BYTES }))
+      .toContain('diff --git');
+  });
+
+  it('rejects a working-tree range diff over the cap', async () => {
+    const { tmpDir } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await expect(getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', includeWorkingTree: true, maxBytes: SMALL_CAP }))
+      .rejects.toMatchObject({ code: 'diff_too_large' });
+  });
+
+  it('rejects a commit diff over the cap', async () => {
+    const { tmpDir, git } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Change');
+    const hash = (await git.revparse(['HEAD'])).trim();
+    await expect(getCommitDiff(tmpDir, { hash, maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    expect(await getCommitDiff(tmpDir, { hash, maxBytes: MAX_DIFF_OUTPUT_BYTES })).toContain('diff --git');
+  });
+
+  it('answers 413 with the diff_too_large code from the range-diff route', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    // A machine-wide core.bigFileThreshold below the fixture size makes git
+    // print "Binary files differ" instead of a text diff. Pin it, as the
+    // untracked maxBuffer test above does.
+    runGit(tmpDir, ['config', 'core.bigFileThreshold', '1g']);
+    const line = 'x'.repeat(79);
+    const content = Array.from({ length: 700_000 }, () => line).join('\n') + '\n';
+    await writeFile(tmpDir, 'big.txt', content);
+    await git.add('big.txt');
+    await git.commit('Initial');
+    await git.raw(['branch', 'base-branch']);
+    await writeFile(tmpDir, 'big.txt', content.replaceAll('x', 'y'));
+    await git.add('big.txt');
+    await git.commit('Change');
+    const routes = new Map();
+    registerGitRoutes({ get: (url, handler) => routes.set(url, handler), post() {}, put() {}, delete() {} });
+    let status = 200;
+    let body;
+    await routes.get('/api/git/range-diff')({ query: { directory: tmpDir, base: 'base-branch', head: 'main' } }, {
+      status(value) { status = value; return this; },
+      json(value) { body = value; },
+    });
+    expect(status).toBe(413);
+    expect(body.code).toBe('diff_too_large');
+    expect(body.error).toContain('50 MiB');
+  }, 60_000);
 });
 
 // An external diff configured in git (difftastic via diff.external, or
@@ -1984,6 +2097,57 @@ describe('createWorktree', () => {
         phase: 'setup-ready',
         error: null,
       });
+    } finally {
+      if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previousXdgDataHome;
+      if (previousTimeout === undefined) delete process.env.OPENCHAMBER_WORKTREE_START_COMMAND_TIMEOUT_MS;
+      else process.env.OPENCHAMBER_WORKTREE_START_COMMAND_TIMEOUT_MS = previousTimeout;
+    }
+  }, 30_000);
+
+  it('registers a running start command with the live-tree shutdown cleanup (#1084)', async () => {
+    if (!canRunGit()) return;
+    if (process.platform === 'win32') return;
+
+    const previousXdgDataHome = process.env.XDG_DATA_HOME;
+    const previousTimeout = process.env.OPENCHAMBER_WORKTREE_START_COMMAND_TIMEOUT_MS;
+    const dataHome = createTempDir();
+    process.env.XDG_DATA_HOME = dataHome;
+    // Long timeout: the command must still be running when the shutdown
+    // cleanup fires, so only killLiveTrees can end it.
+    process.env.OPENCHAMBER_WORKTREE_START_COMMAND_TIMEOUT_MS = '120000';
+
+    const hangScript = path.join(dataHome, 'hang.cjs');
+    fs.writeFileSync(hangScript, 'setTimeout(() => {}, 120_000);\n');
+
+    try {
+      const repo = createTempDir();
+      runGit(repo, ['init', '-b', 'main']);
+      runGit(repo, ['config', 'user.email', 'test@example.com']);
+      runGit(repo, ['config', 'user.name', 'Test User']);
+      fs.writeFileSync(path.join(repo, 'README.md'), '# Test\n');
+      runGit(repo, ['add', 'README.md']);
+      runGit(repo, ['commit', '-m', 'Initial commit']);
+
+      const created = await createWorktree(repo, {
+        mode: 'new',
+        branchName: 'feature/start-command-registered',
+        worktreeName: 'start-command-registered',
+        returnAfterDirectoryCreated: true,
+        startCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(hangScript)}`,
+      });
+
+      // While the start command runs, its tree is registered for shutdown.
+      await expect.poll(() => liveTreeCount(), { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
+
+      // The shutdown cleanup (what process exit runs) kills the tree, so
+      // the bootstrap finishes instead of the command outliving the server.
+      killLiveTrees();
+      await expect.poll(
+        async () => (await getWorktreeBootstrapStatus(created.path)).phase,
+        { timeout: 15_000 },
+      ).toBe('setup-ready');
+      expect(liveTreeCount()).toBe(0);
     } finally {
       if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = previousXdgDataHome;
@@ -3581,6 +3745,37 @@ describe('contributor checkout trust inspection', () => {
     expect(inspection.actions).toEqual([expect.objectContaining({
       kind: 'post-checkout-hook', path: hookPath,
     })]);
+  });
+
+  it('refuses a post-checkout hook larger than the inspection cap without reading it', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const hookPath = path.join(repository, '.git', 'hooks', 'post-checkout');
+    fs.writeFileSync(hookPath, Buffer.alloc(1024 * 1024 + 1, 0x23));
+    fs.chmodSync(hookPath, 0o755);
+    const sourceSha = runGit(repository, ['rev-parse', 'HEAD']).trim();
+
+    const inspection = await inspectContributorCheckoutActions(repository, {
+      sourceSha, projectId: 'missing_project', setupCommand: '',
+    });
+
+    expect(inspection.actions).toEqual([]);
+  });
+
+  it('inspects a post-checkout hook at exactly the inspection cap', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const hookPath = path.join(repository, '.git', 'hooks', 'post-checkout');
+    fs.writeFileSync(hookPath, Buffer.alloc(1024 * 1024, 0x23));
+    fs.chmodSync(hookPath, 0o755);
+    const sourceSha = runGit(repository, ['rev-parse', 'HEAD']).trim();
+
+    const inspection = await inspectContributorCheckoutActions(repository, {
+      sourceSha, projectId: 'missing_project', setupCommand: '',
+    });
+
+    expect(inspection.actions).toEqual([expect.objectContaining({
+      kind: 'post-checkout-hook', path: hookPath,
+    })]);
+    expect(inspection.actions[0].content.length).toBe(1024 * 1024);
   });
 
   it('binds checkout trust to the hook invocation path as well as its bytes', async () => {

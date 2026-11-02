@@ -15,7 +15,7 @@
 import { renameWithRetry } from '../shared/atomic-rename.js';
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
-import { createPlanSummaryCache } from './plan-progress.js';
+import { createPlanSummaryCache, readBoundedUtf8, PLAN_FILE_READ_MAX_BYTES } from './plan-progress.js';
 import { z } from 'zod';
 
 const optionalTextInput = z.string().optional();
@@ -371,16 +371,23 @@ export const createProjectContextRuntime = (deps) => {
 
       let raw = null;
       try {
-        raw = await fsPromises.readFile(targetPath, 'utf8');
+        raw = await readPlanFile(targetPath);
       } catch (error) {
-        if (!error || error.code !== 'ENOENT') throw error;
+        // An over-cap legacy plan is skipped, never buffered whole: the
+        // cap is a property of the module, and the migration still
+        // completes for the remaining items.
+        if (!error || error.status !== 413) throw error;
+        continue;
+      }
+      if (raw === null) {
         // Not in the plans directory yet — recover it from the recorded path.
         try {
-          raw = await fsPromises.readFile(absolutePath, 'utf8');
+          raw = await readPlanFile(absolutePath);
         } catch (recoverError) {
-          if (!recoverError || recoverError.code !== 'ENOENT') throw recoverError;
+          if (!recoverError || recoverError.status !== 413) throw recoverError;
           continue;
         }
+        if (raw === null) continue;
         await fsPromises.mkdir(plansDir, { recursive: true });
         await fsPromises.writeFile(targetPath, raw, 'utf8');
       }
@@ -486,14 +493,16 @@ export const createProjectContextRuntime = (deps) => {
       const summary = await planSummaries.summaryOf(path.join(dir, entry.name));
       // Removed between the directory read and this one.
       if (!summary) continue;
-      plans.push(withProgress({
+      const listed = {
         id: `${SHARED_PLAN_ID_PREFIX}${entry.name}`,
         file: entry.name,
         title: summary.title,
         createdAt: Math.round(summary.mtimeMs),
         pinned: false,
         source: 'shared',
-      }, summary.progress));
+      };
+      if (summary.tooLarge) listed.tooLarge = true;
+      plans.push(withProgress(listed, summary.progress));
     }
     plans.sort((left, right) => right.createdAt - left.createdAt);
     return { dir, plans };
@@ -508,7 +517,9 @@ export const createProjectContextRuntime = (deps) => {
     const folder = link.shared ? sharedDir : plansDirFor(projectId);
     if (!folder) return null;
     try {
-      return (await planSummaries.summaryOf(path.join(folder, link.file)))?.progress ?? null;
+      const summary = await planSummaries.summaryOf(path.join(folder, link.file));
+      if (!summary) return null;
+      return { progress: summary.progress ?? null, tooLarge: summary.tooLarge === true };
     } catch {
       return null;
     }
@@ -527,8 +538,9 @@ export const createProjectContextRuntime = (deps) => {
       // A moved plan is only reachable while the project still has a shared folder.
       .filter((plan) => !plan.shared || shared.dir)
       .map(async ({ shared: isShared, ...plan }) => {
-        const progress = await progressOfLink(projectId, { ...plan, shared: isShared }, shared.dir);
-        return withProgress({ ...plan, source: isShared ? 'shared' : 'personal' }, progress);
+        const info = await progressOfLink(projectId, { ...plan, shared: isShared }, shared.dir);
+        const listed = withProgress({ ...plan, source: isShared ? 'shared' : 'personal' }, info?.progress ?? null);
+        return info?.tooLarge ? { ...listed, tooLarge: true } : listed;
       }));
     const withSession = (plan) => (planSessions[plan.id] ? { ...plan, session: planSessions[plan.id] } : plan);
     return {
@@ -732,6 +744,38 @@ export const createProjectContextRuntime = (deps) => {
     });
   };
 
+  /**
+   * Read a plan file whole, gated on its size: a plan over
+   * PLAN_FILE_READ_MAX_BYTES is refused (413) from its stat alone, so an
+   * oversized file other tools wrote is never buffered whole. A missing
+   * file returns null, the answer readPlan has always given for a plan
+   * that is gone.
+   */
+  const readPlanFile = async (planPath) => {
+    let stat;
+    try {
+      stat = await fsPromises.stat(planPath);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return null;
+      throw error;
+    }
+    if (stat.size > PLAN_FILE_READ_MAX_BYTES) {
+      throw mutationError(`Plan file is too large to read (${stat.size} bytes; limit is ${PLAN_FILE_READ_MAX_BYTES} bytes)`, 413);
+    }
+    let raw;
+    try {
+      raw = await readBoundedUtf8(fsPromises, planPath, PLAN_FILE_READ_MAX_BYTES);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return null;
+      throw error;
+    }
+    if (raw === null) {
+      // Grew past the cap between the stat above and this read.
+      throw mutationError(`Plan file is too large to read (limit is ${PLAN_FILE_READ_MAX_BYTES} bytes)`, 413);
+    }
+    return raw;
+  };
+
   const readPlan = async (projectId, planId) => {
     const id = asNonEmptyString(planId);
     if (!id) {
@@ -742,13 +786,8 @@ export const createProjectContextRuntime = (deps) => {
       const dir = await sharedPlansDirFor(projectId);
       if (!dir) return null;
       const planPath = path.join(dir, sharedFile);
-      let raw;
-      try {
-        raw = await fsPromises.readFile(planPath, 'utf8');
-      } catch (error) {
-        if (error && error.code === 'ENOENT') return null;
-        throw error;
-      }
+      const raw = await readPlanFile(planPath);
+      if (raw === null) return null;
       const parsed = parsePlanMarkdown(raw);
       return { id, file: sharedFile, path: planPath, createdAt: 0, title: parsed.title, body: parsed.body, raw, source: 'shared' };
     }
@@ -761,13 +800,8 @@ export const createProjectContextRuntime = (deps) => {
     const folder = await folderOfLink(projectId, link);
     if (!folder) return null;
     const planPath = path.join(folder, link.file);
-    let raw;
-    try {
-      raw = await fsPromises.readFile(planPath, 'utf8');
-    } catch (error) {
-      if (error && error.code === 'ENOENT') return null;
-      throw error;
-    }
+    const raw = await readPlanFile(planPath);
+    if (raw === null) return null;
 
     const parsed = parsePlanMarkdown(raw);
     return { id: link.id, file: link.file, path: planPath, createdAt: link.createdAt, title: parsed.title, body: parsed.body, raw, source: link.shared ? 'shared' : 'personal' };
@@ -799,8 +833,11 @@ export const createProjectContextRuntime = (deps) => {
     }
     const raw = clampLength(value.raw, PROJECT_PLAN_BODY_MAX_LENGTH);
     const checkExpectedRaw = async (filePath) => {
-      if (expectedRaw.data !== undefined
-        && await fsPromises.readFile(filePath, 'utf8') !== expectedRaw.data) {
+      if (expectedRaw.data === undefined) return;
+      // Compare through the capped read: an over-cap current file is
+      // refused (413) instead of being buffered whole for the compare.
+      const currentRaw = await readPlanFile(filePath);
+      if (currentRaw !== expectedRaw.data) {
         throw mutationError('Plan changed; reload before saving', 409);
       }
     };
@@ -1045,13 +1082,11 @@ export const createProjectContextRuntime = (deps) => {
       const sharedFile = ownLink ? ownLink.file : sharedPlanFileOf(id);
       if (!sharedFile) return null;
       const from = path.join(dir, sharedFile);
-      let raw;
-      try {
-        raw = await fsPromises.readFile(from, 'utf8');
-      } catch (error) {
-        if (error && error.code === 'ENOENT') return null;
-        throw error;
-      }
+      // The title is all that is read here, and it goes through the
+      // capped read: an over-cap shared plan is refused (413), never
+      // buffered whole just to parse its first line.
+      const raw = await readPlanFile(from);
+      if (raw === null) return null;
       const plansDir = plansDirFor(projectId);
       await fsPromises.mkdir(plansDir, { recursive: true });
       const taken = new Set(current.plans.filter((entry) => !entry.shared).map((entry) => entry.file));

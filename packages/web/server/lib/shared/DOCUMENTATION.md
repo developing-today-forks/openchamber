@@ -120,11 +120,15 @@ variant that answers differently stays with its owner.
   to clear it when the headers arrive. Only the wrapped Response's status,
   headers and body are contractual; other Response metadata of the original
   is not carried over.
-- `response-body.js` — `readBoundedResponseText` / `readBoundedResponseBytes`
+- `response-body.js` — `readBoundedResponseText` / `readBoundedResponseBytes` /
+  `readBoundedResponseJson`
   (plus `discardResponseBody`). The cap is enforced **during** the read: a
   declared `content-length` over the cap refuses before reading, the stream
   is cancelled the moment the cap is crossed, and oversize is reported as
   `{ tooLarge: true }` — never a truncated body returned as complete.
+  `readBoundedResponseJson` parses only a complete body and returns `null` for
+  an over-cap, unreadable, or invalid JSON response, preserving the caller's
+  existing failure policy.
   `guests/response-body.js` re-exports all three, so the guests importers
   keep working unchanged. Phase 2 (#804) pointed the two importers outside
   guests/ at this module directly (`opencode/proxy.js`,
@@ -238,6 +242,58 @@ injection. The contract rules:
 - Store shapes, defaults, serialization formatting, and domain error
   surfaces: the primitive knows paths, bytes, JSON and modes only, and
   callers keep the rest.
+
+## Bounded file read (design #1254, #1256 and #1255)
+
+`bounded-file-read.js` holds the one bounded read for files whose size the
+server does not control — project and user files, as opposed to response
+bodies (#802) and the server's own state files (#976). It generalises
+`skills-catalog/scan.js`'s `readSkillMdFile`, the family's one correct
+embodiment. Phase 2 (#1255) migrated the call sites: scan's
+`readSkillMdFile`, snippets' `parseMarkdownFile`, plugins'
+`readPluginDirFile`, the guests entry-HTML read in `guestBuiltScriptsReady`,
+and git's `readFileDiffWorkingTreeFile` all read through this module now.
+Each caller maps the coded outcomes back onto its own existing contract,
+so error surfaces and missing-file behaviour are unchanged.
+
+- `readBoundedFile(filePath, maxBytes)` / `readBoundedFileSync(filePath, maxBytes)`
+  answer identically: `{ ok: true, buffer, size }` for a complete read at
+  or under the cap, or a coded refusal — `too-large` (carrying `path`,
+  `size` and `limit`), `missing`, or `not-regular`. Unexpected I/O errors
+  throw; the three expected outcomes never do.
+
+The contract (rules 1–5 of #1254):
+
+1. Every read of a file whose size the reader does not control goes
+   through this reader; the cap is stated at the call site (mechanism
+   shared, values local — 1 MiB plugins, 4 MiB config/SKILL.md/snippets,
+   the diff readers' larger caps all stay as they are).
+2. Open once, judge from the handle: `O_NONBLOCK` where available,
+   handle stat, non-regular files refused — never stat-by-path then
+   read-by-path, which follows a symlink to a device or FIFO and races
+   a growing file.
+3. The cap is enforced during the read (at most cap+1 bytes are read),
+   so a file that grows after the stat is over-cap, not buffered whole.
+4. One uniform over-cap answer, coded `BOUNDED_FILE_TOO_LARGE` and
+   carrying path, size and limit; the caller states its policy —
+   `refuse`, or `skip`-with-warning. Truncation is not a policy: a
+   truncated config or markdown file parses as a different file.
+5. Sync and async spellings answer identically; missing ≠ over-cap ≠
+   non-regular, so adopting the reader never changes a caller's
+   missing-file behaviour.
+
+### What stays out
+
+- `diagnostics/local-files.js` — offset sampling of diagnostic logs is
+  a sampling policy, not a bounded whole-file read; partial reads there
+  are the point and stay.
+- Response bodies stay `response-body.js` (#802): a stream is not a
+  file, and its cap is enforced by cancelling the stream.
+- The server's own state files stay `durable-json-store.js` (#976):
+  contents the server controls, with preserve-on-malformed semantics
+  this reader does not have.
+- Cap values, error surfaces and HTTP shapes at the call sites: the
+  primitive knows paths, bytes and caps only.
 
 ## Notes for contributors
 
