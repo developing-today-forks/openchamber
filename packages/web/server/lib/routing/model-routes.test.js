@@ -804,6 +804,33 @@ describe('readModelRoutes', () => {
       a: { targets: [] },
     });
   });
+
+  it('returns the nested experimental.routes.models map for a nested-only config', () => {
+    expect(readModelRoutes({ experimental: { routes: { models: { a: { targets: ['x/y'] } } } } })).toEqual({
+      a: { targets: ['x/y'] },
+    });
+    expect(readModelRoutes({ experimental: { routes: { models: ['x'] } } })).toEqual({});
+    expect(readModelRoutes({ experimental: { routes: 'nope' } })).toEqual({});
+  });
+
+  it('folds a mixed config with the nested pool winning over the flat pool of the same id', () => {
+    const config = {
+      experimental: {
+        model_routes: { shared: { targets: ['flat/a'] }, flatOnly: { targets: ['flat/b'] } },
+        routes: { models: { shared: { targets: ['nested/a'] }, nestedOnly: { targets: ['nested/b'] } } },
+      },
+    };
+    expect(readModelRoutes(config)).toEqual({
+      shared: { targets: ['nested/a'] },
+      flatOnly: { targets: ['flat/b'] },
+      nestedOnly: { targets: ['nested/b'] },
+    });
+    // The folded map is what validateModelRoutes judges, so a bad nested
+    // pool is refused and a good nested pool passes.
+    expect(validateModelRoutes(readModelRoutes(config))).toBeNull();
+    const bad = { experimental: { routes: { models: { bad: { targets: [] } } } } };
+    expect(validateModelRoutes(readModelRoutes(bad))).toMatch(/route "bad" needs at least one target/);
+  });
 });
 
 const makeApp = () => {
@@ -851,6 +878,95 @@ describe('registerModelRouteRoutes', () => {
     const response = res();
     await routes.get[0][1]({}, response);
     expect(response.out.body).toEqual({ routes: { old: { targets: ['a/b'] } }, tuning: null, schedules: null, otherRoutes: [], otherSchedules: [], path: '/u/opencode.json' });
+  });
+
+  it('GET returns nested routes, tuning, and schedules for a nested-only config', async () => {
+    const schedules = [{ providers: ['deepseek'], when: { start: '09:00', end: '17:00' }, factor: 0.5 }];
+    const tuning = { enabled: true, intervalMinutes: 30 };
+    targetConfig = {
+      experimental: {
+        routes: { models: { nested: { targets: ['a/b'] } }, tuning, schedules },
+      },
+    };
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.getConfigForPath = vi.fn(() => targetConfig);
+    const { app, routes } = makeApp();
+    registerModelRouteRoutes(app, deps);
+    const response = res();
+    await routes.get[0][1]({}, response);
+    expect(response.out.body.routes).toEqual({ nested: { targets: ['a/b'] } });
+    expect(response.out.body.tuning).toEqual(tuning);
+    expect(response.out.body.schedules).toEqual(schedules);
+  });
+
+  it('GET folds a mixed config with nested tuning and schedules winning', async () => {
+    const nestedSchedules = [{ models: ['*flash*'], when: {}, weight: 2 }];
+    targetConfig = {
+      experimental: {
+        model_routes: { shared: { targets: ['flat/a'] } },
+        model_route_tuning: { enabled: false },
+        model_route_schedules: [{ providers: ['deepseek'], when: {}, factor: 0.5 }],
+        routes: {
+          models: { shared: { targets: ['nested/a'] } },
+          tuning: { enabled: true },
+          schedules: nestedSchedules,
+        },
+      },
+    };
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.getConfigForPath = vi.fn(() => targetConfig);
+    const { app, routes } = makeApp();
+    registerModelRouteRoutes(app, deps);
+    const response = res();
+    await routes.get[0][1]({}, response);
+    expect(response.out.body.routes).toEqual({ shared: { targets: ['nested/a'] } });
+    expect(response.out.body.tuning).toEqual({ enabled: true });
+    expect(response.out.body.schedules).toEqual(nestedSchedules);
+  });
+
+  it('PUT writes edited values into the nested shape and removes the flat keys', async () => {
+    targetConfig = {
+      experimental: {
+        model_routes: { old: { targets: ['a/b'] } },
+        model_route_schedules: [{ providers: ['deepseek'], when: {}, factor: 0.5 }],
+        routes: { models: { old: { targets: ['a/b'] } } },
+      },
+    };
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.getConfigForPath = vi.fn(() => targetConfig);
+    const { app, routes } = makeApp();
+    registerModelRouteRoutes(app, deps);
+    const [, , , handler] = routes.put[0];
+    const pools = { fresh: { targets: ['c/d'] } };
+    const schedules = [{ routes: ['fresh'], when: {}, weight: 3 }];
+    const saved = res();
+    await handler({ body: { routes: pools, schedules } }, saved);
+    expect(targetConfig.experimental.routes.models).toEqual(pools);
+    expect(targetConfig.experimental.routes.schedules).toEqual(schedules);
+    expect(targetConfig.experimental.model_routes).toBeUndefined();
+    expect(targetConfig.experimental.model_route_schedules).toBeUndefined();
+    expect(saved.out.body.routes).toEqual(pools);
+    expect(saved.out.body.schedules).toEqual(schedules);
+    const removed = res();
+    await handler({ body: { schedules: null } }, removed);
+    expect(targetConfig.experimental.routes.schedules).toBeUndefined();
+    expect(removed.out.body.schedules).toBeNull();
+  });
+
+  it('GET lists another file\'s nested schedules as otherSchedules', async () => {
+    const nestedSchedules = [{ targets: ['openai/*'], when: {}, weight: 3 }];
+    const { app, routes } = makeApp();
+    registerModelRouteRoutes(app, {
+      ...deps,
+      resolveOptionalProjectDirectory: vi.fn(async () => ({ directory: '/p' })),
+      readConfigSources: vi.fn(() => [
+        { path: '/u/opencode.json', config: targetConfig },
+        { path: '/p/opencode.json', config: { experimental: { routes: { schedules: nestedSchedules } } } },
+      ]),
+    });
+    const response = res();
+    await routes.get[0][1]({}, response);
+    expect(response.out.body.otherSchedules).toEqual([{ path: '/p/opencode.json', schedules: nestedSchedules }]);
   });
 
   it('GET returns the cross-pool schedules', async () => {
