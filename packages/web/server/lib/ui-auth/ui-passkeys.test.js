@@ -184,6 +184,27 @@ describe('ui-passkeys store durability', () => {
     expect(siblingsMatching(storeFile, '.tmp-')).toEqual([]);
   });
 
+  it('initializes an existing empty file in place so the userID stays stable', () => {
+    const dir = fs.mkdtempSync(path.join(dataDir, 'empty-'));
+    const storeFile = path.join(dir, 'ui-passkeys.json');
+    fs.writeFileSync(storeFile, '');
+    const controller = createController(storeFile);
+
+    expect(controller.listPasskeys(requestFor())).toEqual([]);
+    // The empty file holds no bytes worth preserving, so no corrupt
+    // sibling appears; the fresh store is persisted in place instead,
+    // and a later load reuses the persisted userID rather than
+    // inventing a new one.
+    const initialized = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+    expect(String(initialized.userID)).toBe(initialized.userID);
+    expect(initialized.userID.length).toBeGreaterThan(0);
+    expect(initialized.passkeys).toEqual([]);
+    expect(siblingsMatching(storeFile, '.corrupt-')).toEqual([]);
+    const secondController = createController(storeFile);
+    expect(secondController.listPasskeys(requestFor())).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(storeFile, 'utf8')).userID).toBe(initialized.userID);
+  });
+
   it('preserves a corrupt store before overwriting it instead of silently discarding passkeys', () => {
     const storeFile = createStoreFile([passkey(), passkey({ id: 'credential-2' })]);
     const valid = fs.readFileSync(storeFile, 'utf8');
@@ -199,6 +220,31 @@ describe('ui-passkeys store durability', () => {
     // The replacement store is valid JSON with no passkeys: the original
     // bytes survive only in the preserved copy, never silently lost.
     expect(JSON.parse(fs.readFileSync(storeFile, 'utf8')).passkeys).toEqual([]);
+  });
+
+  it('refuses to replace a corrupt store when preservation fails', () => {
+    const storeFile = createStoreFile([passkey()]);
+    const corrupt = '{ not json';
+    fs.writeFileSync(storeFile, corrupt);
+    const storeFs = {
+      existsSync: (...args) => fs.existsSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+      renameSync: (from, to) => {
+        if (String(to).includes('.corrupt-')) {
+          throw new Error('preserve failed');
+        }
+        return fs.renameSync(from, to);
+      },
+    };
+    const controller = createUiPasskeys({
+      passwordBinding: PASSWORD_BINDING,
+      readSettingsFromDiskMigrated: async () => ({}),
+      storeFile,
+      fs: storeFs,
+    });
+
+    expect(() => controller.listPasskeys(requestFor())).toThrow('refusing to overwrite it');
+    expect(fs.readFileSync(storeFile, 'utf8')).toBe(corrupt);
   });
 
   it('treats a non-object store as corrupt and preserves it', () => {
