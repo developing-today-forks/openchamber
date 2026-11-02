@@ -19,6 +19,15 @@ describe('filesystem search inspected-file ceiling', () => {
   }
 });
 
+describe('filesystem search directory-visit ceiling', () => {
+  for (const [label, source] of [['VS Code', helpersSource], ['web', webSearchSource]] as const) {
+    test(`${label} file search bounds directory visits at the named ceiling`, () => {
+      assert.match(source, /FILE_SEARCH_MAX_VISITED_DIRS = 50_000/);
+      assert.match(source, /visited\.size >= FILE_SEARCH_MAX_VISITED_DIRS/);
+    });
+  }
+});
+
 describe('bridge fs env readers judge values by their whole text', () => {
   // The helpers module's reader cannot be imported here (see above), so it is
   // pinned on the source text; the identical runtime reader is covered

@@ -6631,6 +6631,52 @@ describe('getStatus untracked directories', () => {
       expect(body).toEqual({ code: 'untracked_directory', error: 'Path is a directory of untracked files: node_modules/' });
     }
   });
+
+  it('returns non-ASCII filenames intact when a multi-byte character straddles a pipe chunk boundary', async () => {
+    if (!canRunGit()) return;
+
+    const repo = createCommittedRepo();
+    const dir = path.join(repo, 'newdir');
+    fs.mkdirSync(dir, { recursive: true });
+    // Build the ls-files -z stream byte by byte in creation order, which is
+    // also sorted order here: sequence heads increase and a target name
+    // sorts after the pad record before it. Each target puts the first byte
+    // of an e-acute at the last byte of a successive 16 KiB block, so one
+    // target straddles whatever pipe chunk size the platform uses.
+    let seq = 0;
+    let cumulative = 0;
+    const targets = [];
+    const addFile = (name) => {
+      fs.writeFileSync(path.join(dir, name), 'x\n');
+      cumulative += Buffer.byteLength(`newdir/${name}`) + 1;
+      seq += 1;
+    };
+    const addPadRecord = (recordBytes) => {
+      const head = String(seq).padStart(4, '0');
+      addFile(head + 'a'.repeat(recordBytes - 8 - head.length));
+    };
+    for (let boundary = 16384; boundary <= 196608; boundary += 16384) {
+      const targetStart = boundary - 1 - 7 - 6;
+      let remaining = targetStart - cumulative;
+      while (remaining > 0) {
+        const take = remaining <= 271 ? remaining : 258;
+        addPadRecord(take);
+        remaining -= take;
+      }
+      const name = `${String(seq).padStart(4, '0')}zz\u00e9${'q'.repeat(40)}`;
+      targets.push(name);
+      addFile(name);
+    }
+    addFile('zzzz-last.txt');
+    expect(targets).toHaveLength(12);
+
+    const paths = (await getStatus(repo)).files.map((file) => file.path);
+    expect(paths.filter((filePath) => filePath.includes('\uFFFD'))).toEqual([]);
+    for (const target of targets) {
+      expect(paths).toContain(`newdir/${target}`);
+    }
+    expect(paths.filter((filePath) => filePath.startsWith('newdir/'))).toHaveLength(seq);
+  });
 });
 
 describe('git environment through simple-git', () => {

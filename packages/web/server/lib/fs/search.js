@@ -1,7 +1,10 @@
+import { StringDecoder } from 'node:string_decoder';
+
 import { parseBoundedIntWithDefault } from '../shared/parse-int.js';
 
 const FILE_SEARCH_MAX_CONCURRENCY = 5;
 const FILE_SEARCH_MAX_VISITED_FILES = 10_000;
+const FILE_SEARCH_MAX_VISITED_DIRS = 50_000;
 const FILE_SEARCH_EXCLUDED_DIRS = new Set([
   'node_modules',
   '.git',
@@ -130,6 +133,12 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
     const reachedSearchStop = () => (matchAll
       ? candidates.length >= limit
       : inspectedFiles >= FILE_SEARCH_MAX_VISITED_FILES);
+    // The visited set holds every directory that will ever be read, so
+    // refusing enqueues at the directory ceiling bounds the whole walk: a
+    // directory-heavy tree cannot grow the queue or the set past it, while
+    // directories already queued are still read, so results collected up
+    // to the ceiling stay complete for the directories that were visited.
+    const directoryVisitCapReached = () => visited.size >= FILE_SEARCH_MAX_VISITED_DIRS;
 
     while (queue.length > 0 && !reachedSearchStop()) {
       const batch = queue.splice(0, FILE_SEARCH_MAX_CONCURRENCY);
@@ -156,6 +165,7 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
               });
 
               let stdout = '';
+              const stdoutDecoder = new StringDecoder('utf8');
               let settled = false;
               let timeout = null;
               const finish = (value) => {
@@ -175,8 +185,8 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
                 }, gitCheckIgnoreTimeoutMs);
               }
 
-              child.stdout.on('data', (data) => { stdout += data.toString(); });
-              child.on('close', () => finish(stdout));
+              child.stdout.on('data', (data) => { stdout += stdoutDecoder.write(data); });
+              child.on('close', () => finish(stdout + stdoutDecoder.end()));
               child.on('error', () => finish(''));
             });
 
@@ -211,7 +221,7 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
             if (shouldSkipSearchDirectory(entryName, includeHiddenEntries)) {
               continue;
             }
-            if (!visited.has(entryPath)) {
+            if (!visited.has(entryPath) && !directoryVisitCapReached()) {
               visited.add(entryPath);
               queue.push(entryPath);
             }

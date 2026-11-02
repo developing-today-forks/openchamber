@@ -208,22 +208,98 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Prepared a pm-dispatch filing for: ${title}"
 
+      # pm-dispatch inline (no external action download): the watcher used to
+      # call pm-dispatch-queue from developing-today/code at main, which failed
+      # the whole job in "Set up job" whenever the runner could not fetch
+      # that repo's archive (runs 41477860103, 41472207624, 41459167391 all
+      # failed downloading 750bc13 within minutes of that push). The steps
+      # below POST the same payload with the same OIDC grant, so filing no
+      # longer depends on an external checkout at setup time.
       - name: Queue a follow-up task on the existing breakage issue via pm-dispatch
         if: steps.file-breakage.outputs.mode == 'append'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
-        with:
-          title: ${{ steps.file-breakage.outputs.title }}
-          prompt: ${{ steps.file-breakage.outputs.prompt }}
-          issue_number: ${{ steps.file-breakage.outputs.existing_number }}
+        env:
+          INPUT_TITLE: ${{ steps.file-breakage.outputs.title }}
+          INPUT_PROMPT: ${{ steps.file-breakage.outputs.prompt }}
+          INPUT_ISSUE_NUMBER: ${{ steps.file-breakage.outputs.existing_number }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::pm-dispatch: OIDC token request env is not set; the job must grant 'permissions: id-token: write'." >&2
+            exit 1
+          fi
+          oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pm-dispatch" | jq -r '.value // empty')"
+          if [ -z "$oidc_token" ]; then
+            echo "::error::pm-dispatch: failed to mint a GitHub Actions OIDC token (audience pm-dispatch)." >&2
+            exit 1
+          fi
+          payload="$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg title "$INPUT_TITLE" \
+            --arg prompt "$INPUT_PROMPT" \
+            --argjson issue true \
+            --argjson issue_number "$INPUT_ISSUE_NUMBER" \
+            '{repo: $repo, title: $title, prompt: $prompt, issue: $issue, issue_number: $issue_number}')"
+          response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/tasks" \
+            -H "Authorization: Bearer $oidc_token" \
+            -H "Content-Type: application/json" \
+            -d "$payload")"
+          http_code="${response##*$'\n'}"
+          body="${response%$'\n'*}"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::pm-dispatch POST /v1/tasks failed (HTTP $http_code):" >&2
+            echo "$body" >&2
+            exit 1
+          fi
+          echo "$body"
 
       - name: File the breakage issue via pm-dispatch
         id: dispatch
         if: steps.file-breakage.outputs.mode == 'file'
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
-        with:
-          title: ${{ steps.file-breakage.outputs.title }}
-          prompt: ${{ steps.file-breakage.outputs.prompt }}
-          issue: "true"
+        env:
+          INPUT_TITLE: ${{ steps.file-breakage.outputs.title }}
+          INPUT_PROMPT: ${{ steps.file-breakage.outputs.prompt }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "::error::pm-dispatch: OIDC token request env is not set; the job must grant 'permissions: id-token: write'." >&2
+            exit 1
+          fi
+          oidc_token="$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=pm-dispatch" | jq -r '.value // empty')"
+          if [ -z "$oidc_token" ]; then
+            echo "::error::pm-dispatch: failed to mint a GitHub Actions OIDC token (audience pm-dispatch)." >&2
+            exit 1
+          fi
+          payload="$(jq -n \
+            --arg repo "${{ github.repository }}" \
+            --arg title "$INPUT_TITLE" \
+            --arg prompt "$INPUT_PROMPT" \
+            --argjson issue true \
+            '{repo: $repo, title: $title, prompt: $prompt, issue: $issue}')"
+          response="$(curl -sS -w $'\n%{http_code}' -X POST "https://dispatch.security.cab/v1/tasks" \
+            -H "Authorization: Bearer $oidc_token" \
+            -H "Content-Type: application/json" \
+            -d "$payload")"
+          http_code="${response##*$'\n'}"
+          body="${response%$'\n'*}"
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "::error::pm-dispatch POST /v1/tasks failed (HTTP $http_code):" >&2
+            echo "$body" >&2
+            exit 1
+          fi
+          echo "$body"
+          task_id="$(printf '%s' "$body" | jq -r '.task_id // empty')"
+          issue_number="$(printf '%s' "$body" | jq -r '.issue_number // empty')"
+          issue_url="$(printf '%s' "$body" | jq -r '.issue_url // empty')"
+          if [ -z "$issue_url" ] && [ -n "$issue_number" ]; then
+            issue_url="https://github.com/${{ github.repository }}/issues/${issue_number}"
+          fi
+          {
+            echo "task_id=$task_id"
+            echo "issue_number=$issue_number"
+            echo "issue_url=$issue_url"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Apply the breakage labels to the filed issue
         if: steps.file-breakage.outputs.mode == 'file' && steps.dispatch.outputs.issue_number != ''

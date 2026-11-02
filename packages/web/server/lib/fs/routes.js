@@ -15,6 +15,7 @@ import { isString } from '../shared/guards.js';
 import nodeFsPromises from 'node:fs/promises';
 import { renameWithRetry } from '../shared/atomic-rename.js';
 import nodePath from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 const EXEC_JOB_TTL_MS = 30 * 60 * 1000;
 const OUTSIDE_FILE_GRANT_TTL_MS = 10 * 60 * 1000;
@@ -2090,6 +2091,7 @@ export const registerFsRoutes = (app, dependencies) => {
                 });
 
                 let stdout = '';
+                const stdoutDecoder = new StringDecoder('utf8');
                 let settled = false;
                 let timeout = null;
                 const finish = (value) => {
@@ -2109,8 +2111,8 @@ export const registerFsRoutes = (app, dependencies) => {
                   }, gitCheckIgnoreTimeoutMs);
                 }
 
-                child.stdout.on('data', (data) => { stdout += data.toString(); });
-                child.on('close', () => finish(stdout));
+                child.stdout.on('data', (data) => { stdout += stdoutDecoder.write(data); });
+                child.on('close', () => finish(stdout + stdoutDecoder.end()));
                 child.on('error', () => finish(''));
               });
 
