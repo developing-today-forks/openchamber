@@ -124,10 +124,9 @@ describe('ngrok availability checks', () => {
 });
 
 describe('fetchNgrokPublicUrl', () => {
-  const tunnelPayload = (tunnels) => ({
-    ok: true,
+  const tunnelPayload = (tunnels) => new Response(JSON.stringify({ tunnels }), {
     status: 200,
-    json: async () => ({ tunnels }),
+    headers: { 'content-type': 'application/json' },
   });
 
   it('prefers the https tunnel and falls back to any tunnel', async () => {
@@ -149,7 +148,7 @@ describe('fetchNgrokPublicUrl', () => {
 
   it('returns null for a non-ok response', async () => {
     const result = await fetchNgrokPublicUrl({
-      fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }),
+      fetchImpl: async () => new Response('{}', { status: 404 }),
     });
     expect(result).toBeNull();
   });
@@ -165,21 +164,40 @@ describe('fetchNgrokPublicUrl', () => {
   });
 
   it('settles a stalled response body read as null within the deadline', async () => {
-    let capturedSignal = null;
     const stalledBody = async (_url, { signal }) => {
-      capturedSignal = signal;
-      return {
-        ok: true,
-        status: 200,
-        json: () => new Promise((_resolve, reject) => {
-          capturedSignal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-        }),
-      };
+      const body = new ReadableStream({
+        start(controller) {
+          signal.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true });
+        },
+      });
+      return new Response(body, { status: 200 });
     };
     const startedAt = Date.now();
     const result = await fetchNgrokPublicUrl({ fetchImpl: stalledBody, timeoutMs: 40 });
     expect(result).toBeNull();
     expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('returns null for a tunnels body over the byte cap', async () => {
+    const oversized = {
+      tunnels: [{ proto: 'https', public_url: 'https://demo.ngrok-free.app', padding: 'x'.repeat(128 * 1024) }],
+    };
+    const startedAt = Date.now();
+    const result = await fetchNgrokPublicUrl({
+      fetchImpl: async () => new Response(JSON.stringify(oversized), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    });
+    expect(result).toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('returns null for an invalid JSON body', async () => {
+    const result = await fetchNgrokPublicUrl({
+      fetchImpl: async () => new Response('not json', { status: 200 }),
+    });
+    expect(result).toBeNull();
   });
 
   it('settles promptly when the caller aborts', async () => {
