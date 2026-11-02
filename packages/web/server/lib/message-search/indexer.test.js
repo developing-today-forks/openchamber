@@ -582,7 +582,11 @@ describe.skipIf(!open)('message search index', () => {
         },
         message: fake.client.session.message,
       },
-      message: { list: async () => ({ data: [], cursor: {} }) },
+      message: {
+        list: async ({ sessionID }) => (sessionID === 'newlive'
+          ? { data: [{ id: 'nl1', type: 'user', text: 'live words indexed', time: { created: 3001 } }], cursor: {} }
+          : { data: [], cursor: {} }),
+      },
     };
     const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
     const connect = async () => {
@@ -598,12 +602,24 @@ describe.skipIf(!open)('message search index', () => {
     expect(store.counts().sessions).toBe(4001);
     expect(search('stale')).toHaveLength(1);
 
+    // Between chunks, a brand-new session is created and indexed live. It
+    // sorts before the saved descending cursor, so the resumed walk never
+    // lists it — the completion cleanup must still not delete it.
+    byId.set('newlive', { id: 'newlive', title: 'New live', location: { directory: '/repo/newlive' }, time: { created: 3000, updated: 3000 } });
+    local.processPayload({ type: 'session.idle', properties: { sessionID: 'newlive' } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await local.idle();
+    expect(search('live words')).toHaveLength(1);
+    expect(store.counts().sessions).toBe(4002);
+
     // Second connect: the walk resumes past the cap, reaches the end of
-    // the list, and only the now-complete assembled list deletes.
+    // the list, and the now-complete assembled list deletes the stale
+    // session — but not the one indexed live while the walk was pending.
     await connect();
     expect(listCalls).toBe(21);
-    expect(store.counts().sessions).toBe(4010);
+    expect(store.counts().sessions).toBe(4011);
     expect(search('stale')).toEqual([]);
+    expect(search('live words')).toHaveLength(1);
     expect(local.status().backfill.state).toBe('done');
   });
 

@@ -158,6 +158,11 @@ export const createMessageSearchIndexer = ({
   // already listed: the next backfill resumes there instead of restarting,
   // so a list longer than the cap is still walked to the end, in chunks.
   let backfillContinuation = null;
+  // Sessions synced while an assembled list walk is in progress (across
+  // cap chunks, that can span connections): a session created after the
+  // walk passed its sort position is not in the walk's list, so the
+  // completion cleanup must not treat its absence as a deletion.
+  let backfillWalkProtected = null;
   let stopped = false;
 
   const syncSession = async (sessionId, directoryHint, { retried = false } = {}) => {
@@ -178,6 +183,7 @@ export const createMessageSearchIndexer = ({
     }
     const directory = session.location?.directory || directoryHint || '';
     store.upsertSession({ id: sessionId, directory, title: session.title ?? '', createdAt: session.time?.created });
+    backfillWalkProtected?.add(sessionId);
 
     // A revert hides the tail of the conversation, and the next prompt
     // deletes it: what was read past the boundary is no longer the session.
@@ -344,6 +350,7 @@ export const createMessageSearchIndexer = ({
    */
   const startBackfill = async () => {
     const run = ++backfillRun;
+    if (!backfillContinuation) backfillWalkProtected = new Set();
     runSignal();
     const client = createClient('');
     const listed = backfillContinuation?.listed ?? new Map();
@@ -370,6 +377,7 @@ export const createMessageSearchIndexer = ({
           // A cursor that repeats will repeat again on a resume; drop the
           // continuation so the next walk starts fresh.
           backfillContinuation = null;
+          backfillWalkProtected = null;
           break;
         }
         if (pages >= MAX_PAGES_PER_WALK) {
@@ -386,6 +394,9 @@ export const createMessageSearchIndexer = ({
       }
     } catch (error) {
       if (!stopped) logger.warn?.('[message-search] could not list sessions:', error?.message ?? error);
+      // A failed fresh walk protects nothing; a failed resumed walk keeps
+      // its protection for the retry of the same assembled walk.
+      if (!backfillContinuation) backfillWalkProtected = null;
       return;
     }
     if (run !== backfillRun || stopped) return;
@@ -394,8 +405,9 @@ export const createMessageSearchIndexer = ({
     // partial list must not delete sessions it never reached.
     if (listComplete) {
       for (const id of store.sessionIds()) {
-        if (!listed.has(id)) store.deleteSession(id);
+        if (!listed.has(id) && !backfillWalkProtected?.has(id)) store.deleteSession(id);
       }
+      backfillWalkProtected = null;
     }
     let queued = 0;
     for (const session of listed.values()) {
