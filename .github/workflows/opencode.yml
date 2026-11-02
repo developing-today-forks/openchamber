@@ -14,7 +14,10 @@ on:
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  # queue: max forbids cancel-in-progress: true (GitHub validation rejects
+  # the combination and the workflow dies at startup with zero jobs, #1337).
+  # Keep the literal false so every run queues, per the note above.
+  cancel-in-progress: false
   queue: max
 
 jobs:
