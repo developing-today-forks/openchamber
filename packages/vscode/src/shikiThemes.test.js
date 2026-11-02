@@ -86,6 +86,16 @@ describe('VS Code Shiki theme file size cap (#1104)', () => {
 
   it('allows a theme exactly at the cap', async () => {
     reportedSizes.set('themes/dark.json', SHIKI_THEME_MAX_BYTES);
+    // The returned bytes must also sit exactly at the cap: with the short
+    // beforeEach fixture the post-read byte-length gate in shikiThemes.ts
+    // never sees its acceptance boundary, so an off-by-one there (>=)
+    // would pass unnoticed (#1328).
+    const skeleton = JSON.stringify({ name: 'Dark theme', colors: { padding: '' } });
+    const exactCapTheme = new TextEncoder().encode(
+      JSON.stringify({ name: 'Dark theme', colors: { padding: 'x'.repeat(SHIKI_THEME_MAX_BYTES - skeleton.length) } }),
+    );
+    expect(exactCapTheme.byteLength).toBe(SHIKI_THEME_MAX_BYTES);
+    themeFiles.set('themes/dark.json', exactCapTheme);
 
     const themes = await getWebviewShikiThemes();
 
