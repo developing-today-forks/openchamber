@@ -28,3 +28,19 @@ describe('exe.dev quota', () => {
     assert.equal(new Headers(requests[0]?.init?.headers).get('Authorization'), 'Bearer test-token');
   });
 });
+
+describe('exe.dev quota body cap', () => {
+  it('fails an over-cap streamed body with the normal parse failure', async () => {
+    const chunk = new TextEncoder().encode('x'.repeat(64 * 1024));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < 20; i += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    await assert.rejects(
+      fetchExeDevUsage('test-token', async () => new Response(stream)),
+      /could not be parsed/,
+    );
+  });
+});

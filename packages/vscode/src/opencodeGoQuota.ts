@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseJson } from './bounded-response-body';
 
 // `consoleKey` marks a key from the shared `opencode` integration.
 export type OpenCodeGoApiKeyCredential = { apiKey: string; consoleKey: boolean };
@@ -130,7 +131,7 @@ const fetchApiKeyUsage = async (credential: OpenCodeGoApiKeyCredential) => {
   if (response.status === 403 && credential.consoleKey) throw new Error(NO_CONSOLE_SUBSCRIPTION);
   if (response.status === 401 || response.status === 403 || (response.status >= 300 && response.status < 400)) throw new Error('OpenCode Go authentication failed');
   if (!response.ok) throw new Error(`OpenCode Go usage API returned HTTP ${response.status}`);
-  const parsed = apiKeyStatusSchema.safeParse(await response.json().catch(() => null));
+  const parsed = apiKeyStatusSchema.safeParse(await readBoundedResponseJson(response, QUOTA_RESPONSE_MAX_BYTES));
   if (!parsed.success) throw new Error('OpenCode Go usage data could not be parsed');
   const windows = parseApiKeyUsage(parsed.data);
   if (!Object.keys(windows).length) throw new Error('OpenCode Go usage data could not be parsed');
@@ -150,7 +151,7 @@ const fetchConsoleBillingBalance = async (credential: OpenCodeGoConsoleCredentia
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    const parsed = consoleBillingSchema.safeParse(await response.json().catch(() => null));
+    const parsed = consoleBillingSchema.safeParse(await readBoundedResponseJson(response, QUOTA_RESPONSE_MAX_BYTES));
     if (!parsed.success) return null;
     const microCents = parsed.data.availableMicroCents;
     if (microCents == null || microCents < 0) return null;
@@ -174,7 +175,7 @@ const fetchConsoleUsage = async (credential: OpenCodeGoConsoleCredential) => {
   });
   if (response.status === 401 || response.status === 403) throw new Error('OpenCode Console sign-in expired. Sign in again in Providers.');
   if (!response.ok) throw new Error(`OpenCode Console Go status API returned HTTP ${response.status}`);
-  const parsed = consoleStatusSchema.safeParse(await response.json().catch(() => null));
+  const parsed = consoleStatusSchema.safeParse(await readBoundedResponseJson(response, QUOTA_RESPONSE_MAX_BYTES));
   if (!parsed.success) throw new Error('OpenCode Console Go status returned an unreadable response');
   const product = parsed.data.product;
   if (!product || !CONSOLE_PRODUCTS.has(product)) throw new Error(NO_CONSOLE_SUBSCRIPTION);
