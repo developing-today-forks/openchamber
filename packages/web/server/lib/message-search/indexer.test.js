@@ -640,6 +640,111 @@ describe.skipIf(!open)('message search index', () => {
     expect(local.status().backfill.state).toBe('done');
   });
 
+  it('removes a head session deleted while disconnected when the resumed walk completes', async () => {
+    // Indexed in an earlier, completed walk, so the capped walk below
+    // lists it unchanged and never syncs (or protects) it.
+    fake.session('victim');
+    fake.user('victim', 'v1', 'victim words vanished');
+    await backfill();
+    expect(search('victim')).toHaveLength(1);
+
+    const PAGE = 200;
+    const victim = { id: 'victim', title: 'Victim', location: { directory: '/repo/victim' }, time: { created: 1000, updated: 1000 } };
+    const bulk = Array.from({ length: 4010 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));
+    const all = [victim, ...bulk];
+    const byId = new Map(all.map((session) => [session.id, session]));
+    const client = {
+      session: {
+        get: async ({ sessionID }) => byId.get(sessionID),
+        list: async ({ cursor }) => {
+          const start = cursor ? Number(cursor.split('-')[1]) : 0;
+          const data = all.slice(start, start + PAGE);
+          const end = start + data.length;
+          return { data, cursor: end < all.length ? { next: `page-${end}` } : {} };
+        },
+        message: fake.client.session.message,
+      },
+      message: {
+        list: async ({ sessionID }) => (sessionID === 'victim'
+          ? { data: [{ id: 'v1', type: 'user', text: 'victim words vanished', time: { created: 1001 } }], cursor: {} }
+          : { data: [], cursor: {} }),
+      },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
+    const connect = async () => {
+      local.onConnected();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await local.idle();
+    };
+
+    // First connect: the walk caps with the victim in its saved head.
+    await connect();
+    expect(store.counts().sessions).toBe(4000);
+    expect(search('victim')).toHaveLength(1);
+
+    // The victim is deleted while disconnected.
+    all.splice(0, 1);
+    byId.delete('victim');
+
+    // Second connect: the head refresh covers the saved segment and no
+    // longer lists the victim, so the refresh must REPLACE the segment —
+    // merging would keep the victim listed, and the completion cleanup
+    // would then keep its messages searchable.
+    await connect();
+    expect(local.status().backfill.state).toBe('done');
+    expect(search('victim')).toEqual([]);
+    expect(store.counts().sessions).toBe(4010);
+  });
+
+  it('persists head-refresh progress across connects so a long saved head cannot stall the tail', async () => {
+    const PAGE = 200;
+    const all = Array.from({ length: 8010 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));
+    const byId = new Map(all.map((session) => [session.id, session]));
+    let listCalls = 0;
+    const client = {
+      session: {
+        get: async ({ sessionID }) => byId.get(sessionID),
+        list: async ({ cursor }) => {
+          listCalls += 1;
+          const start = cursor ? Number(cursor.split('-')[1]) : 0;
+          const data = all.slice(start, start + PAGE);
+          const end = start + data.length;
+          return { data, cursor: end < all.length ? { next: `page-${end}` } : {} };
+        },
+        message: fake.client.session.message,
+      },
+      message: { list: async () => ({ data: [], cursor: {} }) },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
+    const connect = async () => {
+      local.onConnected();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await local.idle();
+    };
+
+    // Two connects advance the saved walk to 8,000 sessions: a fresh cap,
+    // then a completed head refresh plus a tail cap.
+    await connect();
+    expect(listCalls).toBe(20);
+    await connect();
+    expect(listCalls).toBe(60);
+    expect(store.counts().sessions).toBe(8000);
+
+    // Third connect: refreshing the 8,000-session head needs 40 pages but
+    // the refresh cap is 20. The refresh must keep its progress — if it
+    // restarted from page one on every connect, the tail would never run.
+    await connect();
+    expect(listCalls).toBe(80);
+    expect(local.status().backfill.state).toBe('running');
+
+    // Fourth connect: the refresh resumes at page 4,000, reaches the
+    // saved boundary, and the tail finally reads its last page.
+    await connect();
+    expect(listCalls).toBe(101);
+    expect(store.counts().sessions).toBe(8010);
+    expect(local.status().backfill.state).toBe('done');
+  });
+
   it('does not mark a session synced when the revert-boundary lookup times out', async () => {
     fake.session('a', { revert: { messageID: 'u2' } });
     fake.user('a', 'u1', 'keep this request');

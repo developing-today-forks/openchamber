@@ -370,8 +370,15 @@ export const createMessageSearchIndexer = ({
       let walkPending = true;
       if (resumed) {
         const boundary = resumed.cursor;
-        const freshHead = new Map();
-        let headCursor = null;
+        // A refresh that hit its page cap on an earlier connection resumes
+        // where it stopped instead of re-reading the same first pages and
+        // never reaching the boundary: its progress (cursor, the fresh
+        // entries read so far, and the saved ids it is replacing) is kept
+        // on the continuation alongside the tail cursor.
+        const freshHead = resumed.refresh?.freshHead ?? new Map();
+        const segmentIds = resumed.refresh?.segmentIds ?? new Set(listed.keys());
+        let headCursor = resumed.refresh?.cursor ?? null;
+        if (headCursor) seenCursors.add(headCursor);
         let headPages = 0;
         walkPending = false;
         for (;;) {
@@ -391,6 +398,16 @@ export const createMessageSearchIndexer = ({
             break;
           }
           if (next === boundary) {
+            // The refresh now covers the whole saved segment, so it
+            // REPLACES that segment: a saved entry the fresh head no
+            // longer lists was deleted while disconnected, and keeping
+            // it would leave its messages searchable after the tail
+            // completes and cleanup trusts the assembled list. Entries
+            // outside the segment (none yet: the tail has not run) and
+            // the live-session protection set are untouched.
+            for (const id of segmentIds) {
+              if (!freshHead.has(id)) listed.delete(id);
+            }
             for (const [id, session] of freshHead) listed.set(id, session);
             walkPending = true;
             break;
@@ -406,9 +423,13 @@ export const createMessageSearchIndexer = ({
             break;
           }
           if (headPages >= MAX_PAGES_PER_WALK) {
-            logger.warn?.(`[message-search] session list pagination hit the ${MAX_PAGES_PER_WALK}-page cap while refreshing a resumed backfill; keeping the saved tail cursor for the next walk`);
-            for (const [id, session] of freshHead) listed.set(id, session);
-            backfillContinuation = { cursor: boundary, listed };
+            logger.warn?.(`[message-search] session list pagination hit the ${MAX_PAGES_PER_WALK}-page cap while refreshing a resumed backfill; keeping the refresh progress and the saved tail cursor for the next walk`);
+            // Do not merge the partial head: the segment is replaced
+            // whole when the refresh reaches the boundary, and a partial
+            // merge would resurrect entries the refresh has not covered
+            // yet. The saved progress lets the next walk continue the
+            // refresh from this cursor instead of starting it over.
+            backfillContinuation = { cursor: boundary, listed, refresh: { cursor: next, freshHead, segmentIds } };
             break;
           }
           if (headCursor) seenCursors.add(headCursor);
