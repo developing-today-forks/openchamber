@@ -5,6 +5,7 @@ import {
 } from './tunnels/executable-search.js';
 import { getTunnelDependencyInstallInfo } from './tunnels/install-help.js';
 import { TUNNEL_PROVIDER_NGROK } from './tunnels/types.js';
+import { readBoundedResponseJson } from './shared/response-body.js';
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
 // spawnSync blocks the whole server event loop while it waits, so a hung
@@ -18,6 +19,12 @@ const NGROK_API_URL = 'http://127.0.0.1:4040/api/tunnels';
 // reachability check above and far under the 30 s startup timeout.
 const NGROK_POLL_TIMEOUT_MS = 2000;
 const NGROK_POLL_INTERVAL_MS = 250;
+// A tunnels listing is a handful of small entries (name, proto,
+// public_url, config), so the 64 KiB cap that bounds version answers
+// in opencode/compatibility.js is generous headroom for a healthy
+// answer while still refusing to buffer an unbounded body from a
+// fast loopback source on every poll.
+const NGROK_TUNNELS_RESPONSE_MAX_BYTES = 64 * 1024;
 const NGROK_PUBLIC_URL_REGEX = /https:\/\/[^\s"']+/i;
 const NGROK_AUTHTOKEN_HELP = 'Run: ngrok config add-authtoken <your-ngrok-token>';
 const getNgrokInstallInfo = () => getTunnelDependencyInstallInfo(TUNNEL_PROVIDER_NGROK);
@@ -240,7 +247,7 @@ export async function fetchNgrokPublicUrl({ fetchImpl = globalThis.fetch, timeou
     return null;
   }
   // One controller carries both the deadline and the caller's signal, so
-  // either aborts the fetch -- including a response.json() body read that
+  // either aborts the fetch -- including a bounded body read that
   // is still in flight when the deadline (or the caller) fires. The timer
   // is only cleared after the body read settles, in finally.
   const controller = new AbortController();
@@ -256,7 +263,7 @@ export async function fetchNgrokPublicUrl({ fetchImpl = globalThis.fetch, timeou
     if (!response.ok) {
       return null;
     }
-    const payload = await response.json();
+    const payload = await readBoundedResponseJson(response, NGROK_TUNNELS_RESPONSE_MAX_BYTES);
     const tunnels = Array.isArray(payload?.tunnels) ? payload.tunnels : [];
     const httpsTunnel = tunnels.find((entry) => entry?.proto === 'https' && normalizeNgrokPublicUrl(entry?.public_url));
     const fallbackTunnel = tunnels.find((entry) => normalizeNgrokPublicUrl(entry?.public_url));
