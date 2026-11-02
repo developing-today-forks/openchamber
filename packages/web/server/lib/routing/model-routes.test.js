@@ -863,7 +863,7 @@ describe('registerModelRouteRoutes', () => {
   beforeEach(() => {
     targetConfig = { experimental: { model_routes: { old: { targets: ['a/b'] } } } };
     deps = {
-      readConfigLayers: vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } })),
+      readConfigLayers: vi.fn(() => ({ mergedConfig: targetConfig, userConfig: targetConfig, paths: { userPath: '/u/opencode.json' } })),
       getConfigForPath: vi.fn(() => targetConfig),
       writeConfig: vi.fn(),
       CONFIG_FILE: '/u/opencode.json',
@@ -888,7 +888,7 @@ describe('registerModelRouteRoutes', () => {
         routes: { models: { nested: { targets: ['a/b'] } }, tuning, schedules },
       },
     };
-    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, userConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
     deps.getConfigForPath = vi.fn(() => targetConfig);
     const { app, routes } = makeApp();
     registerModelRouteRoutes(app, deps);
@@ -913,7 +913,7 @@ describe('registerModelRouteRoutes', () => {
         },
       },
     };
-    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, userConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
     deps.getConfigForPath = vi.fn(() => targetConfig);
     const { app, routes } = makeApp();
     registerModelRouteRoutes(app, deps);
@@ -924,6 +924,34 @@ describe('registerModelRouteRoutes', () => {
     expect(response.out.body.schedules).toEqual(nestedSchedules);
   });
 
+  it('GET lets a higher-priority flat tuning override a lower-priority nested one', async () => {
+    const userConfig = { experimental: { routes: { tuning: { enabled: true, intervalMinutes: 30 } } } };
+    const projectConfig = { experimental: { model_route_tuning: { enabled: false } } };
+    deps.readConfigLayers = vi.fn(() => ({
+      userConfig,
+      userOverrideConfig: {},
+      customConfig: {},
+      projectConfig,
+      // What shared.js mergeConfigs produces: both files' shapes side by side.
+      mergedConfig: {
+        experimental: {
+          routes: { tuning: { enabled: true, intervalMinutes: 30 } },
+          model_route_tuning: { enabled: false },
+        },
+      },
+      paths: { userPath: '/u/opencode.json', userOverridePath: null, customPath: null, projectPath: '/p/opencode.json' },
+    }));
+    deps.getConfigForPath = vi.fn(() => userConfig);
+    const { app, routes } = makeApp();
+    registerModelRouteRoutes(app, deps);
+    const response = res();
+    await routes.get[0][1]({}, response);
+    // The project file outranks the user file, so its flat `enabled: false`
+    // wins over the user file's nested `enabled: true`; the key only the
+    // lower file sets still applies.
+    expect(response.out.body.tuning).toEqual({ enabled: false, intervalMinutes: 30 });
+  });
+
   it('PUT writes edited values into the nested shape and removes the flat keys', async () => {
     targetConfig = {
       experimental: {
@@ -932,7 +960,7 @@ describe('registerModelRouteRoutes', () => {
         routes: { models: { old: { targets: ['a/b'] } } },
       },
     };
-    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
+    deps.readConfigLayers = vi.fn(() => ({ mergedConfig: targetConfig, userConfig: targetConfig, paths: { userPath: '/u/opencode.json' } }));
     deps.getConfigForPath = vi.fn(() => targetConfig);
     const { app, routes } = makeApp();
     registerModelRouteRoutes(app, deps);

@@ -41,7 +41,7 @@ const plan = (id, quotas) => ({
 });
 
 const baseDeps = (dbPath, { routes, plans = [], links = {} }) => ({
-  readConfigLayers: () => ({ mergedConfig: { experimental: { model_routes: routes } } }),
+  readConfigLayers: () => ({ mergedConfig: { experimental: { model_routes: routes } }, userConfig: { experimental: { model_routes: routes } }, paths: { userPath: '/u/opencode.json' } }),
   resolveDbPath: () => dbPath,
   loadPlanStore: () => ({ version: 1, plans, models: {}, pools: {} }),
   loadPoolPlanLinks: () => ({ version: 1, links }),
@@ -65,6 +65,30 @@ describe('computePoolHealth', () => {
     const [openaiTarget, anthropicTarget] = health.pools.pool1.targets;
     expect(openaiTarget).toMatchObject({ ref: 'openai/a', activeSessions: 2, plan: null, blastRadius: true, suggestion: null });
     expect(anthropicTarget).toMatchObject({ ref: 'anthropic/b', activeSessions: 1, plan: null, blastRadius: false });
+  });
+
+  it('lets a higher-priority flat pool replace a lower-priority nested pool of the same id', async () => {
+    const dbPath = seedDb(tempDir(), []);
+    const health = await computePoolHealth({
+      ...baseDeps(dbPath, { routes: {} }),
+      readConfigLayers: () => ({
+        userConfig: { experimental: { routes: { models: { pool1: { targets: ['anthropic/b'] } } } } },
+        userOverrideConfig: {},
+        customConfig: {},
+        projectConfig: { experimental: { model_routes: { pool1: { targets: ['openai/a'] } } } },
+        // What shared.js mergeConfigs produces: both files' shapes side by side.
+        mergedConfig: {
+          experimental: {
+            routes: { models: { pool1: { targets: ['anthropic/b'] } } },
+            model_routes: { pool1: { targets: ['openai/a'] } },
+          },
+        },
+        paths: { userPath: '/u/opencode.json', userOverridePath: null, customPath: null, projectPath: '/p/opencode.json' },
+      }),
+      now: Date.now(),
+    });
+    expect(Object.keys(health.pools)).toEqual(['pool1']);
+    expect(health.pools.pool1.targets.map((target) => target.ref)).toEqual(['openai/a']);
   });
 
   it('combines sibling targets on the same plan and flags a weighted pool nearing its quota', async () => {
@@ -459,7 +483,7 @@ describe('registerPoolHealthRoutes query parsing', () => {
     delete process.env.OPENCODE_DB;
     const app = express();
     registerPoolHealthRoutes(app, {
-      readConfigLayers: () => ({ mergedConfig: { experimental: { model_routes: { pool1: { targets: ['openai/a'] } } } } }),
+      readConfigLayers: () => ({ mergedConfig: { experimental: { model_routes: { pool1: { targets: ['openai/a'] } } } }, userConfig: { experimental: { model_routes: { pool1: { targets: ['openai/a'] } } } }, paths: { userPath: '/u/opencode.json' } }),
       openchamberDataDir,
       isOpenCodeLocal: () => true,
     });

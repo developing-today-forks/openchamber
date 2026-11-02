@@ -103,6 +103,26 @@ const readModelRouteTuning = (config) => {
 };
 
 /**
+ * Tuning across every config file (`sources` lowest priority first): fold
+ * each file's two shapes first, then merge in reading order, so a key from
+ * a higher-priority file wins whatever shape that file stores it in.
+ * Reading the deep-merged config instead would let a lower file's nested
+ * tuning beat a higher file's flat override of the same key, because the
+ * merged config keeps both shapes side by side and the per-config reader
+ * prefers the nested one.
+ */
+const readLayeredModelRouteTuning = (sources) => {
+  let tuning = null;
+  for (const source of sources) {
+    const layerTuning = readModelRouteTuning(source.config);
+    if (!layerTuning) continue;
+    if (!tuning) tuning = {};
+    Object.assign(tuning, layerTuning);
+  }
+  return tuning;
+};
+
+/**
  * The cross-pool schedules as one config file stores them, or null.
  * The nested `experimental.routes.schedules` list wins over the flat
  * `experimental.model_route_schedules` list when both are present.
@@ -144,7 +164,7 @@ const readOtherModelRoutes = (sources, targetPath) =>
   });
 
 /** The layers' files as a source list, for callers that have no readConfigSources. */
-const sourcesFromLayers = (layers) => [
+export const sourcesFromLayers = (layers) => [
   [layers.paths.userPath, layers.userConfig],
   [layers.paths.userOverridePath, layers.userOverrideConfig],
   [layers.paths.customPath, layers.customConfig],
@@ -851,7 +871,7 @@ export const registerModelRouteRoutes = (app, dependencies) => {
         // The user file's own pools, which are the ones Settings edits; the
         // merged view would copy other files' pools into it on save.
         routes: readModelRoutes(targetConfig),
-        tuning: readModelRouteTuning(layers.mergedConfig),
+        tuning: readLayeredModelRouteTuning(sourcesFromLayers(layers)),
         // The user file's own list, which is the one Settings edits; the
         // merged view would copy other files' entries into it on save.
         schedules: readModelRouteSchedules(targetConfig),
@@ -923,7 +943,7 @@ export const registerModelRouteRoutes = (app, dependencies) => {
       }
       res.json({
         routes: routes ?? readModelRoutes(targetConfig),
-        tuning: tuning === undefined ? readModelRouteTuning(layers.mergedConfig) : tuning,
+        tuning: tuning === undefined ? readLayeredModelRouteTuning(sourcesFromLayers(layers)) : tuning,
         schedules: readModelRouteSchedules(targetConfig),
         ...(await otherFilesFor(req, targetPath)),
         path: targetPath,
