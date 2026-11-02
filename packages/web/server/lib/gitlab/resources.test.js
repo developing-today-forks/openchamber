@@ -672,6 +672,13 @@ describe('GitLab resource service', () => {
     expect(result.ci).toBeNull();
   });
 
+  it('fails instead of returning capped board-picker collections as complete', async () => {
+    const labels = setup({ ProjectLabels: { all: list([{ name: 'bug', color: '#d73a4a' }], 2) } });
+    await expect(labels.service.listLabels('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more labels');
+    const members = setup({ ProjectMembers: { all: list([{ id: 7, username: 'ann', state: 'active' }], 2) } });
+    await expect(members.service.listReviewerCandidates('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more members');
+  });
+
   it('reads fork pipeline jobs from the pipeline project', async () => {
     const forkMR = { ...openMR, head_pipeline: { id: 9, status: 'running', project_id: 1 } };
     const { service, client } = setup({ MergeRequests: { ...setup().client.MergeRequests, show: vi.fn(async () => forkMR) } });
@@ -765,8 +772,8 @@ describe('GitLab comments and reviews', () => {
     const { service } = setup({
       MergeRequests: { ...setup().client.MergeRequests, edit: editMR, show: vi.fn(async () => ({ ...openMR, labels: ['bug'], reviewers: [{ id: 7, username: 'ann' }] })) },
       Issues: { ...setup().client.Issues, edit: editIssue },
-      ProjectLabels: { all: vi.fn(async () => [{ name: 'bug', color: '#d73a4a' }, { name: '' }]) },
-      ProjectMembers: { all: vi.fn(async () => [
+      ProjectLabels: { all: list([{ name: 'bug', color: '#d73a4a' }, { name: '' }]) },
+      ProjectMembers: { all: list([
         { id: 7, username: 'ann', avatar_url: `${origin}/a.png`, state: 'active' },
         { id: 8, username: 'gone', state: 'blocked' },
       ]) },
