@@ -305,8 +305,17 @@ describe("SessionMessageLoader", () => {
     let calls = 0
     const { childStores, loader } = createLoader(async ({ sessionID }) => {
       calls += 1
-      if (calls === 1) return response([createRecord(sessionID, "msg_latest", 1_000)], "cursor-1")
-      return response([createRecord(sessionID, `msg_older_${calls}`, 1_000 - calls, "assistant")], `cursor-${calls}`)
+      // The initial page holds ten user prompts so ensure() is satisfied
+      // immediately: a one-prompt first page would send cold navigation
+      // into extendWindow, which walks up to the 300-record window ceiling
+      // one mock page at a time and swamps the alignment count below.
+      if (calls === 1) {
+        return response(
+          Array.from({ length: 10 }, (_, index) => createRecord(sessionID, `msg_initial_${index}`, 991 + index)),
+          "cursor-1",
+        )
+      }
+      return response([createRecord(sessionID, `msg_older_${calls}`, 990 - calls, "assistant")], `cursor-${calls}`)
     })
     const target = { directory: "/repo", sessionID: "session-a" }
 
@@ -316,7 +325,8 @@ describe("SessionMessageLoader", () => {
     // Initial page + first older page + 20 capped alignment pages, all committed.
     expect(calls).toBe(22)
     expect(loader.getSnapshot(target).status).toBe("ready")
-    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]).toHaveLength(22)
+    // Ten initial prompts plus the 21 committed older records.
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]).toHaveLength(31)
     loader.dispose()
     childStores.disposeAll()
   })
