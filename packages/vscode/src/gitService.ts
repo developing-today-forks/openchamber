@@ -2848,10 +2848,42 @@ export async function getGitFileDiff(
     try {
       // For staged files, get content from HEAD
       // For unstaged files, get content from index (staged) or HEAD
+      // The repo.show originals below buffer the whole committed/index
+      // blob, so gate them on the blob's cat-file size first (a missing
+      // object falls through to the existing show/fallback flow), and
+      // re-check the returned content in case it grew past the cap.
+      const gitBlobSize = async (spec: string): Promise<number | null> => {
+        try {
+          const sized = await execGit(['cat-file', '-s', spec], directory);
+          if (sized.exitCode !== 0) return null;
+          const size = Number.parseInt(String(sized.stdout).trim(), 10);
+          return Number.isFinite(size) ? size : null;
+        } catch {
+          return null;
+        }
+      };
       let original: string;
       if (staged) {
+        const headSize = await gitBlobSize(`HEAD:${filePath}`);
+        if (headSize !== null && headSize > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+          return fileDiffTooLarge(filePath);
+        }
         original = await repo.show('HEAD', filePath);
       } else {
+        // Unstaged originals come from the index, falling back to HEAD
+        // only when the file has no index entry — gate whichever blob
+        // will actually be read.
+        const indexSize = await gitBlobSize(`:${filePath}`);
+        if (indexSize !== null) {
+          if (indexSize > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+            return fileDiffTooLarge(filePath);
+          }
+        } else {
+          const headSize = await gitBlobSize(`HEAD:${filePath}`);
+          if (headSize !== null && headSize > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+            return fileDiffTooLarge(filePath);
+          }
+        }
         try {
           // Try to get from index first
           original = await repo.show(':0:' + filePath, filePath);
@@ -2859,6 +2891,9 @@ export async function getGitFileDiff(
           // Fall back to HEAD
           original = await repo.show('HEAD', filePath);
         }
+      }
+      if (Buffer.byteLength(original, 'utf8') > MAX_FILE_DIFF_WORKING_TREE_BYTES) {
+        return fileDiffTooLarge(filePath);
       }
       
       let modified: string;
