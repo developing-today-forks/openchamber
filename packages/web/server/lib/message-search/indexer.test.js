@@ -696,6 +696,94 @@ describe.skipIf(!open)('message search index', () => {
     expect(store.counts().sessions).toBe(4010);
   });
 
+  it('removes a head session deleted while disconnected even when the capped walk itself indexed it', async () => {
+    // Unlike the test above, the victim is NOT pre-indexed: the capped
+    // walk lists it, queues it, and syncs it, which puts it in the walk's
+    // protection set. The resumed refresh's removal is authoritative, so
+    // protection must not keep the deleted session searchable.
+    const PAGE = 200;
+    const victim = { id: 'victim', title: 'Victim', location: { directory: '/repo/victim' }, time: { created: 1000, updated: 1000 } };
+    const bulk = Array.from({ length: 4010 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));
+    const all = [victim, ...bulk];
+    const byId = new Map(all.map((session) => [session.id, session]));
+    const client = {
+      session: {
+        get: async ({ sessionID }) => byId.get(sessionID),
+        list: async ({ cursor }) => {
+          const start = cursor ? Number(cursor.split('-')[1]) : 0;
+          const data = all.slice(start, start + PAGE);
+          const end = start + data.length;
+          return { data, cursor: end < all.length ? { next: `page-${end}` } : {} };
+        },
+        message: fake.client.session.message,
+      },
+      message: {
+        list: async ({ sessionID }) => (sessionID === 'victim'
+          ? { data: [{ id: 'v1', type: 'user', text: 'victim words vanished', time: { created: 1001 } }], cursor: {} }
+          : { data: [], cursor: {} }),
+      },
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
+    const connect = async () => {
+      local.onConnected();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await local.idle();
+    };
+
+    // First connect: the walk caps with the victim in its saved head, and
+    // indexing the victim during that walk protects it.
+    await connect();
+    expect(store.counts().sessions).toBe(4000);
+    expect(search('victim')).toHaveLength(1);
+
+    // The victim is deleted while disconnected.
+    all.splice(0, 1);
+    byId.delete('victim');
+
+    // Second connect: the refresh replaces the saved segment without the
+    // victim, and the completion cleanup must delete it despite the
+    // protection it earned during the first walk.
+    await connect();
+    expect(local.status().backfill.state).toBe('done');
+    expect(search('victim')).toEqual([]);
+    expect(store.counts().sessions).toBe(4010);
+  });
+
+  it('serializes overlapping backfill runs from repeated connects', async () => {
+    fake.session('a');
+    fake.user('a', 'u1', 'serialized backfill words');
+    let listCalls = 0;
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    const client = {
+      session: {
+        get: fake.client.session.get,
+        list: async (...args) => {
+          listCalls += 1;
+          if (listCalls === 1) await firstGate;
+          return fake.client.session.list(...args);
+        },
+        message: fake.client.session.message,
+      },
+      message: fake.client.message,
+    };
+    const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
+    local.onConnected();
+    local.onConnected();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The second connect must not start a second walk while the first is
+    // still listing: overlapping walks share the continuation and
+    // protection state, and one run resetting it mid-walk corrupts the
+    // other's completion cleanup.
+    expect(listCalls).toBe(1);
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await local.idle();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await local.idle();
+    expect(search('serialized').map((hit) => hit.id)).toEqual(['u1']);
+  });
+
   it('persists head-refresh progress across connects so a long saved head cannot stall the tail', async () => {
     const PAGE = 200;
     const all = Array.from({ length: 8010 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));

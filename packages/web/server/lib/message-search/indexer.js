@@ -154,6 +154,11 @@ export const createMessageSearchIndexer = ({
   let draining = null;
   let backfill = { state: 'idle', total: 0, done: 0 };
   let backfillRun = 0;
+  // Backfill runs are serialized through this chain (see onConnected):
+  // overlapping walks share the continuation and protection state, and
+  // one run resetting that state mid-walk could make another run's
+  // completion cleanup delete sessions it never listed.
+  let backfillInFlight = Promise.resolve();
   // Where a page-capped session-list walk stopped, with the sessions it had
   // already listed: the next backfill resumes there instead of restarting,
   // so a list longer than the cap is still walked to the end, in chunks.
@@ -391,6 +396,13 @@ export const createMessageSearchIndexer = ({
           if (!next || page.data.length < SESSION_PAGE_SIZE) {
             // The whole list now fits before the old boundary: the fresh
             // head is the complete list and replaces the assembled one.
+            // Entries it no longer lists were deleted while disconnected:
+            // the replacement is authoritative, so their walk protection
+            // ends here and the completion cleanup must remove them even
+            // if this walk synced them before the disconnect.
+            for (const id of listed.keys()) {
+              if (!freshHead.has(id)) backfillWalkProtected?.delete(id);
+            }
             listed.clear();
             for (const [id, session] of freshHead) listed.set(id, session);
             listComplete = true;
@@ -406,7 +418,14 @@ export const createMessageSearchIndexer = ({
             // outside the segment (none yet: the tail has not run) and
             // the live-session protection set are untouched.
             for (const id of segmentIds) {
-              if (!freshHead.has(id)) listed.delete(id);
+              if (!freshHead.has(id)) {
+                listed.delete(id);
+                // Authoritative removal, as above: a session this walk
+                // synced before the disconnect loses its protection, so
+                // the completion cleanup deletes it instead of keeping
+                // its messages searchable.
+                backfillWalkProtected?.delete(id);
+              }
             }
             for (const [id, session] of freshHead) listed.set(id, session);
             walkPending = true;
@@ -499,7 +518,10 @@ export const createMessageSearchIndexer = ({
       queued += 1;
     }
     backfill = { state: queued > 0 || backfillContinuation ? 'running' : 'done', total: queued, done: 0 };
-    void drain();
+    // Await the drain so a serialized next run (see onConnected) starts
+    // only after this run's syncs have finished adding to the protection
+    // set its cleanup consults.
+    await drain();
   };
 
   return {
@@ -535,7 +557,9 @@ export const createMessageSearchIndexer = ({
     /** OpenCode (re)connected: catch up on whatever changed while it was not watched. */
     onConnected() {
       if (stopped) return;
-      void startBackfill();
+      backfillInFlight = backfillInFlight
+        .catch(() => {})
+        .then(() => (stopped ? undefined : startBackfill()));
     },
 
     status() {
