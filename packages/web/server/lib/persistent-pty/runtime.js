@@ -126,7 +126,7 @@ export function createPersistentPtyWsRuntime({
         try { client.close(code, reason); } catch { /* already closing */ }
       }
       if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
-        try { upstream.close(); } catch { /* already closing */ }
+        try { upstream.terminate(); } catch { /* already gone */ }
       }
     };
 
