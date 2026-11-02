@@ -1238,6 +1238,43 @@ const runGitCommand = async (cwd, args, { env: envOverride, timeoutMs = 0 } = {}
   }
 };
 
+// Local diff output (whole-tree, range, and commit diffs) is capped at
+// 50 MiB, the same limit getFileDiff's working-tree reads and the
+// walkthrough PR source (MAX_PATCH_BYTES) already carry. The cap is
+// enforced at the Git process, not on the returned string: simple-git has
+// no maxBuffer option, and a length check after `git.raw` returns cannot
+// undo memory the read already accumulated. Diff-producing reads therefore
+// run through execFile with maxBuffer — the runGitCommand pattern above —
+// and its overflow becomes the typed diff_too_large error the diff routes
+// answer with 413 (mirroring file_too_large in getFileDiff).
+export const MAX_DIFF_OUTPUT_BYTES = 50 * 1024 * 1024;
+const DIFF_TOO_LARGE_CODE = 'diff_too_large';
+
+const formatDiffLimit = (maxBytes) =>
+  maxBytes % (1024 * 1024) === 0 ? `${maxBytes / (1024 * 1024)} MiB` : `${maxBytes} bytes`;
+
+const createDiffTooLargeError = (maxBytes = MAX_DIFF_OUTPUT_BYTES) => Object.assign(
+  new Error(`Git diff output exceeds the ${formatDiffLimit(maxBytes)} limit for local diffs`),
+  { code: DIFF_TOO_LARGE_CODE },
+);
+
+const runBoundedGitDiff = async (repoRoot, args, { env, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) => {
+  try {
+    const { stdout } = await execFileAsync(getGitBinary(), args, {
+      cwd: repoRoot,
+      env: env ?? (await buildGitEnv(repoRoot)),
+      windowsHide: true,
+      maxBuffer: maxBytes,
+    });
+    return String(stdout || '');
+  } catch (error) {
+    if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || /maxBuffer/i.test(error?.message || '')) {
+      throw createDiffTooLargeError(maxBytes);
+    }
+    throw new Error(parseGitErrorText(error) || 'Failed to get Git diff');
+  }
+};
+
 const resolveGitCommitFilePath = async (repoRoot, hash, candidates) => {
   for (const candidate of candidates) {
     const [originalTreeResult, modifiedTreeResult] = await Promise.all([
@@ -3523,6 +3560,12 @@ const getNoIndexDiff = async (repoRoot, repoPath, contextLines) => {
   args.push(`-U${normalizeContextLines(contextLines)}`);
   args.push('--no-index', '--', '/dev/null', repoPath);
   const result = await runGitCommand(repoRoot, args);
+  if (!result.success && /maxBuffer/i.test(result.message || '')) {
+    // runGitCommand's buffer (20 MiB) overflowed: surface the same typed
+    // diff_too_large error as the bounded diff reads instead of Node's raw
+    // maxBuffer message. The 20 MiB bound itself is unchanged.
+    throw createDiffTooLargeError(20 * 1024 * 1024);
+  }
   // Exit 1 means differences, even when Git also writes warnings to stderr.
   // Spawn and buffer errors have no numeric exit code and must still fail.
   if (result.exitCode === 0 || result.exitCode === 1) {
@@ -3531,12 +3574,12 @@ const getNoIndexDiff = async (repoRoot, repoPath, contextLines) => {
   throw new Error(result.stderr || result.message || 'Failed to get untracked Git diff');
 };
 
-export async function getDiff(directory, { path: filePath, staged = false, contextLines = 3 } = {}) {
+export async function getDiff(directory, { path: filePath, staged = false, contextLines = 3, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) {
   const context = await createRepositoryGitContext(directory);
   const fileContext = filePath
     ? await resolveGitFileContext(context.directoryPath, context.directoryGit, filePath, context.repoRoot)
     : null;
-  return readDiff(context, fileContext, { staged, contextLines });
+  return readDiff(context, fileContext, { staged, contextLines, maxBytes });
 }
 
 /**
@@ -3544,15 +3587,15 @@ export async function getDiff(directory, { path: filePath, staged = false, conte
  * empty when only untracked files changed inside it, so callers need the state
  * to show anything truthful.
  */
-export async function getPathDiff(directory, { path: filePath, staged = false, contextLines = 3 } = {}) {
+export async function getPathDiff(directory, { path: filePath, staged = false, contextLines = 3, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) {
   const context = await createRepositoryGitContext(directory);
   const fileContext = await resolveGitFileContext(context.directoryPath, context.directoryGit, filePath, context.repoRoot);
-  const diff = await readDiff(context, fileContext, { staged, contextLines });
+  const diff = await readDiff(context, fileContext, { staged, contextLines, maxBytes });
   if (!fileContext.isSubmodule) return { diff, submodule: null };
   return { diff, submodule: await readSubmoduleState(context.repoRoot, fileContext) };
 }
 
-const GIT_PATH_ERROR_CODES = new Set(['path_not_found', 'nested_repository', 'untracked_directory']);
+const GIT_PATH_ERROR_CODES = new Set(['path_not_found', 'nested_repository', 'untracked_directory', 'diff_too_large']);
 
 /**
  * `getPathDiff` for many paths of one side, resolving the repository once and
@@ -3561,7 +3604,7 @@ const GIT_PATH_ERROR_CODES = new Set(['path_not_found', 'nested_repository', 'un
  * `code` is a path error code when the path no longer resolves. One failed
  * path never fails the others.
  */
-export async function getPathDiffs(directory, { paths: filePaths = [], staged = false, contextLines = 3, concurrency = 8 } = {}) {
+export async function getPathDiffs(directory, { paths: filePaths = [], staged = false, contextLines = 3, concurrency = 8, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) {
   const paths = Array.isArray(filePaths) ? filePaths : [];
   if (paths.length === 0) return [];
 
@@ -3575,7 +3618,7 @@ export async function getPathDiffs(directory, { paths: filePaths = [], staged = 
       const filePath = paths[index];
       try {
         const fileContext = await resolveGitFileContext(context.directoryPath, context.directoryGit, filePath, context.repoRoot);
-        const diff = await readDiff(context, fileContext, { staged, contextLines });
+        const diff = await readDiff(context, fileContext, { staged, contextLines, maxBytes });
         const submodule = fileContext.isSubmodule ? await readSubmoduleState(context.repoRoot, fileContext) : null;
         results[index] = { path: filePath, diff, submodule };
       } catch (error) {
@@ -3589,7 +3632,7 @@ export async function getPathDiffs(directory, { paths: filePaths = [], staged = 
   return results;
 }
 
-async function readDiff({ repoRoot, git }, fileContext, { staged, contextLines }) {
+async function readDiff({ repoRoot, git }, fileContext, { staged, contextLines, maxBytes = MAX_DIFF_OUTPUT_BYTES }) {
   try {
     const args = ['diff', '--no-color', '--full-index', '--no-ext-diff', ...DIFF_PREFIX_ARGS];
 
@@ -3603,7 +3646,7 @@ async function readDiff({ repoRoot, git }, fileContext, { staged, contextLines }
       args.push('--', fileContext.repoPath);
     }
 
-    const diff = await git.raw(args);
+    const diff = await runBoundedGitDiff(repoRoot, args, { maxBytes });
     if (diff && diff.trim().length > 0) {
       return diff;
     }
@@ -3729,7 +3772,7 @@ async function assertRangeRefsResolve(git, refs) {
 // as tracked files, including a staged deletion recreated at the same path.
 // Intent-to-add records only their existence; diff reads current file contents.
 // Resolves to the diff output and the merge base it was taken against.
-async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = []) {
+async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = [], maxBytes = MAX_DIFF_OUTPUT_BYTES) {
   const { git, repoRoot } = context;
   const readHead = async () => {
     const commit = (await git.raw(['rev-parse', '--verify', 'HEAD'])).trim();
@@ -3743,15 +3786,15 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
     throw new Error('Working-tree comparisons require the checked-out branch. Refresh and try again.');
   }
   const mergeBase = (await git.raw(['merge-base', baseRef, headCommit])).trim();
-  const readDiff = async (comparisonGit) => {
-    const output = await comparisonGit.raw([...args, mergeBase, '--', ...paths]);
+  const readDiff = async (env) => {
+    const output = await runBoundedGitDiff(repoRoot, [...args, mergeBase, '--', ...paths], { env, maxBytes });
     if (await readHead() !== startingHead) {
       throw new Error('The checked-out branch changed during comparison. Refresh and try again.');
     }
     return { output, mergeBase };
   };
   const untracked = await git.raw(['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths]);
-  if (!untracked) return readDiff(git);
+  if (!untracked) return readDiff(undefined);
 
   const temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'openchamber-branch-diff-'));
   try {
@@ -3764,13 +3807,14 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
     comparisonGit.env('GIT_INDEX_FILE', temporaryIndex);
     comparisonGit.env('GIT_LITERAL_PATHSPECS', '1');
     await comparisonGit.raw(['add', '--intent-to-add', '--pathspec-from-file=' + pathspecFile, '--pathspec-file-nul']);
-    return await readDiff(comparisonGit);
+    const env = { ...(await buildGitEnv(repoRoot)), GIT_INDEX_FILE: temporaryIndex, GIT_LITERAL_PATHSPECS: '1' };
+    return await readDiff(env);
   } finally {
     await fsp.rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
-export async function getRangeDiff(directory, { base, head, path: filePath, contextLines = 3, includeWorkingTree = false } = {}) {
+export async function getRangeDiff(directory, { base, head, path: filePath, contextLines = 3, includeWorkingTree = false, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) {
   const { directoryPath, directoryGit, repoRoot, git } = await createRepositoryGitContext(directory);
   const baseRef = typeof base === 'string' ? base.trim() : '';
   const headRef = typeof head === 'string' ? head.trim() : '';
@@ -3806,10 +3850,10 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     }
   }
   if (includeWorkingTree) {
-    return (await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths)).output;
+    return (await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths, maxBytes)).output;
   }
   args.push(`${baseRef}...${headRef}`, '--', ...paths);
-  const diff = await git.raw(args);
+  const diff = await runBoundedGitDiff(repoRoot, args, { maxBytes });
   return diff;
 }
 
@@ -6991,14 +7035,14 @@ async function resolveCommitHash(git, hash) {
 
 const commitShowArgs = (hash) => ['show', '--format=', '--root', '--diff-merges=first-parent', '--find-renames', ...DIFF_PREFIX_ARGS, hash];
 
-export async function getCommitDiff(directory, { hash, path: filePath, previousPath, contextLines = 3 } = {}) {
-  const { git } = await createRepositoryGitContext(directory);
+export async function getCommitDiff(directory, { hash, path: filePath, previousPath, contextLines = 3, maxBytes = MAX_DIFF_OUTPUT_BYTES } = {}) {
+  const { git, repoRoot } = await createRepositoryGitContext(directory);
   const commit = await resolveCommitHash(git, hash);
   const paths = [filePath, previousPath].filter(Boolean).map((value) => `:(literal)${value}`);
-  return git.raw([
+  return runBoundedGitDiff(repoRoot, [
     ...commitShowArgs(commit), '--no-color', '--no-ext-diff', `-U${normalizeContextLines(contextLines)}`,
     '--', ...paths,
-  ]);
+  ], { maxBytes });
 }
 
 export async function getCommitFiles(directory, commitHash) {
