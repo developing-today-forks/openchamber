@@ -6855,6 +6855,14 @@ describe('file-diff working-tree size cap', () => {
     return filePath;
   };
 
+  const commitSizedFile = async (name, size) => {
+    const { tmpDir, git } = await createTempRepo();
+    makeSizedFile(tmpDir, name, size);
+    await git.add(name);
+    await git.commit('Initial');
+    return tmpDir;
+  };
+
   const commitSmallThenResize = async (name, size) => {
     const { tmpDir, git } = await createTempRepo();
     fs.writeFileSync(path.join(tmpDir, name), 'small\n');
@@ -6921,11 +6929,27 @@ describe('file-diff working-tree size cap', () => {
     expect(result).toMatchObject({ original: 'before\n', modified: 'after\n', isBinary: false });
   });
 
-  it('keeps the staged path outside the working-tree cap', async () => {
+  it('rejects an over-cap staged index blob with file_too_large', async () => {
     if (!canRunGit()) return;
     const tmpDir = await commitSmallThenResize('big.txt', CAP + 1);
     runGit(tmpDir, ['add', 'big.txt']);
-    const result = await getFileDiff(tmpDir, { path: 'big.txt', staged: true });
-    expect(result.modified).toHaveLength(CAP + 1);
+    await expect(getFileDiff(tmpDir, { path: 'big.txt', staged: true })).rejects.toMatchObject({ code: 'file_too_large' });
+  });
+
+  it('rejects an over-cap HEAD blob when the working copy is deleted', async () => {
+    if (!canRunGit()) return;
+    const tmpDir = await commitSizedFile('big.txt', CAP + 1);
+    fs.rmSync(path.join(tmpDir, 'big.txt'));
+    await expect(getFileDiff(tmpDir, { path: 'big.txt' })).rejects.toMatchObject({ code: 'file_too_large' });
+  });
+
+  it('diffs a committed blob at exactly the cap byte-identically', async () => {
+    if (!canRunGit()) return;
+    const tmpDir = await commitSizedFile('big.txt', CAP);
+    fs.writeFileSync(path.join(tmpDir, 'big.txt'), 'changed\n');
+    const result = await getFileDiff(tmpDir, { path: 'big.txt' });
+    expect(result.original).toHaveLength(CAP);
+    expect(result.modified).toBe('changed\n');
+    expect(result.isBinary).toBe(false);
   });
 });
