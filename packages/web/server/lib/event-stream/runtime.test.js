@@ -631,6 +631,25 @@ describe('message stream WS payload cap (#1108)', () => {
     });
   }
 
+  it('closes over-cap message events without relying on ws maxPayload enforcement', async () => {
+    const ctx = await startRuntime();
+    const atCap = new FakeSocket();
+    const overCap = new FakeSocket();
+    try {
+      ctx.runtime.wsServer.emit('connection', atCap, { url: '/api/global/event/ws' });
+      ctx.runtime.wsServer.emit('connection', overCap, { url: '/api/global/event/ws' });
+      atCap.emit('message', Buffer.alloc(MESSAGE_STREAM_WS_MAX_PAYLOAD_BYTES), true);
+      overCap.emit('message', Buffer.alloc(MESSAGE_STREAM_WS_MAX_PAYLOAD_BYTES + 1), true);
+
+      expect(atCap.closeCalls).toEqual([]);
+      expect(overCap.closeCalls).toEqual([{ code: 1009, reason: 'Message stream frame too large' }]);
+    } finally {
+      atCap.close();
+      overCap.close();
+      await stopRuntime(ctx);
+    }
+  }, 20_000);
+
   it('closes with 1009 when a single frame exceeds the payload cap', async () => {
     const ctx = await startRuntime();
     const client = await connectClient(ctx.port);
