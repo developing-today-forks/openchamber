@@ -914,6 +914,47 @@ describe('Codex quota provider (VS Code parity)', () => {
     });
   }
 
+  test('fails the provider result for an over-cap response body (#1282)', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({
+      rate_limit: null,
+      pad: 'x'.repeat(1024 * 1024),
+    })));
+
+    const result = await fetchQuotaForProvider('codex');
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /exceeded the 1 MiB limit/);
+  });
+
+  test('stops a streamed over-cap response body instead of buffering it whole (#1282)', async () => {
+    const body = JSON.stringify({ rate_limit: null, pad: 'x'.repeat(2 * 1024 * 1024) });
+    const bytes = new TextEncoder().encode(body);
+    let offset = 0;
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= bytes.length) {
+          controller.close();
+          return;
+        }
+        const chunk = bytes.subarray(offset, offset + 8192);
+        offset += chunk.byteLength;
+        pulled = offset;
+        controller.enqueue(chunk);
+      },
+    });
+    stubFetchReturning(() => Promise.resolve(new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    const result = await fetchQuotaForProvider('codex');
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /exceeded the 1 MiB limit/);
+    assert.ok(pulled < body.length, 'the reader stopped before the whole body was pulled');
+  });
+
   test('leaves a fractional in-range spend percent unrounded', async () => {
     stubFetchReturning(() => Promise.resolve(mockResponse({
       rate_limit: null,
@@ -3049,6 +3090,16 @@ describe('xAI quota provider (VS Code parity)', () => {
     assert.equal(result.ok, false);
     assert.equal(result.configured, true);
     assert.match(result.error ?? '', /expired/i);
+  });
+
+  test('fails the provider result for an over-cap binary body (#1282)', async () => {
+    const result = await fetchXaiQuota({
+      readAuth: () => ({ xai: { type: 'oauth', access: 'valid-access', refresh: 'rotating-1', expires: Date.now() + 3_600_000 } }),
+      fetchImpl: async () => new Response(new Uint8Array(1024 * 1024 + 1)),
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /exceeded the 1 MiB limit/);
   });
 
   test('reports a missing credential as unconfigured without contacting xAI', async () => {
