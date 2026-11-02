@@ -12,6 +12,7 @@
 import { renameWithRetry } from '../shared/atomic-rename.js';
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
 import { parsePushKey, sealPushContent } from './push-seal.js';
+import { readBoundedResponseText } from '../shared/response-body.js';
 import {
   getOrCreateRelaySigningKeypair,
   signRelayMessage as signRelayMessageShared,
@@ -34,6 +35,10 @@ const DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'Unregistered', 'DeviceTok
 // foreground phone request, so its bound is tight; APNs answers are
 // normally sub-second, so the direct bound only fires on a genuine wedge.
 const APNS_RELAY_REQUEST_TIMEOUT_MS = 10_000;
+// The relay answer is only a small results array (drop tokens for at most
+// 100 tokens — a few KB at most); cap the body read at 1 MiB (the fleet's
+// small-JSON precedent) so an oversized relay body cannot be buffered whole.
+const APNS_RELAY_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
 const APNS_DIRECT_REQUEST_TIMEOUT_MS = 30_000;
 
 // AbortController + explicit timer (the template-runtime.js pattern in this
@@ -570,14 +575,22 @@ export const createApnsRuntime = (deps) => {
         console.warn(`[APNs relay] send failed status=${res.status}`);
         return;
       }
-      const data = await res.json().catch((error) => {
-        // The deadline signal stays live until the body is read (see the
-        // finally below): an abort here is a transport failure, not an
-        // empty result — rethrow so the outer catch reports it. Only a
-        // malformed body keeps the null fallback.
-        if (signal.aborted) throw error;
-        return null;
-      });
+      // Read the body through the bounded reader, not res.json(): the
+      // deadline bounds time, not bytes. readBoundedResponseText (not the
+      // JSON wrapper) is used so a reader error propagates: the deadline
+      // signal stays live until the body is read (see the finally below),
+      // so an abort here is a transport failure — the outer catch reports
+      // it (#993). An over-cap or malformed body keeps the null fallback:
+      // data stays null and no results are acted on.
+      const read = await readBoundedResponseText(res, APNS_RELAY_RESPONSE_MAX_BYTES);
+      let data = null;
+      if (!read.tooLarge) {
+        try {
+          data = JSON.parse(read.text.charCodeAt(0) === 0xfeff ? read.text.slice(1) : read.text);
+        } catch {
+          data = null;
+        }
+      }
       const results = Array.isArray(data?.results) ? data.results : [];
       for (const result of results) {
         if (result && result.drop === true && typeof result.token === 'string') {
@@ -587,7 +600,7 @@ export const createApnsRuntime = (deps) => {
     } catch (error) {
       console.warn('[APNs relay] request failed:', error?.message ?? error);
     } finally {
-      // The signal stays live until res.json() above has been read: the body
+      // The signal stays live until the body above has been read: the body
       // read is part of the stall surface.
       cleanup();
     }
