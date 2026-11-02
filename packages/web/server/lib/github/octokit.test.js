@@ -29,6 +29,26 @@ const streamedResponse = (body, etag) => {
   });
 };
 
+// The same body delivered in many chunks with no Content-Length at all
+// (chunked transfer): the case where a single arrayBuffer() read used to
+// materialize the whole response before the cache cap was checked.
+const chunkedResponse = (body, etag, extraHeaders = {}) => {
+  const bytes = new TextEncoder().encode(body);
+  const chunkSize = 256 * 1024;
+  const stream = new ReadableStream({
+    start(controller) {
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        controller.enqueue(bytes.subarray(offset, offset + chunkSize));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'application/json', etag, ...extraHeaders },
+  });
+};
+
 describe('Octokit ETag cache byte bounds (#848)', () => {
   it('returns an oversize streamed response whole but does not retain or replay it', async () => {
     const { createOctokit } = octokitModule;
@@ -82,6 +102,83 @@ describe('Octokit ETag cache byte bounds (#848)', () => {
 
     const second = await octokit.rest.users.getAuthenticated();
     expect(second.data.login).toBe('fresh-declared');
+  });
+
+  it('streams an oversize response with an absent content-length whole but does not retain it', async () => {
+    const { createOctokit } = octokitModule;
+    const oversize = jsonBodyOfSize(2 * 1024 * 1024 + 1024);
+    let calls = 0;
+    let secondHadIfNoneMatch = false;
+    vi.stubGlobal('fetch', async (url, options = {}) => {
+      calls += 1;
+      if (calls === 1) return chunkedResponse(oversize, '"chunked-absent-1"');
+      secondHadIfNoneMatch = headerValue(options.headers, 'if-none-match') !== undefined;
+      if (secondHadIfNoneMatch) return new Response(null, { status: 304 });
+      return new Response(JSON.stringify({ login: 'fresh-chunked' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"chunked-absent-2"' },
+      });
+    });
+
+    const octokit = createOctokit('token-chunked-absent', 'account-chunked-absent');
+    const first = await octokit.rest.users.getAuthenticated();
+    expect(first.data.login.length).toBe(oversize.length - 12);
+
+    const second = await octokit.rest.users.getAuthenticated();
+    expect(calls).toBe(2);
+    expect(secondHadIfNoneMatch).toBe(false);
+    expect(second.data.login).toBe('fresh-chunked');
+  });
+
+  it('streams an oversize response with an understated content-length whole but does not retain it', async () => {
+    const { createOctokit } = octokitModule;
+    const oversize = jsonBodyOfSize(2 * 1024 * 1024 + 1024);
+    let calls = 0;
+    let secondHadIfNoneMatch = false;
+    vi.stubGlobal('fetch', async (url, options = {}) => {
+      calls += 1;
+      if (calls === 1) {
+        // Declared far under the cap; the streamed bytes cross it. The
+        // declared length must not truncate or retain the response.
+        return chunkedResponse(oversize, '"chunked-understated-1"', { 'content-length': '100' });
+      }
+      secondHadIfNoneMatch = headerValue(options.headers, 'if-none-match') !== undefined;
+      if (secondHadIfNoneMatch) return new Response(null, { status: 304 });
+      return new Response(JSON.stringify({ login: 'fresh-understated' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"chunked-understated-2"' },
+      });
+    });
+
+    const octokit = createOctokit('token-chunked-understated', 'account-chunked-understated');
+    const first = await octokit.rest.users.getAuthenticated();
+    expect(first.data.login.length).toBe(oversize.length - 12);
+
+    const second = await octokit.rest.users.getAuthenticated();
+    expect(calls).toBe(2);
+    expect(secondHadIfNoneMatch).toBe(false);
+    expect(second.data.login).toBe('fresh-understated');
+  });
+
+  it('caches a streamed under-cap response with an absent content-length and replays it on 304', async () => {
+    const { createOctokit } = octokitModule;
+    const small = JSON.stringify({ login: 'streamed-octo' });
+    let calls = 0;
+    let secondHadIfNoneMatch = false;
+    vi.stubGlobal('fetch', async (url, options = {}) => {
+      calls += 1;
+      if (calls === 1) return chunkedResponse(small, '"chunked-small-1"');
+      secondHadIfNoneMatch = headerValue(options.headers, 'if-none-match') !== undefined;
+      return new Response(null, { status: 304 });
+    });
+
+    const octokit = createOctokit('token-chunked-small', 'account-chunked-small');
+    const first = await octokit.rest.users.getAuthenticated();
+    const second = await octokit.rest.users.getAuthenticated();
+    expect(first.data.login).toBe('streamed-octo');
+    expect(calls).toBe(2);
+    expect(secondHadIfNoneMatch).toBe(true);
+    expect(second.data.login).toBe('streamed-octo');
   });
 
   it('still caches and replays a small response on 304', async () => {
