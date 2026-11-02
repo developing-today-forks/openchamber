@@ -621,6 +621,14 @@ export const createOpenChamberControlService = (dependencies) => {
   // cursor ends the walk. `extractTextMessages` sorts the gathered records
   // oldest-first for the caller.
   const MESSAGE_PAGE_LIMIT = 200;
+  // A cursor walk must always end: a repeated cursor or this many pages
+  // stops it, even when the server keeps handing out fresh cursors (the
+  // house cap order: the message-search indexer walk in #1315 caps at 20).
+  // Past the cap sessionMessages returns the partial history collected so
+  // far flagged `truncated` (the session.messages action surfaces it, so a
+  // partial history is never presented as the full one) and
+  // resolveSessionDirectory returns null (directory unresolved).
+  const MAX_PAGES_PER_WALK = 20;
   const sessionMessages = async (client, sessionID, role, limit) => {
     // Room for the non-text records between text messages, within the page
     // size OpenCode accepts (a larger one is refused, which reads as an error
@@ -629,7 +637,8 @@ export const createOpenChamberControlService = (dependencies) => {
     const collected = [];
     const seenCursors = new Set();
     let cursor;
-    for (;;) {
+    let truncated = false;
+    for (let page = 0; page < MAX_PAGES_PER_WALK; page += 1) {
       const response = await client.message.list({
         sessionID,
         limit: fetchLimit ?? MESSAGE_PAGE_LIMIT,
@@ -641,11 +650,19 @@ export const createOpenChamberControlService = (dependencies) => {
       if (!next || raw.length === 0 || seenCursors.has(next)) break;
       // A bounded read only needs enough pages to project `limit` text messages.
       if (limit !== undefined && extractTextMessages(collected, role).length >= limit) break;
+      // The cap is the last stop and another page remains unvisited: the
+      // collected history is partial, so flag it instead of presenting it
+      // as the complete history the caller asked for.
+      if (page === MAX_PAGES_PER_WALK - 1) {
+        truncated = true;
+        break;
+      }
       seenCursors.add(next);
       cursor = next;
     }
-    const messages = extractTextMessages(collected, role);
-    return limit === undefined ? messages : messages.slice(-limit);
+    const projected = extractTextMessages(collected, role);
+    const messages = limit === undefined ? projected : projected.slice(-limit);
+    return { messages, truncated };
   };
 
   const waitForIdle = async ({ client, sessionID, directory, timeoutMs, requireActivity, baselineMessageID, startedAt, signal }) => {
@@ -659,7 +676,7 @@ export const createOpenChamberControlService = (dependencies) => {
       } else if (!requireActivity || observedActivity) {
         return status;
       } else {
-        const messages = await sessionMessages(client, sessionID, 'assistant', 1);
+        const messages = (await sessionMessages(client, sessionID, 'assistant', 1)).messages;
         const message = messages[0];
         if (message?.completedAt && (baselineMessageID ? message.id !== baselineMessageID : message.completedAt >= startedAt)) {
           return status;
@@ -683,16 +700,18 @@ export const createOpenChamberControlService = (dependencies) => {
       const client = await getClient();
       const seenCursors = new Set();
       let cursor;
-      for (;;) {
+      for (let page = 0; page < MAX_PAGES_PER_WALK; page += 1) {
         const response = await client.session.list(cursor ? { cursor } : {});
         const sessions = Array.isArray(response?.data) ? response.data : [];
         const session = sessions.find((item) => item?.id === sessionID);
         if (session) return asNonEmptyString(session?.location?.directory) || null;
+        if (sessions.length === 0) return null;
         const next = asNonEmptyString(response?.cursor?.next);
         if (!next || seenCursors.has(next)) return null;
         seenCursors.add(next);
         cursor = next;
       }
+      return null;
     } catch {
       return null;
     }
@@ -935,7 +954,7 @@ export const createOpenChamberControlService = (dependencies) => {
     delete publicResult.baselineAssistantMessageId;
     delete publicResult.baselineIdleRecordId;
     if (input.lastAssistant === true) {
-      publicResult.lastAssistantMessage = (await sessionMessages(client, result.sessionId, 'assistant', 1))[0] || null;
+      publicResult.lastAssistantMessage = (await sessionMessages(client, result.sessionId, 'assistant', 1)).messages[0] || null;
     }
     return publicResult;
   };
@@ -1325,7 +1344,10 @@ export const createOpenChamberControlService = (dependencies) => {
             ? await waitForIdle({ client, sessionID, directory, timeoutMs: normalizeWaitTimeoutMs(input.timeout), requireActivity: false, startedAt: now(), signal: options.signal })
             : await sessionStatus(client, sessionID);
           const limit = input.all === true ? undefined : (last ? 1 : positiveInteger(input.limit, 10, 'limit'));
-          return { sessionId: sessionID, directory, role, sessionStatus: currentStatus, messages: await sessionMessages(client, sessionID, role, limit) };
+          const history = await sessionMessages(client, sessionID, role, limit);
+          const messageResult = { sessionId: sessionID, directory, role, sessionStatus: currentStatus, messages: history.messages };
+          if (history.truncated) messageResult.truncated = true;
+          return messageResult;
         }
         if (action === 'session.archive' || action === 'session.unarchive') {
           // The session service owns the broadcast that tells open windows;
