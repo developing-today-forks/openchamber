@@ -8,6 +8,7 @@ on:
 # workflow+ref group is one shared group for every issue: with the
 # default single queue a third help command silently replaces the
 # pending second one. Key by issue and queue every run.
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.issue.number }}
   cancel-in-progress: true
