@@ -60,10 +60,26 @@ const unknownKeysProblem = (value, allowed) => {
   return `unknown ${noun} ${unknown.map((key) => `"${key}"`).join(", ")} (expected ${allowed.join(", ")})`;
 };
 
-/** The raw `experimental.model_routes` map from a merged OpenCode config, or {}. */
+/** The nested `experimental.routes` record from a config, or null. */
+const readNestedRoutes = (config) => {
+  const routes = config?.experimental?.routes;
+  return isRecord(routes) ? routes : null;
+};
+
+/**
+ * The route pools from a merged OpenCode config, or {}.
+ * OpenCode's canonical shape is the nested `experimental.routes.models`;
+ * the flat `experimental.model_routes` folds under it, matching opencode's
+ * normalize shim: a pool present in both shapes keeps its nested definition,
+ * and a pool present in only one shape is kept as it is.
+ */
 export const readModelRoutes = (config) => {
-  const routes = config?.experimental?.model_routes;
-  return isRecord(routes) ? routes : {};
+  const routes = {};
+  const flat = config?.experimental?.model_routes;
+  if (isRecord(flat)) Object.assign(routes, flat);
+  const nested = readNestedRoutes(config)?.models;
+  if (isRecord(nested)) Object.assign(routes, nested);
+  return routes;
 };
 
 /**
@@ -80,12 +96,42 @@ export const readLayeredModelRoutes = (sources) => {
 };
 
 const readModelRouteTuning = (config) => {
+  const nested = readNestedRoutes(config)?.tuning;
+  if (isRecord(nested)) return nested;
   const tuning = config?.experimental?.model_route_tuning;
   return isRecord(tuning) ? tuning : null;
 };
 
-/** `experimental.model_route_schedules` as one config file stores it, or null. */
-const readModelRouteSchedules = (config) => config?.experimental?.model_route_schedules ?? null;
+/**
+ * Tuning across every config file (`sources` lowest priority first): fold
+ * each file's two shapes first, then merge in reading order, so a key from
+ * a higher-priority file wins whatever shape that file stores it in.
+ * Reading the deep-merged config instead would let a lower file's nested
+ * tuning beat a higher file's flat override of the same key, because the
+ * merged config keeps both shapes side by side and the per-config reader
+ * prefers the nested one.
+ */
+const readLayeredModelRouteTuning = (sources) => {
+  let tuning = null;
+  for (const source of sources) {
+    const layerTuning = readModelRouteTuning(source.config);
+    if (!layerTuning) continue;
+    if (!tuning) tuning = {};
+    Object.assign(tuning, layerTuning);
+  }
+  return tuning;
+};
+
+/**
+ * The cross-pool schedules as one config file stores them, or null.
+ * The nested `experimental.routes.schedules` list wins over the flat
+ * `experimental.model_route_schedules` list when both are present.
+ */
+const readModelRouteSchedules = (config) => {
+  const nested = readNestedRoutes(config)?.schedules;
+  if (nested !== undefined && nested !== null) return nested;
+  return config?.experimental?.model_route_schedules ?? null;
+};
 
 /**
  * Cross-pool schedules from the config files other than `targetPath`, with
@@ -98,7 +144,7 @@ const readModelRouteSchedules = (config) => config?.experimental?.model_route_sc
 const readOtherModelRouteSchedules = (sources, targetPath) =>
   sources.flatMap(({ path, config }) => {
     if (!path || path === targetPath) return [];
-    const schedules = config?.experimental?.model_route_schedules;
+    const schedules = readModelRouteSchedules(config);
     return Array.isArray(schedules) && schedules.length > 0 ? [{ path, schedules }] : [];
   });
 
@@ -118,7 +164,7 @@ const readOtherModelRoutes = (sources, targetPath) =>
   });
 
 /** The layers' files as a source list, for callers that have no readConfigSources. */
-const sourcesFromLayers = (layers) => [
+export const sourcesFromLayers = (layers) => [
   [layers.paths.userPath, layers.userConfig],
   [layers.paths.userOverridePath, layers.userOverrideConfig],
   [layers.paths.customPath, layers.customConfig],
@@ -825,7 +871,7 @@ export const registerModelRouteRoutes = (app, dependencies) => {
         // The user file's own pools, which are the ones Settings edits; the
         // merged view would copy other files' pools into it on save.
         routes: readModelRoutes(targetConfig),
-        tuning: readModelRouteTuning(layers.mergedConfig),
+        tuning: readLayeredModelRouteTuning(sourcesFromLayers(layers)),
         // The user file's own list, which is the one Settings edits; the
         // merged view would copy other files' entries into it on save.
         schedules: readModelRouteSchedules(targetConfig),
@@ -858,11 +904,35 @@ export const registerModelRouteRoutes = (app, dependencies) => {
       const targetPath = layers.paths.userPath ?? CONFIG_FILE;
       const targetConfig = getConfigForPath(layers, targetPath);
       if (!isRecord(targetConfig.experimental)) targetConfig.experimental = {};
-      if (routes !== undefined) targetConfig.experimental.model_routes = routes;
-      if (tuning === null) delete targetConfig.experimental.model_route_tuning;
-      else if (tuning !== undefined) targetConfig.experimental.model_route_tuning = tuning;
-      if (schedules === null) delete targetConfig.experimental.model_route_schedules;
-      else if (schedules !== undefined) targetConfig.experimental.model_route_schedules = schedules;
+      // A file that stores the nested shape keeps it: edited values go to
+      // `experimental.routes.*` and the flat key is removed, because the
+      // readers fold flat under nested and a stale flat key would come back
+      // as a second copy. A flat file keeps the flat keys as before.
+      const nestedRoutes = readNestedRoutes(targetConfig);
+      if (routes !== undefined) {
+        if (nestedRoutes) {
+          nestedRoutes.models = routes;
+          delete targetConfig.experimental.model_routes;
+        } else targetConfig.experimental.model_routes = routes;
+      }
+      if (tuning === null) {
+        delete targetConfig.experimental.model_route_tuning;
+        if (nestedRoutes) delete nestedRoutes.tuning;
+      } else if (tuning !== undefined) {
+        if (nestedRoutes) {
+          nestedRoutes.tuning = tuning;
+          delete targetConfig.experimental.model_route_tuning;
+        } else targetConfig.experimental.model_route_tuning = tuning;
+      }
+      if (schedules === null) {
+        delete targetConfig.experimental.model_route_schedules;
+        if (nestedRoutes) delete nestedRoutes.schedules;
+      } else if (schedules !== undefined) {
+        if (nestedRoutes) {
+          nestedRoutes.schedules = schedules;
+          delete targetConfig.experimental.model_route_schedules;
+        } else targetConfig.experimental.model_route_schedules = schedules;
+      }
       writeConfig(targetConfig, targetPath);
       if (refreshOpenCodeAfterConfigChange) {
         try {
@@ -873,7 +943,7 @@ export const registerModelRouteRoutes = (app, dependencies) => {
       }
       res.json({
         routes: routes ?? readModelRoutes(targetConfig),
-        tuning: tuning === undefined ? readModelRouteTuning(layers.mergedConfig) : tuning,
+        tuning: tuning === undefined ? readLayeredModelRouteTuning(sourcesFromLayers(layers)) : tuning,
         schedules: readModelRouteSchedules(targetConfig),
         ...(await otherFilesFor(req, targetPath)),
         path: targetPath,

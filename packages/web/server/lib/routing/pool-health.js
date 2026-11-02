@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 
-import { keyNamesTarget, readModelRoutes } from './model-routes.js';
+import { keyNamesTarget, readLayeredModelRoutes, sourcesFromLayers } from './model-routes.js';
 import { readPlanStore } from './plans.js';
 import { readPoolPlanLinks } from './pool-plan-links.js';
 import {
@@ -96,7 +96,12 @@ export const computePoolHealth = async ({
   const hours = Math.min(336, Math.max(0.1, positiveOr(requestedHours, 24)));
   const activeMinutes = Math.min(1440, positiveOr(requestedActiveMinutes, 15));
   const layers = readConfigLayers(null);
-  const routes = readModelRoutes(layers.mergedConfig);
+  // Layered, not the deep-merged config: the merged config keeps a lower
+  // file's nested routes beside a higher file's flat ones, and folding the
+  // merged shapes would let the lower file's pool win. Folding each file
+  // first (readLayeredModelRoutes) keeps the higher file's pool, as the
+  // runtime's own pool reader does.
+  const routes = readLayeredModelRoutes(sourcesFromLayers(layers));
   // A damaged plans.json or links file costs the plan columns only: the
   // session counts come from OpenCode's database and still show.
   let plans = [];
