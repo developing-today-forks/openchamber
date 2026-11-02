@@ -71,6 +71,7 @@ import {
   listUntrackedPaths,
   getFileDiff,
   MAX_FILE_DIFF_WORKING_TREE_BYTES,
+  MAX_DIFF_OUTPUT_BYTES,
   readFileDiffWorkingTreeFile,
   hasLocalIdentity,
   validateWorktreeCreate,
@@ -915,12 +916,92 @@ describe.runIf(canRunGit())('untracked diffs', () => {
     fs.writeFileSync(path.join(tmpDir, 'large.txt'), 'x'.repeat(21 * 1024 * 1024) + '\n');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      await expect(getDiff(tmpDir, { path: 'large.txt' })).rejects.toThrow('maxBuffer');
+      await expect(getDiff(tmpDir, { path: 'large.txt' })).rejects.toMatchObject({ code: 'diff_too_large' });
       expect(await getUntrackedDiffs(tmpDir, ['large.txt'])).toEqual(['']);
     } finally {
       errorSpy.mockRestore();
     }
   });
+});
+
+describe.runIf(canRunGit())('local diff output cap (#1301)', () => {
+  const SMALL_CAP = 4096;
+  const bigLines = (prefix) => Array.from({ length: 400 }, (_, index) => `${prefix}-${index}-${'x'.repeat(24)}`);
+
+  const repoWithCommittedFile = async () => {
+    const { tmpDir, git } = await createTempRepo();
+    await writeFile(tmpDir, 'big.txt', bigLines('line').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Initial');
+    await git.raw(['branch', 'base-branch']);
+    return { tmpDir, git };
+  };
+
+  it('rejects a whole-tree diff over the cap with diff_too_large and returns it under the cap', async () => {
+    const { tmpDir } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await expect(getDiff(tmpDir, { maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    await expect(getDiff(tmpDir, { path: 'big.txt', maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    const underCap = await getDiff(tmpDir, { maxBytes: MAX_DIFF_OUTPUT_BYTES });
+    expect(underCap).toBe(await getDiff(tmpDir));
+    expect(underCap).toContain('diff --git');
+  });
+
+  it('rejects a committed range diff over the cap', async () => {
+    const { tmpDir, git } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Change');
+    await expect(getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', maxBytes: SMALL_CAP }))
+      .rejects.toMatchObject({ code: 'diff_too_large' });
+    expect(await getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', maxBytes: MAX_DIFF_OUTPUT_BYTES }))
+      .toContain('diff --git');
+  });
+
+  it('rejects a working-tree range diff over the cap', async () => {
+    const { tmpDir } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await expect(getRangeDiff(tmpDir, { base: 'base-branch', head: 'main', includeWorkingTree: true, maxBytes: SMALL_CAP }))
+      .rejects.toMatchObject({ code: 'diff_too_large' });
+  });
+
+  it('rejects a commit diff over the cap', async () => {
+    const { tmpDir, git } = await repoWithCommittedFile();
+    await writeFile(tmpDir, 'big.txt', bigLines('changed').join('\n') + '\n');
+    await git.add('big.txt');
+    await git.commit('Change');
+    const hash = (await git.revparse(['HEAD'])).trim();
+    await expect(getCommitDiff(tmpDir, { hash, maxBytes: SMALL_CAP })).rejects.toMatchObject({ code: 'diff_too_large' });
+    expect(await getCommitDiff(tmpDir, { hash, maxBytes: MAX_DIFF_OUTPUT_BYTES })).toContain('diff --git');
+  });
+
+  it('answers 413 with the diff_too_large code from the range-diff route', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    // A machine-wide core.bigFileThreshold below the fixture size makes git
+    // print "Binary files differ" instead of a text diff. Pin it, as the
+    // untracked maxBuffer test above does.
+    runGit(tmpDir, ['config', 'core.bigFileThreshold', '1g']);
+    const line = 'x'.repeat(79);
+    const content = Array.from({ length: 700_000 }, () => line).join('\n') + '\n';
+    await writeFile(tmpDir, 'big.txt', content);
+    await git.add('big.txt');
+    await git.commit('Initial');
+    await git.raw(['branch', 'base-branch']);
+    await writeFile(tmpDir, 'big.txt', content.replaceAll('x', 'y'));
+    await git.add('big.txt');
+    await git.commit('Change');
+    const routes = new Map();
+    registerGitRoutes({ get: (url, handler) => routes.set(url, handler), post() {}, put() {}, delete() {} });
+    let status = 200;
+    let body;
+    await routes.get('/api/git/range-diff')({ query: { directory: tmpDir, base: 'base-branch', head: 'main' } }, {
+      status(value) { status = value; return this; },
+      json(value) { body = value; },
+    });
+    expect(status).toBe(413);
+    expect(body.code).toBe('diff_too_large');
+    expect(body.error).toContain('50 MiB');
+  }, 60_000);
 });
 
 // An external diff configured in git (difftastic via diff.external, or
