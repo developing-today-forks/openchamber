@@ -9,6 +9,7 @@ import { readOpenCodeCredentials } from './opencodeAuth';
 import { readConfig } from './opencodeConfig';
 import { isRecord, toProviderEntity } from './opencode-config-v2';
 import { fetchExeDevUsage } from './exeDevQuota';
+import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseBody, ResponseBodyTooLargeError } from './bounded-response-body';
 import { refreshGoogleAccessToken } from '../../web/server/lib/quota/providers/google/oauth.js';
 import { antigravityHeaders, warnIfGeminiGroupMissing } from '../../web/server/lib/quota/providers/antigravity/client.js';
 
@@ -392,6 +393,45 @@ const asNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+};
+
+/**
+ * Reads a quota provider answer as JSON under QUOTA_RESPONSE_MAX_BYTES
+ * (the shared cap in bounded-response-body.ts, #1282), preserving the old
+ * bare response.json() semantics for in-cap bodies: a malformed body
+ * throws from JSON.parse exactly as response.json() did, and an over-cap
+ * body throws ResponseBodyTooLargeError instead of being buffered whole,
+ * so each caller's existing failure path produces the provider's normal
+ * failure result. The web twin is readQuotaJson in
+ * packages/web/server/lib/quota/utils/response-body.js.
+ */
+type QuotaJsonValue = string | number | boolean | null | QuotaJsonValue[] | { [key: string]: QuotaJsonValue };
+
+const readQuotaJson = async (response: Response): Promise<QuotaJsonValue> => {
+  // Test doubles pass a plain { ok, json } without a body; real responses
+  // go through the bounded reader.
+  if (!response.body) {
+    // SAFETY: only test doubles reach this fallback (a real Response always
+    // has a body); their json() returns an already-parsed JSON value, which
+    // is exactly the QuotaJsonValue shape.
+    return (await response.json()) as QuotaJsonValue;
+  }
+  const bytes = await readBoundedResponseBody(response, QUOTA_RESPONSE_MAX_BYTES);
+  const text = new TextDecoder().decode(bytes).replace(/^\uFEFF/, '');
+  return JSON.parse(text);
+};
+
+/**
+ * The same bounded read for the one binary quota answer (xAI's protobuf
+ * usage body): the cap is enforced while the body streams in.
+ */
+const readQuotaBytes = async (response: Response): Promise<Uint8Array> => {
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > QUOTA_RESPONSE_MAX_BYTES) throw new ResponseBodyTooLargeError(QUOTA_RESPONSE_MAX_BYTES);
+    return bytes;
+  }
+  return readBoundedResponseBody(response, QUOTA_RESPONSE_MAX_BYTES);
 };
 
 /**
@@ -997,7 +1037,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
 const codexErrorBodySchema = z.object({ error: z.object({ type: z.string() }) });
 
 const codexUnauthorizedMessage = async (response: Response): Promise<string> => {
-  const body = codexErrorBodySchema.safeParse(await response.json().catch(() => null));
+  const body = codexErrorBodySchema.safeParse(await readQuotaJson(response).catch(() => null));
   return body.success && body.data.error.type === 'rejected_by_access_enforcement'
     ? 'OpenAI shows usage for Sign in with ChatGPT only at chatgpt.com/settings/usage. The legacy Codex sign-ins show it here.'
     : 'Session expired \u2014 please re-authenticate with OpenAI';
@@ -1048,7 +1088,7 @@ const fetchCodexQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as OpenAiUsagePayload;
+    const payload = await readQuotaJson(response) as OpenAiUsagePayload;
     const primary = payload?.rate_limit?.primary_window ?? null;
     const secondary = payload?.rate_limit?.secondary_window ?? null;
     const credits = payload?.credits ?? null;
@@ -1244,7 +1284,7 @@ const fetchGoogleQuotaBuckets = async (accessToken: string, projectId?: string) 
       return null;
     }
 
-    return await response.json() as GoogleQuotaBucketsPayload;
+    return await readQuotaJson(response) as GoogleQuotaBucketsPayload;
   } catch {
     return null;
   } finally {
@@ -1278,7 +1318,7 @@ const fetchGoogleModels = async (
       });
 
       if (response.ok) {
-        return await response.json() as Record<string, unknown>;
+        return await readQuotaJson(response) as Record<string, unknown>;
       }
     } catch {
       // fall through
@@ -1453,7 +1493,7 @@ const fetchAntigravityQuotaSummary = async (accessToken: string, projectId?: str
       });
 
       if (response.ok) {
-        return await response.json() as QuotaSummaryPayload;
+        return await readQuotaJson(response) as QuotaSummaryPayload;
       }
     } catch {
       // fall through
@@ -1844,7 +1884,7 @@ const fetchClaudeQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as Record<string, unknown>;
     const usage = buildClaudeUsage(payload);
     claudeCachedUsage = usage;
     return buildResult({
@@ -2008,7 +2048,7 @@ const fetchCopilotQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as Record<string, unknown>;
     return buildResult({
       providerId: 'github-copilot',
       providerName: 'GitHub Copilot',
@@ -2068,7 +2108,7 @@ const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as Record<string, unknown>;
     return buildResult({
       providerId: 'github-copilot-addon',
       providerName: 'GitHub Copilot Add-on',
@@ -2200,7 +2240,7 @@ const fetchMoonshotBalanceWindows = async (
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return null;
-    const balance = (await response.json() as MoonshotBalancePayload)?.data?.available_balance;
+    const balance = (await readQuotaJson(response) as MoonshotBalancePayload)?.data?.available_balance;
     if (typeof balance !== 'number' || !Number.isFinite(balance)) return null;
     return {
       credits_balance: toUsageWindow({
@@ -2260,7 +2300,7 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
       });
     }
 
-    const payload = asObject(await response.json());
+    const payload = asObject(await readQuotaJson(response));
     // Kimi replaced the counted payload with a ratio-based `usages` map. Its own
     // client reads only `usages`, so when that block is present the `limits[]`
     // entry for the same 5-hour window is a coarser duplicate and is not read.
@@ -2325,7 +2365,7 @@ const fetchMiniMaxQuota = async (data: {
       });
     }
 
-    const payload = await response.json() as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as Record<string, unknown>;
     const baseResp = asObject(payload.base_resp);
     const statusCode = toNumber(baseResp?.status_code);
     if (baseResp && statusCode !== 0) {
@@ -2449,7 +2489,7 @@ const fetchOllamaCloudUsage = async (
   if (response.status === 401 || response.status === 403) throw new Error('Ollama Cloud authentication failed');
   if (!response.ok) throw new Error(`Ollama Cloud returned HTTP ${response.status}`);
 
-  const payload = asObject(await response.json());
+  const payload = asObject(await readQuotaJson(response));
   const included = asObject(payload?.included);
   const allowance = toNumber(included?.allowance_usd);
   const remaining = toNumber(included?.balance_usd);
@@ -2498,7 +2538,7 @@ const fetchOllamaCloudPlan = async (
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) return null;
-  return asNonEmptyString(asObject(await response.json())?.Plan);
+  return asNonEmptyString(asObject(await readQuotaJson(response))?.Plan);
 };
 
 export const fetchOllamaCloudQuota = async ({
@@ -2568,7 +2608,7 @@ const fetchCursorConnect = async (path: string, accessToken: string, body: Recor
     ? { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000) }
     : { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(response.status === 401 ? 'Cursor session expired' : `API error: ${response.status}`);
-  return response.json() as Promise<Record<string, unknown>>;
+  return readQuotaJson(response) as Promise<Record<string, unknown>>;
 };
 
 const cursorRequestUsage = (authUsage: unknown): { used: number; limit: number } | null => {
@@ -2747,7 +2787,7 @@ const fetchOpenRouterQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as unknown;
+    const payload = await readQuotaJson(response) as unknown;
     const dataContainer = asObject(payload);
     const data = asObject(dataContainer?.data);
     if (data === null) {
@@ -2926,9 +2966,9 @@ const attachZaiGiftResets = async (windows: Record<string, UsageWindow>, apiKey:
       },
     });
     if (!response.ok) return;
-    // SAFETY: response.json() is untyped; only the two record arrays are consumed,
+    // SAFETY: readQuotaJson is untyped; only the two record arrays are consumed,
     // and every field they carry is re-checked by pickZaiGiftReset before use.
-    const payload = await response.json() as ZaiGiftResetPayload;
+    const payload = await readQuotaJson(response) as ZaiGiftResetPayload;
     const data = payload?.data;
     if (!data) return;
 
@@ -2982,7 +3022,7 @@ const fetchZaiQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as ZaiPayload;
+    const payload = await readQuotaJson(response) as ZaiPayload;
     // Same monitor API family as bigmodel.cn: business failures arrive inside HTTP 200.
     const failure = zhipuaiEnvelopeError(payload);
     if (failure) {
@@ -3072,9 +3112,9 @@ const activateZaiGiftReset = async (input: { recordId: number; resetType: QuotaG
     }),
   });
 
-  // SAFETY: response.json() is untyped; only success/msg are consumed and both
+  // SAFETY: readQuotaJson is untyped; only success/msg are consumed and both
   // are re-checked before use.
-  const payload = await response.json().catch(() => null) as ZaiGiftResetUsePayload | null;
+  const payload = await readQuotaJson(response).catch(() => null) as ZaiGiftResetUsePayload | null;
   if (!response.ok || payload?.success !== true) {
     throw new Error(payload?.msg || `API error: ${response.status}`);
   }
@@ -3125,7 +3165,7 @@ const fetchZhipuaiCodingPlanQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as ZhipuaiPayload;
+    const payload = await readQuotaJson(response) as ZhipuaiPayload;
 
     const failure = zhipuaiEnvelopeError(payload);
     if (failure) {
@@ -3254,7 +3294,7 @@ const fetchNanoGptQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = nanoGptUsageSchema.parse(await response.json());
+    const payload = nanoGptUsageSchema.parse(await readQuotaJson(response));
     const windows: ProviderUsage['windows'] = {};
     const state = payload.state ?? 'active';
     // A null current daily quota means no daily cap; only absent fields use legacy data.
@@ -3364,7 +3404,7 @@ const fetchWaferQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as WaferPayload;
+    const payload = await readQuotaJson(response) as WaferPayload;
     const remaining = toNumber(payload?.remaining_included_requests);
     const limit = toNumber(payload?.included_request_limit);
     const overage = toNumber(payload?.overage_request_count);
@@ -3495,7 +3535,7 @@ const fetchNeuralwattQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as NeuralwattPayload;
+    const payload = await readQuotaJson(response) as NeuralwattPayload;
     const subscription = payload?.subscription ?? null;
     const inOverage = Boolean(subscription?.in_overage);
     const allowance = payload?.key?.allowance ?? null;
@@ -3654,7 +3694,7 @@ export const fetchClinePassQuota = async ({ readAuth = readOpenCodeCredentials, 
       });
     }
 
-    const payload = asObject(await response.json());
+    const payload = asObject(await readQuotaJson(response));
     const data = asObject(payload?.data);
     const limits = Array.isArray(data?.limits) ? data.limits : [];
 
@@ -3759,7 +3799,7 @@ const fetchDeepinfraQuota = async ({ readAuth = readOpenCodeCredentials }: Deepi
 
     // SAFETY: every DeepinfraPayload field is optional and the balance is parsed
     // below, so an unexpected body ends as "No quota data in response".
-    const payload = await response.json() as DeepinfraPayload;
+    const payload = await readQuotaJson(response) as DeepinfraPayload;
     // Documented at https://docs.deepinfra.com/api-reference/account/me:
     // checklist.stripe_balance is negative when funds are ready to spend and
     // positive when money is owed, so the spendable credit is its negation.
@@ -3855,7 +3895,7 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
       });
     }
 
-    const payload = await response.json() as DeepseekPayload;
+    const payload = await readQuotaJson(response) as DeepseekPayload;
     const balanceInfos = Array.isArray(payload?.balance_infos) ? payload.balance_infos : [];
     const positiveBalances = balanceInfos.filter((info) => {
       const num = toNumber(info?.total_balance);
@@ -4058,7 +4098,7 @@ const requestMetaPlanUsage = async (
     try {
       // SAFETY: this is the Meta key endpoint's own response body; `MetaKeyResponse`
       // describes the fields the parser reads, each of which is checked before use.
-      return { body: (await response.json()) as MetaKeyResponse, error: null };
+      return { body: (await readQuotaJson(response)) as MetaKeyResponse, error: null };
     } catch (error) {
       return { body: null, error };
     }
@@ -4279,7 +4319,7 @@ export const fetchHyperQuota = async ({ readAuth = readOpenCodeCredentials, fetc
       });
     }
 
-    const payload = asObject(await response.json());
+    const payload = asObject(await readQuotaJson(response));
     const rawBalance = payload?.balance;
     const balance = toNumber(asNonEmptyString(rawBalance)
       ?? (Number.isFinite(rawBalance) ? rawBalance : null));
@@ -4392,7 +4432,7 @@ export const fetchZenmuxQuota = async ({
       });
     }
 
-    const payload = asObject(await response.json());
+    const payload = asObject(await readQuotaJson(response));
     const data = asObject(payload?.data);
     const rawCredits = data?.total_credits;
     const totalCredits = toNumber(asNonEmptyString(rawCredits)
@@ -4534,7 +4574,7 @@ export const fetchKiloQuota = async ({
       });
     }
 
-    const payload = asObject(await response.json());
+    const payload = asObject(await readQuotaJson(response));
     const rawBalance = payload?.balance;
     const balance = toNumber(asNonEmptyString(rawBalance)
       ?? (Number.isFinite(rawBalance) ? rawBalance : null));
@@ -4634,7 +4674,7 @@ export const fetchXaiQuota = async ({ readAuth = readOpenCodeCredentials, fetchI
       throw new Error(`xAI billing API error: ${response.status}`);
     }
 
-    const parsed = parseXaiUsage(new Uint8Array(await response.arrayBuffer()));
+    const parsed = parseXaiUsage(await readQuotaBytes(response));
     return buildResult({
       providerId: 'xai',
       providerName: 'xAI',
