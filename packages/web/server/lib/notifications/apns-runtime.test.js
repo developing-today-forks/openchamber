@@ -600,6 +600,60 @@ describe('apns runtime deadlines (#798)', () => {
       vi.useRealTimers();
     }
   });
+
+  it('bounds a direct APNs response body at the cap and never acts on an over-cap reason', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const targeted = [];
+    const destroyedWith = [];
+    let requestCount = 0;
+    const http2 = {
+      connect: () => ({
+        on: () => {},
+        close: () => {},
+        request: (headers) => {
+          requestCount += 1;
+          const thisRequest = requestCount;
+          targeted.push(String(headers[':path']).replace('/3/device/', ''));
+          const listeners = {};
+          const req = {
+            on: (event, cb) => { listeners[event] = cb; return req; },
+            setEncoding: () => req,
+            destroy: (error) => {
+              destroyedWith.push(error);
+              queueMicrotask(() => listeners.error?.(error));
+            },
+            end: () => {
+              queueMicrotask(() => {
+                if (thisRequest === 1) {
+                  listeners.response?.({ ':status': '400' });
+                  // Valid JSON if buffered whole (trailing spaces are JSON
+                  // whitespace) whose reason would remove the token — but
+                  // the body is over the 1 MiB cap, so it must not be acted on.
+                  listeners.data?.('{"reason":"BadDeviceToken"}' + ' '.repeat(1024 * 1024));
+                } else {
+                  listeners.response?.({ ':status': '200' });
+                  listeners.end?.();
+                }
+              });
+            },
+          };
+          return req;
+        },
+      }),
+    };
+    const runtime = createApnsRuntime(
+      makeDeps({ http2, readSettingsFromDiskMigrated: vi.fn(async () => ({ apnsConfig: APNS_CONFIG })) }),
+    );
+    await runtime.addOrUpdateApnsToken('s', 'tokenDirect');
+
+    await expect(runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'cap-x' })).resolves.toBeUndefined();
+    expect(destroyedWith).toHaveLength(1);
+    expect(destroyedWith[0].message).toContain('exceeded');
+
+    // The token survived: a second send still targets it.
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'cap-y' });
+    expect(targeted).toEqual(['tokenDirect', 'tokenDirect']);
+  });
 });
 
 describe('apns runtime store durability', () => {
