@@ -196,7 +196,7 @@ describe('ui-passkeys store durability', () => {
     // and a later load reuses the persisted userID rather than
     // inventing a new one.
     const initialized = JSON.parse(fs.readFileSync(storeFile, 'utf8'));
-    expect(typeof initialized.userID).toBe('string');
+    expect(String(initialized.userID)).toBe(initialized.userID);
     expect(initialized.userID.length).toBeGreaterThan(0);
     expect(initialized.passkeys).toEqual([]);
     expect(siblingsMatching(storeFile, '.corrupt-')).toEqual([]);
