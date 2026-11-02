@@ -1,6 +1,7 @@
 import { readEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/opencode/npm-registry-config.js';
 import { readBoundedResponseText } from '../../web/server/lib/shared/response-body.js';
+import { readOpenCodeInfoResponse } from './opencode-info-runtime';
 
 type UpgradeCapability = {
   supported: boolean;
@@ -110,7 +111,7 @@ export const getOpenCodeUpgradeStatus = async (manager?: OpenCodeUpgradeManager)
       fetch(new URL('/api/info', apiUrl).toString(), { method: 'GET', headers: { Accept: 'application/json', ...manager.getOpenCodeAuthHeaders() }, signal: AbortSignal.timeout(infoProbeDeadlineMs) }),
       fetchLatestVersion(),
     ]);
-    const health = await healthResponse.json().catch(() => null) as { version?: unknown; error?: unknown } | null;
+    const health = await readOpenCodeInfoResponse(healthResponse);
     if (!healthResponse.ok) {
       const error = typeof health?.error === 'string' ? health.error : healthResponse.statusText || 'Failed to read OpenCode version';
       return { available: null, error, upgrade };

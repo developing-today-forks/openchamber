@@ -123,6 +123,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
   - Extension-host side of `GET/PUT /api/projects/:projectId/config` (the webview handles the route locally and bridges `api:project-setup:get` / `api:project-setup:update`). Reads and writes the client-owned keys of `~/.config/openchamber/projects/<projectId>.json` (worktree setup commands, project actions, draft starters) with the rules in `project-setup.ts`, a mirror of the server's `packages/web/server/lib/projects/project-setup.js`; keep the two in sync. The file name follows the server's bounded rule (`projectConfigFileStemOf`, mirrored from `packages/web/server/lib/projects/project-id.js`): an id over 200 characters is stored as `path_sha256_<digest>.json` so a deeply nested checkout does not exceed the file name limit. A file an older build wrote under the long name is still read when the bounded one is missing and is removed once a write has moved its content. Writes to one file are chained; server-owned and unknown keys survive. The read also merges the team's optional `<workspace>/.openchamber/project.json` (checkout path decoded from the `path_<base64url>` id) by the same rules as the server, so the webview sees one view with `shared` / `personal` blocks. The shared UI (`openchamberConfig.ts`) no longer composes that path or reads it through the fs bridge.
 - `bridge-settings-runtime.ts`
   - Settings read/write and OpenCode skills discovery via API for bridge consumers.
+  - `GET /api/skill` is read through the bounded response reader with a 16 MiB cap. An oversized or unreadable skills payload returns `null`, leaving the existing local skill scan available.
   - Writes are gated by the generated registry snapshot (`settings-registry.json`, via `settings-registry-gate.ts`): keys the registry does not list, or marks `computed`, `local`, or `owner: desktop-shell`, never reach the shared settings files. Regenerate the snapshot with `bun run settings-registry:generate` when the UI registry changes.
   - Shared settings live in two files under `~/.config/openchamber/`, split by `settings-files.ts` (a pure mirror of the server's `settings-files.js`; both write the same bytes): `settings.json` holds instance facts and legacy keys, `preferences.json` (`{ version: 1, fields: { key: { value, updatedAt } } }`) holds every registry `profile` key. `updatedAt` is stamped by the extension host only when a value actually changes. Reads return the merged view (preferences win). A missing `preferences.json` is seeded once from the profile keys still in `settings.json`; every write keeps a copy of the profile's base values in `settings.json` too, so a build from before the split (which reads only that file) still finds the user's preferences; it is ignored by current builds.
   - An existing but unparseable `preferences.json` is a failure, not an empty profile: it is never seeded over or rewritten, one warning is logged per process, reads return `settings.json` only, and writes drop the profile part until a later read succeeds.
@@ -131,6 +132,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
 
 - `bridge-system-runtime.ts`
   - System/editor/provider/quota/notification/update-check message handlers.
+  - The `api:opencode/version` `/api/info` probe uses a 1 MiB response cap. Oversized responses return the existing version error shape.
   - `api:notifications:show` hands the webview's notification to `openchamber.internal.showNotification` in `extension.ts`, which shows it through `sessionNotifications.ts` and answers `{ shown }`. Chromium never displays a `new Notification()` from a webview frame, so the extension host is the only place a VS Code notification can come from.
   - Includes session activity snapshot bridge handler used by webview parity routes (`/api/session-activity`, and `/api/sessions/status`, where busy phases become the host status seed the shared UI reads for unopened directories). The snapshot is the session-activity v1 envelope (design #612, #621): `{ version: 1, serverTime, watcherReady, sessions }` with per-session `{ type, lastActivityAt, status, model, toolInFlight }`; the host sources type and lastActivityAt from its phase map and sends status, model and toolInFlight as explicit nulls, and watcherReady turns true when the host event stream delivers its first frame. Entries leave the phase map when the session is deleted (the `session.deleted` event prunes the entry and its pending cooldown timer) or when an entry has sat idle past a 24-hour TTL that the reconcile pass prunes, so the snapshot does not report deleted sessions as idle forever (#999).
   - Includes Zen utility model parity handler used by shared notification settings (`/api/zen/models`).
@@ -152,6 +154,7 @@ The webview build emits each worker as one self-contained file. VS Code webviews
 
 - `opencode-upgrade-runtime.ts`
   - Owns managed-versus-external capability decisions and latest-version checks.
+  - Its `/api/info` version probe uses the same 1 MiB response cap as the system bridge. Oversized responses report an unavailable upgrade status with an error.
   - Managed runtimes run the resolved CLI with `upgrade` through the manager's operation queue and the shared `packages/web/server/lib/opencode/cli-upgrade.js` executor. The queued action resolves the CLI with the same fallback as capability reporting; it does not require a live server process just to update the binary. OpenCode chooses its installer. Concurrent webviews share one installation; failures allow another attempt. The existing Reload action restarts the server afterwards. The bridge waits for command completion without its default 30-second timeout. External connections and missing CLIs reject upgrades before spawning. Version checks remain available for external connections.
 
 - Plugin metadata and OpenCode version checks use `packages/web/server/lib/opencode/npm-registry-config.js`, the same resolver as the web server. It reads inherited registry settings and the user's `.npmrc`, supports scoped registries, and sends credentials only in HTTP headers. The plugin packument body is bounded at a mirrored 16 MiB cap with `readBoundedResponseText`; keep it in sync with `NPM_PACKUMENT_MAX_BYTES` in `packages/web/server/lib/opencode/npm-registry.js`.
@@ -300,6 +303,10 @@ It gives Node connection attempts 5 seconds, matching the web runtime, so quota
 requests to distant providers can connect. This is an extension-host process
 default, including other Node connections in that host. Address-family selection
 stays unchanged; runtimes without the setter retain their existing behavior.
+
+The OpenCode diagnostics command limits JSON probe responses to 1 MiB. An
+oversized response is a failed probe, so it cannot look like a successful empty
+answer.
 
 ## OpenCode version requirement
 
