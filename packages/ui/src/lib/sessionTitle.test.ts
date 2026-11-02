@@ -221,6 +221,20 @@ describe('bounded history loading', () => {
     await expect(loadSessionTitleTurns({ loader, target: { sessionID: 'session', directory: '/project' }, getRecords: () => pair('cached'), signal: new AbortController().signal })).rejects.toThrow('offline');
   });
 
+  test('stops at the page cap for an ever-new cursor without looping indefinitely', async () => {
+    let requests = 0;
+    const loader = {
+      ensure: async () => {},
+      loadOlder: async () => { requests++; },
+      getSnapshot: (): ReturnType<SessionMessageLoader['getSnapshot']> => ({
+        status: 'ready', loadingKind: null, error: null, resolved: true, limit: 50,
+        cursor: `page-${requests}`, complete: false, generation: 0, updatedAt: 1
+      }),
+    };
+    await expect(loadSessionTitleTurns({ loader, target: { sessionID: 'session', directory: '/project' }, getRecords: () => [], signal: new AbortController().signal })).rejects.toThrow('Session history pagination exceeded page cap');
+    expect(requests).toBe(8);
+  });
+
   test('an explicit retry refreshes a failed loader even when older messages remain cached', async () => {
     let state: ReturnType<SessionMessageLoader['getSnapshot']> = {
       status: 'error', loadingKind: null, error: new Error('offline'), resolved: true,
