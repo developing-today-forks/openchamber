@@ -37,6 +37,27 @@ describe('fetchGitHubRepoMetas', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves an over-cap response to null and failure-caches it', async () => {
+    // Valid JSON padded past the 1 MiB cap: the bounded reader must reject
+    // it during streaming, not buffer and parse it whole.
+    const body = JSON.stringify({
+      stargazers_count: 42,
+      pushed_at: '2026-01-01T00:00:00Z',
+      padding: 'x'.repeat(1024 * 1024),
+    });
+    const fetchMock = vi.fn(async () => new Response(body, { status: 200 }));
+    globalThis.fetch = fetchMock;
+
+    const metas = await fetchGitHubRepoMetas(['anthropics/skills']);
+    expect(metas).toEqual({ 'anthropics/skills': null });
+
+    // The failure entry is cached, so a second lookup does not refetch and
+    // serves the null-meta failure value.
+    const second = await fetchGitHubRepoMetas(['anthropics/skills']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({ 'anthropics/skills': { stars: null, repoUpdatedAt: null } });
+  });
+
   it('resolves failed lookups to null without throwing', async () => {
     globalThis.fetch = vi.fn(async () => new Response('rate limited', { status: 403 }));
 
