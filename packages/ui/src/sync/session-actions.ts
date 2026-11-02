@@ -540,15 +540,22 @@ async function fetchSessionMessages(sessionId: string, directory?: string | null
  * history runs out. The local store holds only the newest page, so a revert
  * target older than that must be searched for across pages, not assumed gone.
  */
+// Pathology guard, not a product limit: 500 pages of history is far above
+// any real revert search, while an ever-new cursor stream still terminates.
+const FIND_MESSAGE_MAX_PAGES = 500
+
 async function findSessionMessageById(sessionId: string, messageId: string, directory?: string | null): Promise<Message | null> {
   const seenCursors = new Set<string>()
   let cursor: string | undefined
+  let pagesFetched = 0
   for (;;) {
     const page = await opencodeClient.getSessionMessages(sessionId, cursor ? { cursor } : undefined, directory)
+    pagesFetched += 1
     const found = page.items.map(({ info }) => info).find((message) => message.id === messageId)
     if (found) return found
     const next = page.cursor.next
     if (!next || seenCursors.has(next)) return null
+    if (pagesFetched >= FIND_MESSAGE_MAX_PAGES) return null
     seenCursors.add(next)
     cursor = next
   }

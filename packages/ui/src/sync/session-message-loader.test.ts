@@ -285,6 +285,42 @@ describe("SessionMessageLoader", () => {
     childStores.disposeAll()
   })
 
+  test("rejects a complete-history request after the page cap on ever-new cursors", async () => {
+    let calls = 0
+    const { childStores, loader } = createLoader(async ({ sessionID }) => {
+      calls += 1
+      return response([createRecord(sessionID, `msg_${calls}`)], `cursor-${calls}`)
+    })
+    const target = { directory: "/repo", sessionID: "session-a" }
+
+    await expect(loader.loadComplete(target)).rejects.toThrow("Session history pagination exceeded the page cap")
+
+    // Initial page plus the 500 capped older-page loads.
+    expect(calls).toBe(501)
+    loader.dispose()
+    childStores.disposeAll()
+  })
+
+  test("commits an interactive older batch at the alignment page cap when no prompt ever arrives", async () => {
+    let calls = 0
+    const { childStores, loader } = createLoader(async ({ sessionID }) => {
+      calls += 1
+      if (calls === 1) return response([createRecord(sessionID, "msg_latest", 1_000)], "cursor-1")
+      return response([createRecord(sessionID, `msg_older_${calls}`, 1_000 - calls, "assistant")], `cursor-${calls}`)
+    })
+    const target = { directory: "/repo", sessionID: "session-a" }
+
+    await loader.ensure(target)
+    await loader.loadOlder(target)
+
+    // Initial page + first older page + 20 capped alignment pages, all committed.
+    expect(calls).toBe(22)
+    expect(loader.getSnapshot(target).status).toBe("ready")
+    expect(childStores.getChild(target.directory)?.getState().message[target.sessionID]).toHaveLength(22)
+    loader.dispose()
+    childStores.disposeAll()
+  })
+
   test("runs a requested tail refresh after an older in-flight load", async () => {
     const initial = deferred<MessagePage>()
     const refresh = deferred<MessagePage>()

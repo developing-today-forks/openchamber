@@ -2964,6 +2964,32 @@ describe("revertToMessage paged message lookup", () => {
     expect(sessionStore.getState().session[0]?.revert?.messageID).toBe("msg_old")
     expect(replyCalls.filter((call) => call.method === "session.messages")).toHaveLength(2)
   })
+
+  test("stops the paged lookup at the page cap when cursors never repeat and the target never appears", async () => {
+    const session = sessionFixture("session-a")
+    sessionRecords.set(session.id, session)
+    const newer: Message = { id: "msg_newer", sessionID: "session-a", role: "user", time: { created: 3 } }
+    const sessionStore = createStore({}, {
+      session: [session],
+      message: { "session-a": [newer] },
+      part: {},
+    })
+    const currentStore = createStore({})
+    const childStores = createChildStores([
+      ["/test/project", sessionStore],
+      ["/current/project", currentStore],
+    ])
+    // Every page offers a brand-new cursor and never the target message.
+    cursorMessagePages = Array.from({ length: 600 }, (_, index) => ({
+      items: [{ info: { id: `msg_page_${index}`, sessionID: "session-a", role: "user", time: { created: 1 } } as Message, parts: [] }],
+      cursor: { next: String(index + 1) },
+    }))
+    const { setActionRefs, revertToMessage } = await import("./session-actions")
+    setActionRefs(childStores, () => "/current/project")
+
+    await expect(revertToMessage("session-a", "msg_missing")).rejects.toThrow("was not found")
+    expect(replyCalls.filter((call) => call.method === "session.messages")).toHaveLength(500)
+  })
 })
 
 describe("dismissPermission passes directory", () => {
