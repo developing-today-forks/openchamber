@@ -618,6 +618,28 @@ describe('walkSkillMdFiles', () => {
     expect(await foundRelative()).toHaveLength(leafCount);
   });
 
+  it('allocates the directory cap deterministically across competing subtrees', async () => {
+    // Two branches of 3,000 leaves each: the walk visits the root, branch a,
+    // all of a's leaves, then branch b and only the leaves of b that fit the
+    // remaining cap — depth-first readdir order, every time. Racing the two
+    // subtrees for the cap would hand the last leaves to whichever branch's
+    // readdir finished first.
+    const leavesPerBranch = 3000;
+    for (const branch of ['a', 'b']) {
+      for (let i = 0; i < leavesPerBranch; i += 1) {
+        writeSkill(path.join(branch, `d${String(i).padStart(4, '0')}`));
+      }
+    }
+
+    const found = await foundRelative();
+
+    const visitedUnderB = SKILL_WALK_MAX_DIRS - 3 - leavesPerBranch;
+    expect(found).toHaveLength(leavesPerBranch + visitedUnderB);
+    expect(found).toContain(path.join('a', 'd2999', 'SKILL.md'));
+    expect(found).toContain(path.join('b', `d${String(visitedUnderB - 1).padStart(4, '0')}`, 'SKILL.md'));
+    expect(found).not.toContain(path.join('b', 'd2999', 'SKILL.md'));
+  }, 60_000);
+
   it('keeps a link to a large external tree under the same directory cap', async () => {
     const outside = `${FIXTURE_DIR}-outside`;
     fs.rmSync(outside, { recursive: true, force: true });
