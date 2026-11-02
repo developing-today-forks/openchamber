@@ -286,14 +286,14 @@ describe('apns runtime relay mode (default)', () => {
         if (isRegister([url])) return jsonResponse({ ok: true });
         // Headers arrive, but the body only settles when the caller's
         // deadline signal aborts.
-        return {
-          ok: true,
-          status: 200,
-          json: () =>
-            new Promise((_, reject) => {
-              init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-            }),
-        };
+        // A real streamed body: it only settles when the caller's deadline
+        // signal aborts, which errors the bounded reader's read.
+        const stream = new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true });
+          },
+        });
+        return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
       });
       vi.stubGlobal('fetch', fetchMock);
       process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
@@ -317,13 +317,7 @@ describe('apns runtime relay mode (default)', () => {
       const fetchMock = vi.fn(async (url) =>
         isRegister([url])
           ? jsonResponse({ ok: true })
-          : {
-              ok: true,
-              status: 200,
-              json: async () => {
-                throw new SyntaxError('Unexpected token < in JSON');
-              },
-            },
+          : new Response('<not json', { status: 200, headers: { 'content-type': 'application/json' } }),
       );
       vi.stubGlobal('fetch', fetchMock);
       process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
@@ -332,6 +326,41 @@ describe('apns runtime relay mode (default)', () => {
 
       await expect(runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'x' }, {})).resolves.toBeUndefined();
       expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[APNs relay] request failed'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('drops no tokens for an over-cap relay body (null fallback, no request-failed warning) (#1304)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // Valid JSON with a drop:true result, padded past the 1 MiB cap: the
+      // bounded reader must refuse it while streaming, so the drop is
+      // never acted on.
+      const overCapBody = JSON.stringify({
+        results: [{ token: 'tokenDead', ok: false, drop: true }],
+        padding: 'x'.repeat(1024 * 1024),
+      });
+      let sendCount = 0;
+      const fetchMock = vi.fn(async (url) => {
+        if (isRegister([url])) return jsonResponse({ ok: true });
+        sendCount += 1;
+        return sendCount === 1
+          ? new Response(overCapBody, { status: 200, headers: { 'content-type': 'application/json' } })
+          : jsonResponse({ results: [] });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+      const runtime = createApnsRuntime(makeDeps());
+      await runtime.addOrUpdateApnsToken('s1', 'tokenDead');
+
+      await expect(runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'x' }, {})).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('[APNs relay] request failed'));
+
+      // tokenDead was NOT dropped: the next send still targets it.
+      fetchMock.mockClear();
+      await runtime.sendApnsToAllUiSessions({ title: 't2', body: 'b2', tag: 'y' }, {});
+      expect(JSON.parse(fetchMock.mock.calls.find(isSend)[1].body).tokens).toEqual(['tokenDead']);
     } finally {
       warnSpy.mockRestore();
     }
