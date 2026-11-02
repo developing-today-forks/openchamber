@@ -71,10 +71,12 @@ describe('magic prompts runtime', () => {
 
   it('writes via a temp file in the same directory renamed into place, never directly to the final path', async () => {
     const writeTargets = [];
+    const writeModes = [];
     const renameCalls = [];
     const runtime = createRuntime({
       writeFile: async (target, ...rest) => {
         writeTargets.push(target);
+        writeModes.push(rest[1]?.mode);
         return fsPromises.writeFile(target, ...rest);
       },
       rename: async (from, to) => {
@@ -86,6 +88,7 @@ describe('magic prompts runtime', () => {
     await runtime.setOverride('alpha.visible', 'Alpha prompt');
 
     expect(writeTargets.length).toBeGreaterThan(0);
+    expect(writeModes).toEqual([0o666]);
     expect(writeTargets).not.toContain(filePath);
     expect(writeTargets.every((target) => target.startsWith(`${filePath}.tmp-`))).toBe(true);
     expect(renameCalls).toEqual(writeTargets.map((target) => [target, filePath]));
@@ -133,6 +136,21 @@ describe('magic prompts runtime', () => {
     expect(files).not.toContain('magic-prompts.json');
   });
 
+  it('returns an empty state for an unparseable file when preservation fails on a read', async () => {
+    await fsPromises.writeFile(filePath, '{ not json', 'utf8');
+    const runtime = createRuntime({
+      rename: async (from, to) => {
+        if (String(to).includes('.corrupt-')) {
+          throw new Error('preserve failed');
+        }
+        return fsPromises.rename(from, to);
+      },
+    });
+
+    await expect(runtime.readPromptState()).resolves.toEqual({ version: 1, overrides: {} });
+    await expect(fsPromises.readFile(filePath, 'utf8')).resolves.toBe('{ not json');
+  });
+
   it('never preserves the valid file a concurrent write saved after a stale corrupt read', async () => {
     const corrupt = '{ not json';
     await fsPromises.writeFile(filePath, corrupt, 'utf8');
@@ -161,6 +179,33 @@ describe('magic prompts runtime', () => {
     await expect(runtime.readPromptState()).resolves.toEqual(validState);
     expect(renameCalls.filter(([, to]) => String(to).includes('.corrupt-'))).toEqual([]);
     await expect(fsPromises.readFile(filePath, 'utf8')).resolves.toBe(JSON.stringify(validState));
+  });
+
+  it('revalidates an empty snapshot before treating the store as missing (Codex, PR #1019 pattern)', async () => {
+    const runtime = createRuntime();
+    await runtime.setOverride('alpha.visible', 'Alpha prompt');
+
+    // First read returns empty bytes (a torn/empty snapshot) while the
+    // file on disk already holds the valid store written above:
+    // treating that snapshot as a missing store would let the next
+    // mutation overwrite the live overrides.
+    let emptyPending = true;
+    const emptyReadRuntime = createRuntime({
+      readFile: async (target, ...rest) => {
+        if (emptyPending && String(target) === filePath) {
+          emptyPending = false;
+          return '';
+        }
+        return fsPromises.readFile(target, ...rest);
+      },
+    });
+
+    await emptyReadRuntime.setOverride('beta.visible', 'Beta prompt');
+    expect(JSON.parse(await fsPromises.readFile(filePath, 'utf8'))).toEqual({
+      version: 1,
+      overrides: { 'alpha.visible': 'Alpha prompt', 'beta.visible': 'Beta prompt' },
+    });
+    expect((await fsPromises.readdir(dataDir)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
   });
 
   it('aborts a mutation when preserving the corrupt file fails, leaving its bytes untouched', async () => {
