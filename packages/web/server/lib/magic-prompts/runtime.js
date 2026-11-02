@@ -1,4 +1,8 @@
-import { renameWithRetry } from '../shared/atomic-rename.js';
+import {
+  preserveMalformedJsonFile,
+  readDurableJsonFile,
+  writeDurableJsonFile,
+} from '../shared/durable-json-store.js';
 
 const FILE_VERSION = 1;
 const MAX_PROMPT_TEXT_LENGTH = 200_000;
@@ -43,106 +47,76 @@ export const createMagicPromptRuntime = (dependencies) => {
     overrides: sanitizeOverrides(parsed?.overrides),
   });
 
-  const isEnoent = (error) => Boolean(error && typeof error === 'object' && error.code === 'ENOENT');
-
-  // A torn or otherwise unparseable file is user data, not an empty
-  // store: move its bytes aside before any later write can overwrite
-  // them, and name the preserved copy so the loss is recoverable. Only
-  // call this serialized with writes (or re-validated under the lock):
-  // the file at filePath may have been replaced by a valid write since
-  // the bytes that failed to parse were read.
-  const preserveCorruptFile = async (error) => {
-    const preservedPath = `${filePath}.corrupt-${Date.now()}`;
-    try {
-      await renameWithRetry((from, to) => fsPromises.rename(from, to), filePath, preservedPath);
-      console.warn(`Failed to read magic prompts file: preserved the unreadable file at ${preservedPath}:`, error);
-      return true;
-    } catch (preserveError) {
-      console.warn('Failed to read magic prompts file:', error);
-      console.warn(`Failed to preserve the unreadable magic prompts file at ${preservedPath}:`, preserveError);
-      return false;
-    }
-  };
-
-  const readRawFile = async () => {
-    try {
-      return { raw: await fsPromises.readFile(filePath, 'utf8') };
-    } catch (error) {
-      if (!isEnoent(error)) {
-        console.warn('Failed to read magic prompts file:', error);
-      }
-      return { missing: true };
-    }
-  };
-
-  // Read + parse, preserving a corrupt file inline. Only for callers
-  // already serialized with writes (persist): an unlocked caller must
-  // use readPromptState, which re-validates under the lock.
-  const readPromptStateLocked = async () => {
-    const { raw, missing } = await readRawFile();
-    if (missing) {
+  // This store rides the shared durable-store primitive (design #976):
+  // the strict reader judges the file, the preserve helper moves a
+  // malformed file aside under the collision-proof preserve name, and
+  // the writer is mode-explicit. A torn or otherwise unparseable file
+  // is user data, not an empty store: move its bytes aside before any
+  // later write can overwrite them, and name the preserved copy so the
+  // loss is recoverable. The value judgement stays the one this store
+  // always made - any parsed JSON reaches stateFromParsed, which
+  // tolerates every shape - so only unparseable bytes are malformed
+  // here. The preserve helper re-reads and re-judges the on-disk bytes
+  // before renaming anything, so a valid replacement that landed in
+  // the meantime is never moved aside; a 'replaced' outcome re-reads
+  // that valid file instead (bounded - repeated replacement is a race
+  // no read should chase). A mutation must never overwrite bytes whose
+  // preservation just failed: they are the only copy of the user's
+  // overrides, so the read fails closed instead. Only call the locked
+  // reader serialized with writes (persist) or re-validated under the
+  // lock: the file at filePath may have been replaced by a valid write
+  // since the bytes that failed to parse were read.
+  const readPromptStateLocked = async (replacements = 0, failClosed = true) => {
+    const result = await readDurableJsonFile(filePath, { fs: fsPromises });
+    if (result.state === 'valid') return stateFromParsed(result.value);
+    // The primitive collapses an absent file and an EXISTING empty or
+    // whitespace-only file into the same 'missing' answer. Only the
+    // absent file is the first-run case: empty bytes are unparseable,
+    // and the pre-migration reader revalidated them before treating the
+    // store as empty - another process sharing this file can replace
+    // the empty bytes with valid state while this read is in flight,
+    // and returning an empty store here would let a mutation overwrite
+    // that replacement and drop its overrides (Codex, PR #1019). So a
+    // 'missing' verdict goes through the preserve helper too: it
+    // re-reads and re-judges the on-disk bytes, answers 'replaced' for
+    // a valid replacement (re-read below), 'missing' for a truly
+    // absent file (the first-run return) or for still-empty bytes
+    // (which hold no overrides, so there is nothing to preserve), and
+    // 'preserved' if the re-read bytes are malformed.
+    const preservation = await preserveMalformedJsonFile(filePath, { fs: fsPromises });
+    if (preservation.preserved) {
+      console.warn(`Failed to read magic prompts file: preserved the unreadable file at ${preservation.preservedPath}`);
       return emptyState();
     }
-    try {
-      return stateFromParsed(JSON.parse(raw));
-    } catch (error) {
-      // A mutation must never overwrite bytes whose preservation just
-      // failed: they are the only copy of the user's overrides. Abort
-      // instead; the caller can retry once the file is movable.
-      const preserved = await preserveCorruptFile(error);
-      if (!preserved) {
-        throw new Error('Failed to preserve the unreadable magic prompts file; refusing to overwrite it', { cause: error });
-      }
+    if (preservation.outcome === 'missing') return emptyState();
+    if (preservation.outcome === 'replaced' && replacements < 3) {
+      return readPromptStateLocked(replacements + 1, failClosed);
+    }
+    if (!failClosed) {
+      console.warn('Failed to preserve the unreadable magic prompts file; returning an empty state');
       return emptyState();
     }
+    throw new Error('Failed to preserve the unreadable magic prompts file; refusing to overwrite it');
   };
 
   const readPromptState = async () => {
-    const { raw, missing } = await readRawFile();
-    if (missing) {
-      return emptyState();
-    }
-    try {
-      return stateFromParsed(JSON.parse(raw));
-    } catch (error) {
-      // The bytes above are stale the moment the read returns: a
-      // concurrent write may already have preserved the corrupt file
-      // and saved valid state in its place, and renaming filePath now
-      // would move that saved state aside. Re-validate under the write
-      // lock before preserving anything; if a write landed in between,
-      // its state is the answer, not an empty store.
-      return enqueueLocked(async () => {
-        const current = await readRawFile();
-        if (current.missing) {
-          return emptyState();
-        }
-        try {
-          return stateFromParsed(JSON.parse(current.raw));
-        } catch {
-          await preserveCorruptFile(error);
-          return emptyState();
-        }
-      });
-    }
+    const result = await readDurableJsonFile(filePath, { fs: fsPromises });
+    if (result.state === 'valid') return stateFromParsed(result.value);
+    // The bytes above are stale the moment the read returns: a
+    // concurrent write may already have preserved the malformed file
+    // and saved valid state in its place. Re-validate under the write
+    // lock before preserving anything; if a write landed in between,
+    // its state is the answer, not an empty store.
+    return enqueueLocked(() => readPromptStateLocked(0, false));
   };
 
   const writePromptState = async (state) => {
+    // The file mode stays stated here: the primitive's writer requires
+    // it, and this store never restricted its file (plain writeFile
+    // under the process umask), so 0o666 keeps the effective mode it
+    // always had. Prompt overrides are user data, not secrets.
     await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
-    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    try {
-      await fsPromises.writeFile(tempPath, JSON.stringify(state, null, 2), 'utf8');
-      await renameWithRetry((from, to) => fsPromises.rename(from, to), tempPath, filePath);
-    } catch (error) {
-      try {
-        if (typeof fsPromises.unlink === 'function') {
-          await fsPromises.unlink(tempPath);
-        }
-      } catch {
-        // The write/rename error is the one the caller needs; a failed
-        // temp cleanup must not mask it.
-      }
-      throw error;
-    }
+    await writeDurableJsonFile(filePath, JSON.stringify(state, null, 2), { fs: fsPromises, mode: 0o666 });
   };
 
   const persist = async (mutator) => enqueueLocked(async () => {
