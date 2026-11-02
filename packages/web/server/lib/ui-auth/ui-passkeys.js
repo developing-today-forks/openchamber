@@ -3,7 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFileSync,
+  readDurableJsonFileSync,
+  writeDurableJsonFileSync,
+} from '../shared/durable-json-store.js';
 
 // @simplewebauthn/server and its ASN.1 dependencies are ~130 modules; only
 // passkey registration and authentication need them, so they load on first use.
@@ -123,50 +128,50 @@ export const createUiPasskeys = ({
   passwordBinding,
   readSettingsFromDiskMigrated,
   storeFile = PASSKEY_STORE_FILE,
+  fs: storeFs = fs,
   rpName = DEFAULT_RP_NAME,
   challengeTtlMs = DEFAULT_CHALLENGE_TTL_MS,
 } = {}) => {
   const registrationChallenges = new Map();
   const authenticationChallenges = new Map();
 
-  const ensureStoreDirectory = () => {
-    fs.mkdirSync(path.dirname(storeFile), { recursive: true });
+  // The shared sync durable-store helpers keep the strict object check,
+  // collision-proof corrupt-file preservation, and atomic write together.
+  const readStoredValue = (replacements = 0) => {
+    const result = readDurableJsonFileSync(storeFile, { fs: storeFs, validateValue: isJsonObject });
+    if (result.state === 'valid') {
+      return result.value;
+    }
+
+    // Missing includes an empty file. Recheck it through the preserve
+    // helper so a valid replacement installed after the read is not
+    // mistaken for a fresh store.
+    const preservation = preserveMalformedJsonFileSync(storeFile, { fs: storeFs, validateValue: isJsonObject });
+    if (preservation.preserved) {
+      console.warn(`[UI Passkeys] Failed to read passkey store: preserved the unreadable file at ${preservation.preservedPath}`);
+      return undefined;
+    }
+    if (preservation.outcome === 'missing') {
+      return undefined;
+    }
+    if (preservation.outcome === 'replaced' && replacements < 3) {
+      return readStoredValue(replacements + 1);
+    }
+    if (preservation.outcome === 'replaced') {
+      throw new Error(`Passkey store changed repeatedly while reading ${storeFile}; refusing to overwrite it`);
+    }
+    throw new Error(`Failed to preserve the unreadable passkey store at ${storeFile}; refusing to overwrite it`);
   };
 
-  // Atomic so a crash mid-write leaves the previous store intact rather
-  // than a half-written file that later fails to parse, and 0600 because
-  // the store holds passkey credential material.
+  // The store holds passkey credential material, so its mode remains 0600.
   const persistStore = (store) => {
-    ensureStoreDirectory();
-    const tempPath = `${storeFile}.tmp-${process.pid}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}`;
-    try {
-      fs.writeFileSync(tempPath, JSON.stringify(store, null, 2), { mode: 0o600 });
-      fs.chmodSync(tempPath, 0o600);
-      renameSyncWithRetry((from, to) => fs.renameSync(from, to), tempPath, storeFile);
-    } catch (error) {
-      try {
-        fs.unlinkSync(tempPath);
-      } catch {
-        // The write/rename error is the one the caller needs; a failed
-        // temp cleanup must not mask it.
-      }
-      throw error;
+    const preservation = preserveMalformedJsonFileSync(storeFile, { fs: storeFs, validateValue: isJsonObject });
+    if (preservation.preserved) {
+      console.warn(`[UI Passkeys] Failed to read passkey store: preserved the unreadable file at ${preservation.preservedPath}`);
+    } else if (preservation.outcome === 'failed') {
+      throw new Error(`Failed to preserve the unreadable passkey store at ${storeFile}; refusing to overwrite it`);
     }
-  };
-
-  // A torn or otherwise unparseable file is user data, not an empty
-  // store: move its bytes aside before any later write can overwrite
-  // them, and name the preserved copy so the loss is recoverable.
-  const preserveCorruptStore = (error) => {
-    const preservedPath = `${storeFile}.corrupt-${Date.now()}`;
-    try {
-      renameSyncWithRetry((from, to) => fs.renameSync(from, to), storeFile, preservedPath);
-      console.warn(`[UI Passkeys] Failed to read passkey store: preserved the unreadable file at ${preservedPath}:`, error?.message || error);
-    } catch (preserveError) {
-      // A mutation must never overwrite bytes whose preservation just
-      // failed: they are the only copy of the registered passkeys.
-      throw new Error(`Failed to preserve the unreadable passkey store at ${preservedPath} (${preserveError?.message || preserveError}); refusing to overwrite it`, { cause: error });
-    }
+    writeDurableJsonFileSync(storeFile, JSON.stringify(store, null, 2), { fs: storeFs, mode: 0o600 });
   };
 
   const createEmptyStore = () => ({
@@ -179,41 +184,14 @@ export const createUiPasskeys = ({
   const loadStore = () => {
     let store = createEmptyStore();
 
-    if (fs.existsSync(storeFile)) {
-      let parsed;
-      let raw;
-      try {
-        raw = fs.readFileSync(storeFile, 'utf8');
-      } catch (error) {
-        // A missing file (e.g. removed between the existence check and
-        // the read) is still the fresh-store case. Every other read
-        // failure (permissions, I/O) is not corruption: propagate it
-        // without moving or overwriting the active store, so fixing
-        // the underlying problem leaves the passkeys intact.
-        if (error?.code !== 'ENOENT') {
-          throw error;
-        }
-        raw = undefined;
-      }
-      if (raw !== undefined) {
-        try {
-          parsed = JSON.parse(raw);
-          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new Error('Passkey store is not a JSON object');
-          }
-        } catch (error) {
-          preserveCorruptStore(error);
-          parsed = undefined;
-        }
-      }
-      if (parsed !== undefined) {
-        store = {
-          version: DEFAULT_STORE_VERSION,
-          userID: decodeUserId(parsed?.userID) ? parsed.userID : store.userID,
-          passwordBinding: typeof parsed?.passwordBinding === 'string' ? parsed.passwordBinding : '',
-          passkeys: Array.isArray(parsed?.passkeys) ? parsed.passkeys.map(parseStoredPasskey).filter(Boolean) : [],
-        };
-      }
+    const parsed = readStoredValue();
+    if (parsed !== undefined) {
+      store = {
+        version: DEFAULT_STORE_VERSION,
+        userID: decodeUserId(parsed?.userID) ? parsed.userID : store.userID,
+        passwordBinding: typeof parsed?.passwordBinding === 'string' ? parsed.passwordBinding : '',
+        passkeys: Array.isArray(parsed?.passkeys) ? parsed.passkeys.map(parseStoredPasskey).filter(Boolean) : [],
+      };
     }
 
     if (!passwordBinding) {
@@ -235,7 +213,7 @@ export const createUiPasskeys = ({
       return store;
     }
 
-    if (!fs.existsSync(storeFile)) {
+    if (!storeFs.existsSync(storeFile)) {
       persistStore(store);
     }
 

@@ -41,7 +41,7 @@ Compatibility: upgrading renames the cookie for any explicit-port host, so alrea
   - `dispose()`
 
 ## Public exports (ui-passkeys.js)
-- `createUiPasskeys({ passwordBinding, readSettingsFromDiskMigrated, storeFile, rpName, challengeTtlMs })`: creates passkey runtime with methods:
+- `createUiPasskeys({ passwordBinding, readSettingsFromDiskMigrated, storeFile, fs, rpName, challengeTtlMs })`: creates passkey runtime with methods:
   - `enabled`
   - `getStatus(req)`
   - `listPasskeys(req)`
@@ -53,3 +53,7 @@ Compatibility: upgrading renames the cookie for any explicit-port host, so alrea
   - `beginAuthentication(req)`
   - `finishAuthentication(payload)`
   - `dispose()`
+
+## Passkey store
+
+`ui-passkeys.json` stores the passkey user ID, credential public keys, counters, and labels. Its root must be a JSON object. The sync durable-store helpers preserve malformed non-empty JSON before a later write, refuse a write when preservation fails, and write atomically with mode `0600`. Missing and empty files both mean a fresh store under the shared durable-store contract. Filesystem read errors other than a missing file propagate without replacing the active file. The optional `fs` argument keeps the file operations injectable in tests.
