@@ -37,13 +37,32 @@ const toBalanceWindow = (value) => toUsageWindow({
   valueLabel: formatCredits(value),
 });
 
+// The Go plan's included monthly credits (Drew's quota READ RULE,
+// 2026-11-01: Command Code reads report the PLAN windows only -
+// monthly is "$ used of the $10 included credits"). The credits
+// payload's monthlyCredits is the REMAINING balance of that bucket,
+// so the monthly plan window is derived from it. The top-up balance
+// (purchasedCredits) is never a quota figure.
+export const MONTHLY_INCLUDED_CREDITS = 10;
+
 export const parseCommandCodeCredits = (payload) => {
   const root = asObject(payload);
   const credits = asObject(root?.credits);
   const limits = asObject(root?.windowLimits);
   const windows = {};
 
-  for (const [label, field] of [['monthly_credits', 'monthlyCredits'], ['purchased_credits', 'purchasedCredits'], ['free_credits', 'freeCredits']]) {
+  const monthlyRemaining = toNumber(credits?.monthlyCredits);
+  if (monthlyRemaining !== null && monthlyRemaining >= 0 && monthlyRemaining <= MONTHLY_INCLUDED_CREDITS) {
+    const monthlyUsed = MONTHLY_INCLUDED_CREDITS - monthlyRemaining;
+    windows.monthly = toUsageWindow({
+      usedPercent: Math.min(100, Math.max(0, monthlyUsed / MONTHLY_INCLUDED_CREDITS * 100)),
+      windowSeconds: null,
+      resetAt: null,
+      valueLabel: `${formatCredits(monthlyUsed)} / ${formatCredits(MONTHLY_INCLUDED_CREDITS)}`,
+    });
+  }
+
+  for (const [label, field] of [['purchased_credits', 'purchasedCredits'], ['free_credits', 'freeCredits']]) {
     const value = toNumber(credits?.[field]);
     if (value !== null) windows[label] = toBalanceWindow(value);
   }

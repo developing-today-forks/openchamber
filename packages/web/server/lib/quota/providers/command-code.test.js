@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fetchCommandCodeUsage, fetchQuota, parseCommandCodeCredits } from './command-code.js';
 
 const creditsPayload = {
-  credits: { monthlyCredits: 120, purchasedCredits: 30, freeCredits: 5 },
+  credits: { monthlyCredits: 4, purchasedCredits: 30, freeCredits: 5 },
   windowLimits: {
     fiveHour: { used: 25, cap: 100, resetAt: 1_776_000_000 },
     weekly: { used: 70, cap: 200, resetAt: 1_776_604_800 },
@@ -13,7 +13,8 @@ const creditsPayload = {
 describe('Command Code quota provider', () => {
   it('parses balances and rate-limit windows', () => {
     const windows = parseCommandCodeCredits(creditsPayload);
-    expect(windows.monthly_credits).toMatchObject({ usedPercent: null, valueLabel: '120' });
+    expect(windows.monthly).toMatchObject({ usedPercent: 60, valueLabel: '6 / 10' });
+    expect(windows.monthly_credits).toBeUndefined();
     expect(windows.purchased_credits).toMatchObject({ usedPercent: null, valueLabel: '30' });
     expect(windows.free_credits).toMatchObject({ usedPercent: null, valueLabel: '5' });
     expect(windows['5h']).toMatchObject({ usedPercent: 25, valueLabel: '25 / 100', resetAt: 1_776_000_000_000 });
@@ -22,11 +23,23 @@ describe('Command Code quota provider', () => {
 
   it('formats fractional credit values for display', () => {
     const windows = parseCommandCodeCredits({
-      credits: { monthlyCredits: 69.7947070034 },
+      credits: { monthlyCredits: 3.1052929966 },
       windowLimits: { fiveHour: { used: 0.2052929966, cap: 14 } },
     });
-    expect(windows.monthly_credits.valueLabel).toBe('69.79');
+    expect(windows.monthly.valueLabel).toBe('6.89 / 10');
+    expect(windows.monthly.usedPercent).toBeCloseTo(68.95, 2);
     expect(windows['5h'].valueLabel).toBe('0.21 / 14');
+  });
+
+  it('derives the monthly plan window from remaining included credits', () => {
+    const windows = parseCommandCodeCredits({ credits: { monthlyCredits: 0.0982045034 } });
+    expect(windows.monthly.usedPercent).toBeCloseTo(99.02, 2);
+    expect(windows.monthly.valueLabel).toBe('9.9 / 10');
+  });
+
+  it('omits the monthly window when remaining credits exceed the plan cap', () => {
+    const windows = parseCommandCodeCredits({ credits: { monthlyCredits: 250 } });
+    expect(windows.monthly).toBeUndefined();
   });
 
   it('resolves the organization before fetching credits', async () => {
