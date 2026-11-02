@@ -80,6 +80,7 @@ This module provides notification message preparation utilities for the web serv
   - `removeApnsTokenFromAllSessions(deviceToken)`
   - `sendApnsToAllUiSessions(payload)` — `payload.sealed` (`{ title, body }`, optional) is what a phone with a push key opens; it is never sent in the clear. Signs + sends to all registered tokens (no UI-visibility gate; iOS suppresses the foreground banner). No-ops with a single warning when APNs is unconfigured. Drops tokens on `410` / `BadDeviceToken` / `Unregistered`.
   - `resolveApnsConfig()`
+- The device-token store rides the shared durable-store primitive (`../shared/durable-json-store.js`, #976/#978): a file that is not a JSON object at version 1 is malformed and is preserved aside under the primitive's collision-proof name before any write replaces it; a serialized write whose preservation fails is refused. An absent or empty file is the empty store.
 - Configuration (env first, then `settings.apnsConfig`): `OPENCHAMBER_APNS_KEY_ID`, `OPENCHAMBER_APNS_TEAM_ID`, `OPENCHAMBER_APNS_P8` (PEM contents; literal `\n` accepted) or `OPENCHAMBER_APNS_P8_PATH`, `OPENCHAMBER_APNS_BUNDLE_ID` (default `today.developing.openchamber`), `OPENCHAMBER_APNS_ENVIRONMENT` (optional override forcing every send to `sandbox` or `production`; when unset, each token is delivered to the environment it registered with, defaulting to `production` for tokens without one).
 
 ### Emitter runtime API (emitter-runtime.js)
