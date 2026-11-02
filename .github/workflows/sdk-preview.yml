@@ -19,11 +19,13 @@ permissions:
 # constant group cannot tell two publishes apart: a dispatch for a
 # different preview number could replace another's pending run, and
 # that preview version would never publish. Key by the distinguishing
-# inputs and queue every run.
+# inputs. No queue: max here: pairing it with cancel-in-progress: true
+# is a GitHub validation error that fails every run at startup with
+# zero jobs (openchamber#84). Within one group a redispatch supersedes
+# the stale run instead.
 concurrency:
   group: sdk-preview-publish-${{ inputs.preview_number }}-${{ inputs.dry_run }}
   cancel-in-progress: true
-  queue: max
 
 jobs:
   publish:
