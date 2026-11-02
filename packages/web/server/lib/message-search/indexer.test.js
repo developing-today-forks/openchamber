@@ -569,6 +569,7 @@ describe.skipIf(!open)('message search index', () => {
     const PAGE = 200;
     const all = Array.from({ length: 20 * PAGE + 10 }, (_, i) => ({ id: `bulk${i}`, title: `Bulk ${i}`, location: { directory: `/repo/bulk${i}` }, time: { created: 1000, updated: 1000 } }));
     const byId = new Map(all.map((session) => [session.id, session]));
+    let bulk0Refreshed = false;
     let listCalls = 0;
     const client = {
       session: {
@@ -583,9 +584,11 @@ describe.skipIf(!open)('message search index', () => {
         message: fake.client.session.message,
       },
       message: {
-        list: async ({ sessionID }) => (sessionID === 'newlive'
-          ? { data: [{ id: 'nl1', type: 'user', text: 'live words indexed', time: { created: 3001 } }], cursor: {} }
-          : { data: [], cursor: {} }),
+        list: async ({ sessionID }) => {
+          if (sessionID === 'newlive') return { data: [{ id: 'nl1', type: 'user', text: 'live words indexed', time: { created: 3001 } }], cursor: {} };
+          if (sessionID === 'bulk0' && bulk0Refreshed) return { data: [{ id: 'b0r', type: 'user', text: 'refreshed words found', time: { created: 5001 } }], cursor: {} };
+          return { data: [], cursor: {} };
+        },
       },
     };
     const local = createMessageSearchIndexer({ store, createClient: () => client, pageSize: 2, liveDebounceMs: 0, backfillPauseMs: 0, logger: { warn: () => {} } });
@@ -606,20 +609,34 @@ describe.skipIf(!open)('message search index', () => {
     // sorts before the saved descending cursor, so the resumed walk never
     // lists it — the completion cleanup must still not delete it.
     byId.set('newlive', { id: 'newlive', title: 'New live', location: { directory: '/repo/newlive' }, time: { created: 3000, updated: 3000 } });
+    // While disconnected, a session from the saved head pages changed and
+    // a new session was created at the head of the list. Neither is in the
+    // saved tail's reach: the resumed walk must refresh the head, or the
+    // changed session is skipped on its stale timestamp and the new one
+    // is never listed.
+    all.find((session) => session.id === 'bulk0').time = { created: 1000, updated: 5000 };
+    const newhead = { id: 'newhead', title: 'New head', location: { directory: '/repo/newhead' }, time: { created: 4000, updated: 4000 } };
+    all.unshift(newhead);
+    byId.set('newhead', newhead);
+    bulk0Refreshed = true;
     local.processPayload({ type: 'session.idle', properties: { sessionID: 'newlive' } });
     await new Promise((resolve) => setTimeout(resolve, 0));
     await local.idle();
     expect(search('live words')).toHaveLength(1);
     expect(store.counts().sessions).toBe(4002);
 
-    // Second connect: the walk resumes past the cap, reaches the end of
-    // the list, and the now-complete assembled list deletes the stale
-    // session — but not the one indexed live while the walk was pending.
+    // Second connect: the walk first re-reads the 20 head pages fresh up
+    // to the saved boundary cursor (picking up the changed bulk0 and the
+    // new head session), then resumes past the cap for one tail page and
+    // reaches the end of the list. The now-complete assembled list deletes
+    // the stale session — but not the one indexed live while the walk was
+    // pending.
     await connect();
-    expect(listCalls).toBe(21);
-    expect(store.counts().sessions).toBe(4011);
+    expect(listCalls).toBe(41);
+    expect(store.counts().sessions).toBe(4012);
     expect(search('stale')).toEqual([]);
     expect(search('live words')).toHaveLength(1);
+    expect(search('refreshed words')).toHaveLength(1);
     expect(local.status().backfill.state).toBe('done');
   });
 

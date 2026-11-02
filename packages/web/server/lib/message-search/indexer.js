@@ -350,15 +350,74 @@ export const createMessageSearchIndexer = ({
    */
   const startBackfill = async () => {
     const run = ++backfillRun;
-    if (!backfillContinuation) backfillWalkProtected = new Set();
+    const resumed = backfillContinuation;
+    if (!resumed) backfillWalkProtected = new Set();
     runSignal();
     const client = createClient('');
-    const listed = backfillContinuation?.listed ?? new Map();
-    let cursor = backfillContinuation?.cursor ?? null;
+    const listed = resumed?.listed ?? new Map();
+    let cursor = resumed?.cursor ?? null;
     let listComplete = false;
     try {
       const seenCursors = new Set();
       let pages = 0;
+      // A resumed walk's saved head pages are stale: a session changed
+      // while disconnected keeps its old time.updated in the saved list,
+      // so the queue check below would skip it as if it had been read,
+      // and a session created in the gap sorts before the saved cursor
+      // and is never listed at all. Re-read the head fresh, up to the
+      // saved boundary cursor, before continuing the tail; the refresh
+      // keeps its own page cap and repeated-cursor guard.
+      let walkPending = true;
+      if (resumed) {
+        const boundary = resumed.cursor;
+        const freshHead = new Map();
+        let headCursor = null;
+        let headPages = 0;
+        walkPending = false;
+        for (;;) {
+          const page = sessionPageSchema.parse(await readWithDeadline((options) => client.session.list({ parentID: null, limit: SESSION_PAGE_SIZE, ...(headCursor ? { cursor: headCursor } : { order: 'desc' }) }, options)));
+          for (const record of page.data) {
+            const session = sessionSchema.safeParse(record);
+            if (session.success && !session.data.parentID) freshHead.set(session.data.id, session.data);
+          }
+          const next = page.cursor?.next ?? null;
+          if (!next || page.data.length < SESSION_PAGE_SIZE) {
+            // The whole list now fits before the old boundary: the fresh
+            // head is the complete list and replaces the assembled one.
+            listed.clear();
+            for (const [id, session] of freshHead) listed.set(id, session);
+            listComplete = true;
+            backfillContinuation = null;
+            break;
+          }
+          if (next === boundary) {
+            for (const [id, session] of freshHead) listed.set(id, session);
+            walkPending = true;
+            break;
+          }
+          headPages += 1;
+          if (next === headCursor || seenCursors.has(next)) {
+            logger.warn?.('[message-search] session list pagination repeated a cursor while refreshing a resumed backfill; stopping the walk with a partial list');
+            // As with a fresh walk: drop the continuation, keep the
+            // partial (now refreshed) list for queueing, delete nothing.
+            backfillContinuation = null;
+            backfillWalkProtected = null;
+            for (const [id, session] of freshHead) listed.set(id, session);
+            break;
+          }
+          if (headPages >= MAX_PAGES_PER_WALK) {
+            logger.warn?.(`[message-search] session list pagination hit the ${MAX_PAGES_PER_WALK}-page cap while refreshing a resumed backfill; keeping the saved tail cursor for the next walk`);
+            for (const [id, session] of freshHead) listed.set(id, session);
+            backfillContinuation = { cursor: boundary, listed };
+            break;
+          }
+          if (headCursor) seenCursors.add(headCursor);
+          seenCursors.add(next);
+          headCursor = next;
+        }
+      }
+      if (walkPending) {
+        pages = 0;
       for (;;) {
         const page = sessionPageSchema.parse(await readWithDeadline((options) => client.session.list({ parentID: null, limit: SESSION_PAGE_SIZE, ...(cursor ? { cursor } : { order: 'desc' }) }, options)));
         for (const record of page.data) {
@@ -391,6 +450,7 @@ export const createMessageSearchIndexer = ({
         if (cursor) seenCursors.add(cursor);
         seenCursors.add(next);
         cursor = next;
+      }
       }
     } catch (error) {
       if (!stopped) logger.warn?.('[message-search] could not list sessions:', error?.message ?? error);
