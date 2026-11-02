@@ -2954,6 +2954,14 @@ describe('ZenMux quota provider (VS Code parity)', () => {
     assert.equal(result.ok, false);
     assert.equal(result.usage, null);
   });
+
+  test('fails the result for an over-cap response body instead of buffering it (#1282)', async () => {
+    const body = JSON.stringify({ pad: 'x'.repeat(1024 * 1024) });
+    const result = await fetchZenmuxQuota({ readCredential, fetchImpl: async () => new Response(body) });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? '', /Quota response exceeded/);
+    assert.equal(result.usage, null);
+  });
 });
 
 describe('Kilo Code quota provider (VS Code parity)', () => {
