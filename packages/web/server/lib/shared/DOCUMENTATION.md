@@ -295,6 +295,82 @@ The contract (rules 1–5 of #1254):
 - Cap values, error surfaces and HTTP shapes at the call sites: the
   primitive knows paths, bytes and caps only.
 
+## Traversal budget (design #1391 phase 1, #1392)
+
+`traversal-budget.js` holds the one counting core for recursive directory
+walks over trees the server does not control — project trees, skills
+roots, agent directories, a cloned catalog offered for install. It
+replaces the three spellings the capped walks grew privately (a cap test
+reading a BFS `visited` Set's size in `fs/search.js`, a `(maxDepth,
+maxDirs)` parameter pair in `fs/routes.js` `findGitDirectories`, a
+per-root counter and a threaded `{ visitedDirs }` object in
+`opencode/agents.js`). Phase 1 (#1392) lands the primitive only; call
+sites migrate in phase 2 with their values and behaviour unchanged.
+
+- `createTraversalBudget({ maxDirs, maxEntries?, maxDepth?, deadlineMs? })`
+  returns the one budget object a walk consults. `visitDir(depth?)`
+  answers whether a directory may be entered, consulted **before
+  descending**, and counts the directory when it is allowed;
+  `visitEntry()` counts entries the same way. `visitedDirs` /
+  `visitedEntries` expose the counters, `exhausted` whether a stopping
+  dimension has been spent, and `truncated` whether any consultation has
+  been refused — the enumerate disposition's signal. A refused
+  consultation counts nothing, so repeated consultation after
+  exhaustion keeps answering "stop" with no counter drift past the
+  bound, and a walk that consumes exactly its bound and never consults
+  again finishes with `truncated` unset. A directory past `maxDepth` is
+  refused without consuming the directory count and without stopping
+  shallower consultations.
+
+The contract (rules 1–5 of #1391):
+
+1. Every recursive directory walk over a tree whose size the walker
+   does not control carries a named traversal budget. The budget's
+   dimensions are stated where the walk is defined; values stay
+   per-walk (100 / 5,000 / 50,000 are all legitimate and none changes
+   under this design).
+2. The budget counts what the walk consumes, not what it returns.
+   Directories visited is the mandatory dimension — a results-only
+   counter is vacuous on a directory-only tree (#1332). Entries seen
+   and depth are optional dimensions where a walk's shape needs them;
+   a deadline is an optional dimension for async walks only.
+3. One budget object, one spelling. A followed link's directories
+   count against the same budget as the root's — the budget is
+   consulted per directory entered, however the walk reached it — so
+   no link can expand a walk past its budget. Link policy (follow with
+   an ancestor check, refuse, dedupe) stays per-walk.
+4. Two named dispositions at the bound, chosen by what the walk
+   produces. *Enumerate* (search, discovery, listing, index): stop,
+   return what was found, and make the truncation visible to the
+   caller — the result carries the signal, so no UI presents a partial
+   list as complete. *Copy* (install): abort with a clear error and
+   leave no partial destination — a partial copy is a corrupt install,
+   not a partial result. Silently stopping and presenting the prefix
+   as the whole is not a disposition of this contract. The budget
+   supplies the counting and the signal; the disposition stays with
+   the caller.
+5. Sync and async walks answer identically, and web/VS Code twins
+   state the same budget and disposition for the same walk. A sync
+   walk is bounded by counts alone (it has no honest deadline) and
+   must stop *at* the bound, not merely record passing it.
+
+### What stays out
+
+- Call-site migrations and cap values: phase 2 (#1393) moves the
+  settled capped walks onto the budget behaviour-identically; this
+  module introduces no cap value for any real walk.
+- The traversal itself: walks differ in ways callers depend on (BFS
+  with a dedupe set, result order, per-entry symlink guards), so the
+  budget is the shared part, never a universal walker function.
+- Bytes: a walk's budget counts directories and entries, never bytes
+  read from a file — file contents stay `bounded-file-read.js`
+  (#1254), response bodies stay `response-body.js` (#802). A byte
+  dimension belongs to the copy walk's phase, when its values have
+  sizing evidence.
+- The VS Code mirrors: the extension cannot import this module; its
+  twins are hand-mirrored copies per walk, as with `bounded-file-read`,
+  in the phase that migrates each walk.
+
 ## Notes for contributors
 
 - Add a predicate here only when two or more feature modules need the exact
