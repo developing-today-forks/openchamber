@@ -231,6 +231,25 @@ describe('pointers', () => {
     }
   });
 
+  it('skips an oversized pointer instead of buffering it whole (#1482)', async () => {
+    fs.mkdirSync(__testing.POINTERS_DIR, { recursive: true });
+    const hugePath = path.join(__testing.POINTERS_DIR, 'huge.json');
+    const huge = JSON.stringify({
+      repoRoot: '/definitely/not/here',
+      cacheKey: 'huge',
+      pad: 'x'.repeat(4 * 1024 * 1024),
+    });
+    fs.writeFileSync(hugePath, huge, 'utf8');
+    writePointer('/definitely/not/here', 'working-tree:all', {
+      repoRoot: '/definitely/not/here',
+      cacheKey: 'dead',
+    });
+
+    expect(await pruneMissingRepositories()).toBe(1);
+    expect(fs.existsSync(hugePath)).toBe(true);
+    expect(readPointer('/definitely/not/here', 'working-tree:all')).toBeNull();
+  });
+
   it('survives a pointer file it cannot parse', async () => {
     fs.mkdirSync(__testing.POINTERS_DIR, { recursive: true });
     fs.writeFileSync(path.join(__testing.POINTERS_DIR, 'broken.json'), '{ not json', 'utf8');
