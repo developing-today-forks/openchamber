@@ -145,6 +145,24 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['sidebar', 'rows', 'lines', 'one line', 'two lines', 'detailed rows', 'zone'],
   },
   {
+    id: 'appearance.sidebar-rows-list-lines',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.listLines',
+    keywords: ['sidebar', 'rows', 'lines', 'one line', 'two lines', 'list', 'compact rows'],
+  },
+  {
+    id: 'appearance.sidebar-rows-chats-lines',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.chatsLines',
+    keywords: ['sidebar', 'rows', 'lines', 'one line', 'two lines', 'chats'],
+  },
+  {
+    id: 'appearance.sidebar-rows-project-lines',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.projectLines',
+    keywords: ['sidebar', 'rows', 'lines', 'one line', 'two lines', 'tree', 'project'],
+  },
+  {
     id: 'appearance.interface-font-size',
     page: 'appearance',
     titleKey: 'settings.openchamber.visual.field.interfaceFontSize',

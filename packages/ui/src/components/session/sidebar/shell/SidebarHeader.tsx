@@ -218,6 +218,7 @@ export function SidebarHeader(props: Props): React.ReactNode {
   const showPinnedSection = useSessionDisplayStore((state) => state.showPinnedSection);
   const setShowPinnedSection = useSessionDisplayStore((state) => state.setShowPinnedSection);
   const zoneRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.zoneLines);
+  const listRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.listLines);
   const setSessionRowDisplay = useSessionDisplayStore((state) => state.setSessionRowDisplay);
   const openSidebarRowsSettings = React.useCallback(() => {
     useUIStore.getState().setSettingsPage('appearance');
@@ -409,7 +410,11 @@ export function SidebarHeader(props: Props): React.ReactNode {
       displayMenuSections.push(<>
         {choiceSubmenu('sessions.sidebar.header.layout.listChats', LIST_CHATS_OPTIONS, sidebarLayout.timelineChats, (placement) => saveSidebarLayout({ timelineChats: placement }))}
         {toggleItem('sessions.sidebar.header.layout.projectGroups', sidebarLayout.timelineProjectGroups, () => saveSidebarLayout({ timelineProjectGroups: !sidebarLayout.timelineProjectGroups }))}
-        {toggleItem('sessions.sidebar.header.layout.compactRows', sidebarLayout.timelineCompactRows, () => saveSidebarLayout({ timelineCompactRows: !sidebarLayout.timelineCompactRows }))}
+        {toggleItem('sessions.sidebar.header.layout.compactRows', listRowLines === 'one', () => {
+          const listLines = listRowLines === 'one' ? 'two' : 'one';
+          setSessionRowDisplay({ listLines });
+          void updateDesktopSettings({ sidebarSessionRowDisplay: { ...useSessionDisplayStore.getState().sessionRowDisplay, listLines } });
+        })}
       </>);
     }
     displayMenuSections.push(<>
