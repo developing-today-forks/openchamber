@@ -416,6 +416,32 @@ describe('dispatch results runtime', () => {
     expect(runtime.pending()).toEqual([]);
   });
 
+  it('refuses to register an entry whose write is refused', async () => {
+    const dataDir = await makeDataDir();
+    let failWrites = true;
+    const fsPromises = {
+      ...fs,
+      writeFile: async (...args) => {
+        if (failWrites) throw new Error('no space left on device');
+        return fs.writeFile(...args);
+      },
+    };
+    const { runtime } = await createRuntime({ dataDir, fsPromises });
+    await expect(runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 })).rejects.toThrow(
+      'no space left on device',
+    );
+    // The refused entry is not held as pending: it existed only in memory,
+    // so a restart would have dropped it while the caller waited (#1503).
+    expect(runtime.pending()).toEqual([]);
+    // The shared write chain is not poisoned by the refusal: once writes
+    // land again, a registration succeeds and persists.
+    failWrites = false;
+    await runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 });
+    expect(runtime.pending()).toHaveLength(1);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries).toHaveLength(1);
+  });
+
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');
