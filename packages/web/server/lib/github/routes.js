@@ -27,6 +27,9 @@ const GITHUB_PR_CONTEXT_MAX_COUNT = GITHUB_PR_CONTEXT_PAGE_SIZE * GITHUB_PR_CONT
 const GITHUB_CHECK_RUN_PAGE_SIZE = 100;
 const GITHUB_CHECK_RUN_MAX_PAGES = 20;
 const GITHUB_CHECK_RUN_MAX_COUNT = GITHUB_CHECK_RUN_PAGE_SIZE * GITHUB_CHECK_RUN_MAX_PAGES;
+const GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE = 100;
+const GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES = 20;
+const GITHUB_CHECK_RUN_ANNOTATION_MAX_COUNT = GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE * GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES;
 // Board-picker reads share the branches bound: named caps with one overflow
 // probe, so an over-cap collection fails loudly instead of reading short.
 const GITHUB_PICKER_PAGE_SIZE = 100;
@@ -183,6 +186,31 @@ async function readTotalCountCollection(label, extract, fetchPage) {
         return items;
       }
       throw new Error(`GitHub ${label} list reached the ${GITHUB_CHECK_RUN_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return items;
+}
+
+// Reads one check run's annotations page by page under the same named-cap
+// discipline as readPullContextCollection (#1420): listAnnotations returns a
+// plain array with no total_count, so pagination follows short pages, probes
+// one page past the cap, and errors when the probe is non-empty. A page error
+// propagates to the caller instead of silently returning the pages read so
+// far as if they were the complete list.
+async function readCheckRunAnnotations(fetchPage) {
+  const items = [];
+  for (let page = 1; page <= GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES; page += 1) {
+    const payload = requireProviderArray((await fetchPage(page))?.data, 'GitHub returned an invalid check run annotation list');
+    items.push(...payload);
+    if (payload.length < GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE) {
+      return items;
+    }
+    if (page === GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES) {
+      const probe = requireProviderArray((await fetchPage(page + 1))?.data, 'GitHub returned an invalid check run annotation list');
+      if (probe.length === 0) {
+        return items;
+      }
+      throw new Error(`GitHub check run annotation list reached the ${GITHUB_CHECK_RUN_ANNOTATION_MAX_COUNT} safety limit and may be incomplete`);
     }
   }
   return items;
@@ -3280,6 +3308,7 @@ export function registerGitHubRoutes(app, options = {}) {
           if (checkRuns.length > 0) {
             const parsedJobs = new Map();
             const parsedAnnotations = new Map();
+            const truncatedAnnotations = new Set();
             if (includeCheckDetails) {
               // Prefetch actions jobs per runId.
               const runIds = new Set();
@@ -3336,28 +3365,24 @@ export function registerGitHubRoutes(app, options = {}) {
                   continue;
                 }
 
-                const annotations = [];
-                for (let page = 1; page <= 3; page += 1) {
-                  try {
-                    const annotationsResp = await octokit.rest.checks.listAnnotations({
-                      owner: repo.owner,
-                      repo: repo.repo,
-                      check_run_id: checkRunId,
-                      per_page: 50,
-                      page,
-                    });
-                    const chunk = Array.isArray(annotationsResp?.data) ? annotationsResp.data : [];
-                    annotations.push(...chunk);
-                    if (chunk.length < 50) {
-                      break;
-                    }
-                  } catch {
-                    break;
+                // Deliberate choice (#1420): an annotations read that fails
+                // or crosses the safety cap is caught per check run, so the
+                // checks summary still renders, but the partial list is
+                // never returned as complete — the run is flagged with
+                // annotationsTruncated instead.
+                try {
+                  const annotations = await readCheckRunAnnotations((page) => octokit.rest.checks.listAnnotations({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    check_run_id: checkRunId,
+                    per_page: GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE,
+                    page,
+                  }));
+                  if (annotations.length > 0) {
+                    parsedAnnotations.set(checkRunId, annotations);
                   }
-                }
-
-                if (annotations.length > 0) {
-                  parsedAnnotations.set(checkRunId, annotations);
+                } catch {
+                  truncatedAnnotations.add(checkRunId);
                 }
               }
             }
@@ -3422,6 +3447,7 @@ export function registerGitHubRoutes(app, options = {}) {
                     }
                   : undefined,
                 ...(job ? { job } : {}),
+                ...(truncatedAnnotations.has(Number(run.id)) ? { annotationsTruncated: true } : {}),
                 ...(run.id && parsedAnnotations.has(run.id)
                   ? {
                       annotations: parsedAnnotations.get(run.id).map((a) => ({
