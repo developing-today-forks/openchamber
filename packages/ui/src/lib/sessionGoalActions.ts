@@ -5,7 +5,7 @@ import { distillGoalObjective } from '@/lib/smallModel';
 import { requestGoalSpec, type GoalWriterChoice } from '@/lib/goalWriter';
 import { formatMessage, useI18nStore } from '@/lib/i18n';
 import { toast } from '@/components/ui';
-import { deleteGoalObjectiveFile, fetchGoalObjectiveContent, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
+import { deleteGoalObjectiveFile, fetchGoalObjectiveContent, fetchGoalObjectiveSnapshot, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
 import { SESSION_GOAL_CHAR_LIMIT_MAX } from '@/lib/sessionGoalLimits';
 import {
   getSessionGoal,
@@ -260,7 +260,17 @@ export async function setSessionGoal(
   // Snapshot the current objective file before overwriting it: if the
   // guarded metadata write below aborts as changed, the snapshot is restored
   // so the surviving goal record keeps pointing at its own objective text.
-  const priorObjective = editing ? await fetchGoalObjectiveContent(sessionId) : null;
+  // A snapshot that could not be read is not a missing file: writing anyway
+  // would leave nothing truthful to restore, and the rollback below could
+  // delete a file that was there all along — so the save does not start.
+  const snapshot = editing ? await fetchGoalObjectiveSnapshot(sessionId) : null;
+  if (snapshot?.kind === 'unavailable') {
+    throw new Error('Could not read the current goal objective, so the save was not attempted. Try again.');
+  }
+  const priorObjective = snapshot?.kind === 'content' ? snapshot.content : null;
+  // The snapshot read is asynchronous: a cancel that landed while it was in
+  // flight must still stop the save before its first write.
+  signal?.throwIfAborted();
   const fileWrite = await writeGoalObjectiveFile(sessionId, objective);
   if (fileWrite.saved && fileWrite.truncated) {
     const dictionary = useI18nStore.getState().dictionary;
@@ -293,12 +303,22 @@ export async function setSessionGoal(
     return next.record;
   });
   if (changed && fileWrite.saved) {
-    // The metadata write aborted: put the snapshotted objective file back
-    // (best-effort; a failed restore leaves the pre-#1372 state, never worse).
-    if (priorObjective === null) {
-      deleteGoalObjectiveFile(sessionId);
-    } else {
-      await writeGoalObjectiveFile(sessionId, priorObjective);
+    // The metadata write aborted: put the snapshotted objective file back —
+    // but only while this save still owns the file. A save that committed
+    // after this one wrote the file owns it now; restoring over it would
+    // strand the winning save's metadata pointing at text it does not
+    // describe. Ownership is read back and compared against what this save
+    // wrote (a server-side truncation keeps a prefix of it). Best-effort: an
+    // unreadable or no-longer-owned file is left exactly as it lies.
+    const currentObjective = await fetchGoalObjectiveContent(sessionId);
+    const stillOwnsFile = currentObjective !== null
+      && (currentObjective === objective || objective.startsWith(currentObjective));
+    if (stillOwnsFile) {
+      if (priorObjective === null) {
+        deleteGoalObjectiveFile(sessionId);
+      } else {
+        await writeGoalObjectiveFile(sessionId, priorObjective);
+      }
     }
   }
   return changed ? { outcome: 'changed' } : { outcome: 'saved', rewrittenSpec };

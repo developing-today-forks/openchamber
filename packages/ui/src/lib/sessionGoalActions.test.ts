@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'bun:test';
 import type { Metadata } from '@/lib/opencode/model';
 import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
+import type { GoalObjectiveSnapshot } from './goalObjectiveFiles';
 
 // setSessionGoal harness: the save reads and writes through the session
 // metadata store and the objective file store. Both are kept in memory here
@@ -9,6 +10,9 @@ import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
 let storedMetadata: Metadata = {};
 let objectiveFileContent: string | null = null;
 let completeGoalBeforeMetadataWrite = false;
+let winnerSaveBeforeMetadataWrite: string | null = null;
+let snapshotReadFails = false;
+let snapshotReadHook: (() => void) | null = null;
 const objectiveFileWrites: string[] = [];
 let objectiveFileDeletes = 0;
 
@@ -16,6 +20,9 @@ const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
   storedMetadata = { openchamber: { goal } };
   objectiveFileContent = fileContent;
   completeGoalBeforeMetadataWrite = false;
+  winnerSaveBeforeMetadataWrite = null;
+  snapshotReadFails = false;
+  snapshotReadHook = null;
   objectiveFileWrites.length = 0;
   objectiveFileDeletes = 0;
 };
@@ -28,9 +35,27 @@ mock.module('@/sync/session-actions', () => ({
     updater: (metadata: Metadata) => Metadata,
   ) => {
     if (completeGoalBeforeMetadataWrite) {
+      // SAFETY: the harness only ever stores `{ openchamber: { goal } }` in
+      // storedMetadata, so both narrowings name the shape it just wrote.
       const namespace = storedMetadata.openchamber as Metadata;
+      // SAFETY: the harness placed the goal record at this key itself.
       const goal = namespace.goal as Metadata;
       storedMetadata = { openchamber: { goal: { ...goal, status: 'complete' } } };
+    }
+    if (winnerSaveBeforeMetadataWrite !== null) {
+      // Another window's save commits between this save's objective-file
+      // write and its guarded metadata write: the winner's text is in the
+      // file and the winner's revision is in the record.
+      // SAFETY: same harness-owned shape as above.
+      const namespace = storedMetadata.openchamber as Metadata;
+      // SAFETY: the harness placed the goal record at this key itself.
+      const goal = namespace.goal as Metadata;
+      objectiveFileContent = winnerSaveBeforeMetadataWrite;
+      storedMetadata = {
+        openchamber: {
+          goal: { ...goal, objectiveRevision: goalObjectiveRevision(winnerSaveBeforeMetadataWrite) },
+        },
+      };
     }
     storedMetadata = updater(storedMetadata);
     return { metadata: storedMetadata };
@@ -45,6 +70,13 @@ mock.module('@/lib/opencode/client', () => ({
 
 mock.module('@/lib/goalObjectiveFiles', () => ({
   fetchGoalObjectiveContent: async () => objectiveFileContent,
+  fetchGoalObjectiveSnapshot: async (): Promise<GoalObjectiveSnapshot> => {
+    snapshotReadHook?.();
+    if (snapshotReadFails) return { kind: 'unavailable' };
+    return objectiveFileContent === null
+      ? { kind: 'missing' }
+      : { kind: 'content', content: objectiveFileContent };
+  },
   writeGoalObjectiveFile: async (_sessionId: string, content: string) => {
     objectiveFileWrites.push(content);
     objectiveFileContent = content;
@@ -210,6 +242,8 @@ describe('session-goal save against the objective file', () => {
     objectiveRevision: goalObjectiveRevision(priorText),
   });
 
+  // SAFETY: the harness only ever stores `{ openchamber: { goal } }`, so
+  // this reads back the goal record the harness itself placed there.
   const storedGoalNow = (): Metadata => (storedMetadata.openchamber as Metadata).goal as Metadata;
 
   // The check completing the goal while this save is in flight aborts the
@@ -243,6 +277,48 @@ describe('session-goal save against the objective file', () => {
     expect(objectiveFileContent).toBe(newText);
     expect(objectiveFileDeletes).toBe(0);
     expect(storedGoalNow().objectiveRevision).toBe(goalObjectiveRevision(newText));
+  });
+
+  // Codex P1 on PR #1479: the rollback used to restore unconditionally, so
+  // a save that committed after this save's file write but before its
+  // metadata check lost its objective file to this save's restore.
+  test('a newer committed save between the file write and the abort keeps its objective file', async () => {
+    const winnerText = 'Winner objective text';
+    resetGoalHarness(storedGoal(), priorText);
+    winnerSaveBeforeMetadataWrite = winnerText;
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'changed' });
+    expect(objectiveFileContent).toBe(winnerText);
+    expect(objectiveFileWrites).toEqual([newText]);
+    expect(objectiveFileDeletes).toBe(0);
+    expect(storedGoalNow().objectiveRevision).toBe(goalObjectiveRevision(winnerText));
+  });
+
+  // Codex P1 on PR #1479: a snapshot read that fails transiently answers
+  // null exactly like a missing file; treating it as missing would let the
+  // save write over a live objective and, on abort, delete it.
+  test('a failed snapshot read stops the save before any file write', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    snapshotReadFails = true;
+    await expect(
+      setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload()),
+    ).rejects.toThrow('Could not read the current goal objective');
+    expect(objectiveFileWrites).toEqual([]);
+    expect(objectiveFileDeletes).toBe(0);
+    expect(objectiveFileContent).toBe(priorText);
+  });
+
+  // Codex P2 on PR #1479: a cancel landing while the snapshot read is in
+  // flight must stop the save before its first write.
+  test('a cancel during the snapshot read stops the save before any file write', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    const controller = new AbortController();
+    snapshotReadHook = () => controller.abort();
+    await expect(
+      setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null, signal: controller.signal }, editPayload()),
+    ).rejects.toThrow();
+    expect(objectiveFileWrites).toEqual([]);
+    expect(objectiveFileContent).toBe(priorText);
   });
 
   test('a goal already changed at the pre-check is refused before any file write', async () => {
