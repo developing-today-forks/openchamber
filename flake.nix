@@ -1,8 +1,25 @@
 {
   description = "OpenChamber web runtime built from source";
 
+  # The fleet's own binary cache (developing-today/nix-cache: Nix on
+  # Cloudflare R2 + Workers) as an ADDED substituter — cache.nixos.org
+  # stays in place; this only covers fleet-built paths the public cache
+  # does not have. Public read; pushes are signed with the nix-cache-1
+  # key, which is the key trusted here.
+  nixConfig = {
+    extra-substituters = [ "https://nix-cache.developing-today-llc-domains-0.workers.dev" ];
+    extra-trusted-public-keys = [ "nix-cache-1:x/kKZuzyQI3L0/twmOp3w2U68F2ZgM3WnH3ERYKrwf8=" ];
+  };
+
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # The fleet repo carries the canonical nixpkgs pin for all fleet
+    # repos (dezren39/fleet, flake.nix): one rev, aligned everywhere,
+    # pinned to a nixpkgs-unstable channel tip so Hydra has the tree
+    # fully built. To move the pin, move it in fleet and re-lock here.
+    # The opencode input below already follows this nixpkgs, so its
+    # tree lands on the same pin.
+    fleet.url = "github:dezren39/fleet";
+    nixpkgs.follows = "fleet/nixpkgs";
     opencode = {
       url = "github:developing-today/opencode";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -14,6 +31,7 @@
       self,
       nixpkgs,
       opencode,
+      ...
     }:
     let
       inherit (nixpkgs) lib;
@@ -114,6 +132,11 @@
               }
             else
               pkgs.mkShell { packages = basePackages; };
+
+          # Lean shell for the fleet build container / CI warming: the
+          # base packages only, without the Android SDK + JDK closure
+          # the default shell pulls in for Android work.
+          fleet = pkgs.mkShell { packages = basePackages; };
         }
       );
     };
