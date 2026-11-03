@@ -24,7 +24,7 @@ import {
 } from '../enterprise-mode.js';
 import { discoverProviderModels } from './model-discovery.js';
 import { readDisabledProviders, readProviderOffState, setProviderDisabled } from './providers.js';
-import { getModelsMetadata } from './models-metadata.js';
+import { getModelsMetadata, peekModelsMetadata } from './models-metadata.js';
 import { vcsInitRefusal, vcsInitRefusalBody } from '../git/repository-root.js';
 
 // The local /api/info probes share one named 3s deadline: a stalled
@@ -333,7 +333,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 
   // Providers turned off in the user's OpenCode config. OpenCode leaves them
   // out of its provider list, so Settings reads them here to offer them back.
-  app.get('/api/provider/disabled', async (_req, res) => {
+  app.get('/api/provider/disabled', (_req, res) => {
     try {
       // `providers` stays the toggleable `disabled_providers` list the UI
       // mirrors today; `offProviders`/`offReasons` add the effective off
@@ -343,14 +343,15 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       // Allowlist omissions and wildcard policy denies can only be
       // enumerated against known provider ids, so the models.dev catalog
       // ids form the universe; when the catalog is unavailable the read
-      // keeps its config-only universe, as before.
-      let knownProviderIds = [];
-      try {
-        const { metadata } = await getModelsMetadata();
-        if (metadata && typeof metadata === 'object') knownProviderIds = Object.keys(metadata);
-      } catch {
-        // Catalog unavailable: fall through with the config-only universe.
+      // keeps its config-only universe, as before. The catalog comes from
+      // the in-process cache only: provider loading awaits this route, so
+      // a cold or stalled models.dev fetch must not sit on its critical
+      // path. A background refresh warms the cache for later reads.
+      const cachedCatalog = peekModelsMetadata();
+      if (!cachedCatalog) {
+        void getModelsMetadata().catch(() => {});
       }
+      const knownProviderIds = cachedCatalog ? Object.keys(cachedCatalog) : [];
       const offState = readProviderOffState(null, knownProviderIds);
       return res.json({
         providers: readDisabledProviders(null),
