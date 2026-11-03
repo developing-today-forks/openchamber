@@ -5,6 +5,7 @@ import { injectPreviewBridge } from './preview-bridge.js';
 import { createWorkspaceFileNameIndex } from './workspace-file-names.js';
 import { createGitCheckIgnoreTimeoutMs } from './search.js';
 import { parseBoundedIntWithDefault } from '../shared/parse-int.js';
+import { createTraversalBudget } from '../shared/traversal-budget.js';
 import {
   CONTENT_SEARCH_DEFAULT_LIMIT,
   CONTENT_SEARCH_MAX_LIMIT,
@@ -457,8 +458,17 @@ const GIT_DIRS_SKIP_LIST = new Set(['node_modules', 'dist', 'build', '.venv', 't
 const findGitDirectories = async ({ rootPath, fsPromises, path: pathModule, maxDepth, maxDirs }) => {
   const results = [];
   const walkedRealPaths = new Set();
-  const queue = [{ dir: rootPath, depth: 0 }];
-  let visited = 0;
+  // The shared traversal budget (design #1391, #1393) owns this walk's
+  // counting, built from the same parameters the caller already passes:
+  // consulted for the root first and then for each directory when it is
+  // queued, so a directory counts exactly once, however the walk reached
+  // it. Depths here are 0-based (the root is depth 0) while the budget
+  // counts depth from 1, so the depth dimension is stated one higher.
+  const budget = createTraversalBudget({ maxDirs, maxDepth: maxDepth + 1 });
+  const queue = [];
+  if (budget.visitDir(1)) {
+    queue.push({ dir: rootPath, depth: 0 });
+  }
 
   const scanDirectory = async (dir, depth) => {
     let realPath;
@@ -486,7 +496,6 @@ const findGitDirectories = async ({ rootPath, fsPromises, path: pathModule, maxD
       }
       return;
     }
-    visited += 1;
 
     let isRepoBoundary = false;
     const subdirectories = [];
@@ -501,7 +510,9 @@ const findGitDirectories = async ({ rootPath, fsPromises, path: pathModule, maxD
       if (GIT_DIRS_SKIP_LIST.has(dirent.name)) {
         continue;
       }
-      if (depth >= maxDepth) {
+      if (depth + 2 > budget.maxDepth) {
+        // Past the budget's depth dimension: the directory would be
+        // refused when queued, so do not spend a link stat on it here.
         continue;
       }
       if (dirent.isSymbolicLink()) {
@@ -521,11 +532,13 @@ const findGitDirectories = async ({ rootPath, fsPromises, path: pathModule, maxD
 
     subdirectories.sort();
     for (const name of subdirectories) {
-      queue.push({ dir: pathModule.join(dir, name), depth: depth + 1 });
+      if (budget.visitDir(depth + 2)) {
+        queue.push({ dir: pathModule.join(dir, name), depth: depth + 1 });
+      }
     }
   };
 
-  for (let index = 0; index < queue.length && visited < maxDirs; index += 1) {
+  for (let index = 0; index < queue.length; index += 1) {
     const { dir, depth } = queue[index];
     await scanDirectory(dir, depth);
   }

@@ -304,8 +304,11 @@ replaces the three spellings the capped walks grew privately (a cap test
 reading a BFS `visited` Set's size in `fs/search.js`, a `(maxDepth,
 maxDirs)` parameter pair in `fs/routes.js` `findGitDirectories`, a
 per-root counter and a threaded `{ visitedDirs }` object in
-`opencode/agents.js`). Phase 1 (#1392) lands the primitive only; call
-sites migrate in phase 2 with their values and behaviour unchanged.
+`opencode/agents.js`). Phase 1 (#1392) lands the primitive only; phase 2
+(#1393) migrated the `fs/search.js` and `fs/routes.js`
+`findGitDirectories` walks onto it with their values and behaviour
+unchanged. The `opencode/agents.js` walks keep their spelling until
+their own phase.
 
 - `createTraversalBudget({ maxDirs, maxEntries?, maxDepth?, deadlineMs? })`
   returns the one budget object a walk consults. `visitDir(depth?)`
@@ -356,9 +359,8 @@ The contract (rules 1–5 of #1391):
 
 ### What stays out
 
-- Call-site migrations and cap values: phase 2 (#1393) moves the
-  settled capped walks onto the budget behaviour-identically; this
-  module introduces no cap value for any real walk.
+- Cap values: this module introduces no cap value for any real walk;
+  each walk states its own where it is defined.
 - The traversal itself: walks differ in ways callers depend on (BFS
   with a dedupe set, result order, per-entry symlink guards), so the
   budget is the shared part, never a universal walker function.

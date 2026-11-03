@@ -1,6 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 
 import { parseBoundedIntWithDefault } from '../shared/parse-int.js';
+import { createTraversalBudget } from '../shared/traversal-budget.js';
 
 const FILE_SEARCH_MAX_CONCURRENCY = 5;
 const FILE_SEARCH_MAX_VISITED_FILES = 10_000;
@@ -123,22 +124,30 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
     const matchAll = normalizedQuery.length === 0;
     const queue = [rootPath];
     const visited = new Set([rootPath]);
+    // The shared traversal budget (design #1391, #1393) owns this walk's
+    // counting: directories admitted and files inspected. The root is the
+    // first directory the walk enters, so it is consulted first, matching
+    // the visited set it seeds.
+    const budget = createTraversalBudget({
+      maxDirs: FILE_SEARCH_MAX_VISITED_DIRS,
+      maxEntries: FILE_SEARCH_MAX_VISITED_FILES,
+    });
+    budget.visitDir();
     const shouldRespectGitignore = respectGitignore !== false;
     // An empty query stops at `limit` candidates: any file serves. A query
     // must keep walking until the tree or the inspected-file ceiling is
     // reached: weak shallow matches otherwise exhaust a candidate budget
     // before exact deeper matches are ever visited.
     const candidates = [];
-    let inspectedFiles = 0;
     const reachedSearchStop = () => (matchAll
       ? candidates.length >= limit
-      : inspectedFiles >= FILE_SEARCH_MAX_VISITED_FILES);
-    // The visited set holds every directory that will ever be read, so
-    // refusing enqueues at the directory ceiling bounds the whole walk: a
-    // directory-heavy tree cannot grow the queue or the set past it, while
-    // directories already queued are still read, so results collected up
-    // to the ceiling stay complete for the directories that were visited.
-    const directoryVisitCapReached = () => visited.size >= FILE_SEARCH_MAX_VISITED_DIRS;
+      : budget.visitedEntries >= FILE_SEARCH_MAX_VISITED_FILES);
+    // The budget holds every directory that will ever be read, so
+    // refusing enqueues at its directory ceiling bounds the whole walk: a
+    // directory-heavy tree cannot grow the queue or the visited set past
+    // it, while directories already queued are still read, so results
+    // collected up to the ceiling stay complete for the directories that
+    // were visited. The visited set itself only dedupes now.
 
     while (queue.length > 0 && !reachedSearchStop()) {
       const batch = queue.splice(0, FILE_SEARCH_MAX_CONCURRENCY);
@@ -221,7 +230,7 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
             if (shouldSkipSearchDirectory(entryName, includeHiddenEntries)) {
               continue;
             }
-            if (!visited.has(entryPath) && !directoryVisitCapReached()) {
+            if (!visited.has(entryPath) && budget.visitDir()) {
               visited.add(entryPath);
               queue.push(entryPath);
             }
@@ -234,7 +243,10 @@ export const createFsSearchRuntime = ({ fsPromises, path, spawn, resolveGitBinar
 
           const relativePath = normalizeRelativeSearchPath(rootPath, entryPath, path);
           const extension = entryName.includes('.') ? entryName.split('.').pop()?.toLowerCase() : undefined;
-          inspectedFiles += 1;
+          // Count the inspected file against the budget's entries
+          // dimension; reachedSearchStop reads that counter, so the
+          // consultation is the count, not a second gate.
+          budget.visitEntry();
 
           if (matchAll) {
             candidates.push({
