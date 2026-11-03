@@ -5,7 +5,7 @@ import { distillGoalObjective } from '@/lib/smallModel';
 import { requestGoalSpec, type GoalWriterChoice } from '@/lib/goalWriter';
 import { formatMessage, useI18nStore } from '@/lib/i18n';
 import { toast } from '@/components/ui';
-import { deleteGoalObjectiveFile, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
+import { deleteGoalObjectiveFile, fetchGoalObjectiveContent, fetchGoalObjectiveSnapshot, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
 import { SESSION_GOAL_CHAR_LIMIT_MAX } from '@/lib/sessionGoalLimits';
 import {
   getSessionGoal,
@@ -227,9 +227,11 @@ export const nextGoalRecord = (input: {
  * minutes, and in that time the check may complete the goal, the user may
  * pause it, or another window may replace it. Then nothing is written and the
  * result says so. The stored goal is read before the objective file is
- * written and again inside the metadata write; between those two a change
- * made elsewhere can still lose its objective file to this one, a window of
- * one request.
+ * written and again inside the metadata write. To keep an aborted save from
+ * clobbering a change made elsewhere in between, the objective file is
+ * snapshotted just before it is overwritten and restored when the metadata
+ * write aborts, so the surviving goal keeps the objective text its stored
+ * objectiveRevision describes (#1372).
  */
 export async function setSessionGoal(
   sessionId: string,
@@ -254,6 +256,20 @@ export async function setSessionGoal(
   if (editing && !isSameGoal(getSessionGoal(await opencodeClient.getSession(sessionId, directory)), existing)) {
     return { outcome: 'changed' };
   }
+  signal?.throwIfAborted();
+  // Snapshot the current objective file before overwriting it: if the
+  // guarded metadata write below aborts as changed, the snapshot is restored
+  // so the surviving goal record keeps pointing at its own objective text.
+  // A snapshot that could not be read is not a missing file: writing anyway
+  // would leave nothing truthful to restore, and the rollback below could
+  // delete a file that was there all along — so the save does not start.
+  const snapshot = editing ? await fetchGoalObjectiveSnapshot(sessionId) : null;
+  if (snapshot?.kind === 'unavailable') {
+    throw new Error('Could not read the current goal objective, so the save was not attempted. Try again.');
+  }
+  const priorObjective = snapshot?.kind === 'content' ? snapshot.content : null;
+  // The snapshot read is asynchronous: a cancel that landed while it was in
+  // flight must still stop the save before its first write.
   signal?.throwIfAborted();
   const fileWrite = await writeGoalObjectiveFile(sessionId, objective);
   if (fileWrite.saved && fileWrite.truncated) {
@@ -286,6 +302,25 @@ export async function setSessionGoal(
     }
     return next.record;
   });
+  if (changed && fileWrite.saved) {
+    // The metadata write aborted: put the snapshotted objective file back —
+    // but only while this save still owns the file. A save that committed
+    // after this one wrote the file owns it now; restoring over it would
+    // strand the winning save's metadata pointing at text it does not
+    // describe. Ownership is read back and compared against what this save
+    // wrote (a server-side truncation keeps a prefix of it). Best-effort: an
+    // unreadable or no-longer-owned file is left exactly as it lies.
+    const currentObjective = await fetchGoalObjectiveContent(sessionId);
+    const stillOwnsFile = currentObjective !== null
+      && (currentObjective === objective || objective.startsWith(currentObjective));
+    if (stillOwnsFile) {
+      if (priorObjective === null) {
+        deleteGoalObjectiveFile(sessionId);
+      } else {
+        await writeGoalObjectiveFile(sessionId, priorObjective);
+      }
+    }
+  }
   return changed ? { outcome: 'changed' } : { outcome: 'saved', rewrittenSpec };
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,11 +6,26 @@ import express from 'express';
 import request from 'supertest';
 import { GUEST_SCROLLBAR_CSS } from '@openchamber/sdk';
 import { GUEST_ASSET_MAX_BYTES } from './catalog.js';
-import { registerGuestRoutes } from './routes.js';
+import * as catalog from './catalog.js';
 import { writeExtensionStore } from './persist.js';
 
 const roots = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { serveStatIsStale = false; await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true }))); });
+
+// Regression harness for #1436: when serveStatIsStale is set, the resolver
+// reports the size the file had while it was still small — a file grown
+// after the resolver's stat. The serve handler must judge the cap from
+// the read itself, not from this number.
+let serveStatIsStale = false;
+mock.module('./catalog.js', () => ({
+  ...catalog,
+  resolveGuestServedFile: async (...args) => {
+    const served = await catalog.resolveGuestServedFile(...args);
+    return served && serveStatIsStale ? { ...served, size: 100 } : served;
+  },
+}));
+
+const { registerGuestRoutes } = await import('./routes.js');
 
 const makeGuest = async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-guest-cap-')); roots.push(root);
@@ -35,6 +50,16 @@ describe('guest asset serve byte cap (#1116)', () => {
     const html = await request(app).get('/api/guests/cap-guest/big.html').set('Host', 'oc.test');
     expect(html.status).toBe(413);
     expect(html.body).toEqual({ error: 'file-too-large' });
+  });
+
+  test('refuses an asset grown after the resolver stat with 413 (#1436)', async () => {
+    const { packageRoot, app } = await makeGuest();
+    await fs.writeFile(path.join(packageRoot, 'grown.js'), 'x'.repeat(GUEST_ASSET_MAX_BYTES + 500_000));
+    serveStatIsStale = true;
+    const response = await request(app).get('/api/guests/cap-guest/grown.js').set('Host', 'oc.test');
+    expect(response.status).toBe(413);
+    expect(response.body).toEqual({ error: 'file-too-large' });
+    expect(response.text).not.toContain('xxxxxxxxxx');
   });
 
   test('serves a file at exactly the cap byte-identically', async () => {

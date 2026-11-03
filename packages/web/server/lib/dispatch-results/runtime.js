@@ -273,7 +273,12 @@ export function createDispatchResultsRuntime({
       // One unreadable entry is dropped alone; the rest still deliver.
       return (parse(storedFileSchema, result.value)?.entries ?? []).map((entry) => parse(entrySchema, entry)).filter(Boolean);
     }
-    return [];
+    // Every attempt was superseded by a valid replacement while the
+    // malformed bytes were being judged, so no read ever reached a
+    // definitive result. Fail closed, like a failed read: returning []
+    // here would pass an unread file off as "nothing pending", and the
+    // next write would clobber the valid replacement.
+    throw new Error('the dispatch-results file kept being replaced while it was read; refusing to treat it as empty');
   };
 
   const load = () => {

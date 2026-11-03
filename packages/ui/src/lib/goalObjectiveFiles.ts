@@ -42,14 +42,32 @@ export function deleteGoalObjectiveFile(sessionId: string): void {
   void runtimeFetch(objectiveUrl(sessionId), { method: 'DELETE' }).catch(() => undefined);
 }
 
-/** Fetch the file-backed objective text; null when unavailable. */
-export async function fetchGoalObjectiveContent(sessionId: string): Promise<string | null> {
+/**
+ * The objective file read as a snapshot: `content` when a file was read,
+ * `missing` only when the server answered 404 (its confirmed-absence
+ * answer), and `unavailable` for every other failure — a transient error is
+ * not evidence that no file exists, and a caller that needs to restore or
+ * delete the file must be able to tell the two apart.
+ */
+export type GoalObjectiveSnapshot =
+  | { kind: 'content'; content: string }
+  | { kind: 'missing' }
+  | { kind: 'unavailable' };
+
+export async function fetchGoalObjectiveSnapshot(sessionId: string): Promise<GoalObjectiveSnapshot> {
   try {
     const response = await runtimeFetch(objectiveUrl(sessionId));
-    if (!response.ok) return null;
+    if (response.status === 404) return { kind: 'missing' };
+    if (!response.ok) return { kind: 'unavailable' };
     const parsed = ObjectiveResponseSchema.safeParse(await response.json().catch(() => null));
-    return parsed.success ? parsed.data.content : null;
+    return parsed.success ? { kind: 'content', content: parsed.data.content } : { kind: 'unavailable' };
   } catch {
-    return null;
+    return { kind: 'unavailable' };
   }
+}
+
+/** Fetch the file-backed objective text; null when unavailable. */
+export async function fetchGoalObjectiveContent(sessionId: string): Promise<string | null> {
+  const snapshot = await fetchGoalObjectiveSnapshot(sessionId);
+  return snapshot.kind === 'content' ? snapshot.content : null;
 }

@@ -15,6 +15,11 @@ const pendingPrStatusWrites = new Map();
 let resolvedAuthLoginPromise = null;
 const PR_CONTEXT_CACHE_TTL_MS = 30_000;
 const PR_CONTEXT_CACHE_MAX_ENTRIES = 50;
+// A whole PR diff is far larger than one file: the same 50 MiB bound the
+// walkthrough patch read (walkthrough/pull-request.js) and the local-diff
+// cap (git/service.js MAX_DIFF_OUTPUT_BYTES) use. Past it the diff is
+// refused with a 413 — never served, and never retained in prContextCache.
+const PR_CONTEXT_DIFF_MAX_BYTES = 50 * 1024 * 1024;
 const prContextCache = new Map();
 const pendingPrContextWrites = new Map();
 const GITHUB_OAUTH_INSTANCE = 'github.com';
@@ -3501,7 +3506,10 @@ export function registerGitHubRoutes(app, options = {}) {
         if (!isProviderString(diffResp?.data)) {
           throw invalidProviderPayload('GitHub returned an invalid pull request diff');
         }
-        diff = isProviderString(diffResp?.data) ? diffResp.data : undefined;
+        if (Buffer.byteLength(diffResp.data, 'utf8') > PR_CONTEXT_DIFF_MAX_BYTES) {
+          return res.status(413).json({ error: 'Pull request diff is too large to serve' });
+        }
+        diff = diffResp.data;
       }
 
       return res.json({
