@@ -5,7 +5,7 @@ import { distillGoalObjective } from '@/lib/smallModel';
 import { requestGoalSpec, type GoalWriterChoice } from '@/lib/goalWriter';
 import { formatMessage, useI18nStore } from '@/lib/i18n';
 import { toast } from '@/components/ui';
-import { deleteGoalObjectiveFile, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
+import { deleteGoalObjectiveFile, fetchGoalObjectiveContent, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
 import { SESSION_GOAL_CHAR_LIMIT_MAX } from '@/lib/sessionGoalLimits';
 import {
   getSessionGoal,
@@ -227,9 +227,11 @@ export const nextGoalRecord = (input: {
  * minutes, and in that time the check may complete the goal, the user may
  * pause it, or another window may replace it. Then nothing is written and the
  * result says so. The stored goal is read before the objective file is
- * written and again inside the metadata write; between those two a change
- * made elsewhere can still lose its objective file to this one, a window of
- * one request.
+ * written and again inside the metadata write. To keep an aborted save from
+ * clobbering a change made elsewhere in between, the objective file is
+ * snapshotted just before it is overwritten and restored when the metadata
+ * write aborts, so the surviving goal keeps the objective text its stored
+ * objectiveRevision describes (#1372).
  */
 export async function setSessionGoal(
   sessionId: string,
@@ -255,6 +257,10 @@ export async function setSessionGoal(
     return { outcome: 'changed' };
   }
   signal?.throwIfAborted();
+  // Snapshot the current objective file before overwriting it: if the
+  // guarded metadata write below aborts as changed, the snapshot is restored
+  // so the surviving goal record keeps pointing at its own objective text.
+  const priorObjective = editing ? await fetchGoalObjectiveContent(sessionId) : null;
   const fileWrite = await writeGoalObjectiveFile(sessionId, objective);
   if (fileWrite.saved && fileWrite.truncated) {
     const dictionary = useI18nStore.getState().dictionary;
@@ -286,6 +292,15 @@ export async function setSessionGoal(
     }
     return next.record;
   });
+  if (changed && fileWrite.saved) {
+    // The metadata write aborted: put the snapshotted objective file back
+    // (best-effort; a failed restore leaves the pre-#1372 state, never worse).
+    if (priorObjective === null) {
+      deleteGoalObjectiveFile(sessionId);
+    } else {
+      await writeGoalObjectiveFile(sessionId, priorObjective);
+    }
+  }
   return changed ? { outcome: 'changed' } : { outcome: 'saved', rewrittenSpec };
 }
 
