@@ -424,11 +424,15 @@ export async function startCloudflareQuickTunnel({ originUrl }) {
       }
     }, 100);
 
-    child.on('exit', (code) => {
+    child.on('exit', (code, signal) => {
       clearTimeout(timeout);
       clearInterval(checkReady);
       cleanupTempDir();
-      if (code !== null && code !== 0) {
+      if (publicUrl) {
+        resolve(null);
+      } else if (signal) {
+        reject(new Error(`Cloudflared exited with signal ${signal}`));
+      } else {
         reject(new Error(`Cloudflared exited with code ${code}`));
       }
     });
