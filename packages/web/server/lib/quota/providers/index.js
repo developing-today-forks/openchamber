@@ -308,7 +308,16 @@ const upstreamAuthFailureResult = (providerId, providerName) => ({
 });
 
 const surfaceSharedUpstreamAuthFailure = (result) => {
-  if (!result || result.ok || !isOpenCodeUpstreamAuthError(result.error)) return result;
+  if (!result || result.ok) return result;
+  // A provider whose credential wrapper replaces the shared store-read error
+  // with its own text (xAI, #1131) marks the result with credentialReadFailure
+  // instead of surfacing the upstream message; classify from the marker and
+  // drop it - it is an internal signal and never leaves this module.
+  if (result.credentialReadFailure === true) {
+    const { credentialReadFailure, ...rest } = result;
+    return { ...rest, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
+  }
+  if (!isOpenCodeUpstreamAuthError(result.error)) return result;
   return { ...result, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
 };
 
