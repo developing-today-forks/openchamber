@@ -1230,16 +1230,22 @@ function readSkillSupportingFile(skillDir, relativePath) {
   }
 }
 
-function writeSkillSupportingFile(skillDir, relativePath, content) {
-  const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
-  // The write side of the read gate above (#1444): refuse content the
-  // capped reader would refuse, so a save cannot strand the file.
+// The write side of the read gate above (#1444): refuse content the
+// capped reader would refuse, so a save cannot strand the file. Callers
+// that write several files as one operation (skill create/update)
+// assert every file up front, so a refusal cannot leave a partial set.
+function assertSkillSupportingFileWithinCap(relativePath, content) {
   if (typeof content === 'string' && Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
     throw Object.assign(
       new Error(`Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`),
       { code: SKILL_SUPPORTING_FILE_TOO_LARGE_CODE },
     );
   }
+}
+
+function writeSkillSupportingFile(skillDir, relativePath, content) {
+  const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
+  assertSkillSupportingFileWithinCap(relativePath, content);
   const dir = path.dirname(fullPath);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(fullPath, content, 'utf8');
@@ -1305,6 +1311,7 @@ export {
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
   SKILL_SUPPORTING_FILE_MAX_BYTES,
+  assertSkillSupportingFileWithinCap,
   SKILL_SUPPORTING_FILES_MAX_DIRECTORIES,
   SKILL_SUPPORTING_FILES_MAX_FILES,
   SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,

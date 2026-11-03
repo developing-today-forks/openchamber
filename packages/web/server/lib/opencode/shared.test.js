@@ -172,6 +172,17 @@ describe('writeMdFile', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
   });
 
+  it('writes a serialized result exactly at the parse cap and reads it back (#1444)', () => {
+    const file = writeFixture('at-cap-write.md', STANDARD_MD);
+    const frontmatter = { description: 'My build agent' };
+    writeMdFile(file, frontmatter, 'x');
+    const overhead = fs.statSync(file).size - 1;
+    const body = 'x'.repeat(MD_FILE_MAX_BYTES - overhead);
+    writeMdFile(file, frontmatter, body);
+    expect(fs.statSync(file).size).toBe(MD_FILE_MAX_BYTES);
+    expect(parseMdFile(file).body).toBe(body);
+  });
+
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });

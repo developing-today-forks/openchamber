@@ -163,6 +163,18 @@ describe('VS Code entity modules speak OpenCode 2 shapes', () => {
     assert.equal(fs.existsSync(path.join(projectDir, '.opencode', 'agents', 'huge.md')), false);
   });
 
+  test('creates an agent whose serialized markdown is exactly at the parse cap (#1444)', async () => {
+    const { createAgent, MD_FILE_MAX_BYTES } = await loadConfig();
+    createAgent('sizer-a', { description: 'Sizer', system: 'x' }, projectDir, 'project');
+    const probePath = path.join(projectDir, '.opencode', 'agents', 'sizer-a.md');
+    const overhead = fs.statSync(probePath).size - 1;
+    const body = 'x'.repeat(MD_FILE_MAX_BYTES - overhead);
+    createAgent('sizer-b', { description: 'Sizer', system: body }, projectDir, 'project');
+    const atCapPath = path.join(projectDir, '.opencode', 'agents', 'sizer-b.md');
+    assert.equal(fs.statSync(atCapPath).size, MD_FILE_MAX_BYTES);
+    assert.equal(readMd(atCapPath).body, body);
+  });
+
   test('moves a v1 JSON agent entry into the agents section of the same file', async () => {
     const { updateAgent } = await loadConfig();
     const configPath = write('opencode.json', JSON.stringify({

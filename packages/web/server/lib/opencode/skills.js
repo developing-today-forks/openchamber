@@ -17,6 +17,7 @@ import {
   listSkillSupportingFiles,
   readSkillSupportingFile,
   writeSkillSupportingFile,
+  assertSkillSupportingFileWithinCap,
   deleteSkillSupportingFile,
   getAncestors,
   findWorktreeRoot,
@@ -568,6 +569,16 @@ async function createSkillNow(skillName, config, workingDirectory, scope) {
     applyModelInvocation(frontmatter, true);
   }
 
+  // Refuse an over-cap supporting file before anything is written, so a
+  // failed create leaves no partial skill behind (#1444, Codex review).
+  if (supportingFiles && Array.isArray(supportingFiles)) {
+    for (const file of supportingFiles) {
+      if (file.path && file.content !== undefined) {
+        assertSkillSupportingFileWithinCap(file.path, file.content);
+      }
+    }
+  }
+
   // `wx` fails if SKILL.md appeared since the check above, from another
   // process or a client racing this one, instead of overwriting it.
   try {
@@ -616,6 +627,16 @@ async function updateSkillNow(skillName, updates, workingDirectory, targetPath =
   const frontmatterName = typeof mdData.frontmatter?.name === 'string' ? mdData.frontmatter.name : skillName;
   if (frontmatterName !== skillName) {
     throw new Error(`Skill "${skillName}" does not match ${mdPath}`);
+  }
+
+  // Refuse an over-cap supporting file before any field is applied, so a
+  // failed update leaves the skill exactly as it was (#1444).
+  if (Array.isArray(updates.supportingFiles)) {
+    for (const file of updates.supportingFiles) {
+      if (!file.delete && file.path && file.content !== undefined) {
+        assertSkillSupportingFileWithinCap(file.path, file.content);
+      }
+    }
   }
 
   let mdModified = false;

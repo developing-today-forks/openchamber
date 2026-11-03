@@ -196,6 +196,19 @@ describe('skills', () => {
       }
     });
 
+    it('refuses a create whose supporting file is over the cap and leaves no partial skill (#1444)', async () => {
+      const { tempRoot, projectRoot } = await makeProject();
+      try {
+        await expect(createSkill('overcap-skill', {
+          description: 'Has an oversized supporting file',
+          supportingFiles: [{ path: 'references/big.md', content: 'x'.repeat(1024 * 1024 + 1) }],
+        }, projectRoot, 'project')).rejects.toMatchObject({ code: 'skill_supporting_file_too_large' });
+        expect(fs.existsSync(skillPath(projectRoot, 'overcap-skill'))).toBe(false);
+      } finally {
+        await fsPromises.rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+
     it('does not write an edit into the folder of a skill renamed meanwhile', async () => {
       const { tempRoot, projectRoot } = await makeProject();
       const oldDir = path.dirname(skillPath(projectRoot, 'moving-skill'));

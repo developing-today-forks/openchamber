@@ -751,6 +751,12 @@ export const registerSkillRoutes = (app, dependencies) => {
         `Skill ${skillName} created successfully.`,
       ));
     } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'ERR_MD_FILE_TOO_LARGE') {
+        return res.status(413).json({ error: 'Skill file too large to write' });
+      }
+      if (error && typeof error === 'object' && error.code === 'skill_supporting_file_too_large') {
+        return res.status(413).json({ error: 'File too large to write' });
+      }
       console.error('Failed to create skill:', error);
       res.status(500).json({ error: error.message || 'Failed to create skill' });
     }

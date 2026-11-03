@@ -3540,15 +3540,21 @@ export const readSkillSupportingFile = (skillDir: string, relativePath: string):
   }
 };
 
-export const writeSkillSupportingFile = (skillDir: string, relativePath: string, content: string): void => {
-  // The write side of the read gate above (#1444): refuse content the
-  // capped reader would refuse, so a save cannot strand the file.
+// The write side of the read gate above (#1444): refuse content the
+// capped reader would refuse, so a save cannot strand the file. Callers
+// that write several files as one operation (skill create/update)
+// assert every file up front, so a refusal cannot leave a partial set.
+const assertSkillSupportingFileWithinCap = (relativePath: string, content: string): void => {
   if (Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
     throw codedError(
       `Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`,
       SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
     );
   }
+};
+
+export const writeSkillSupportingFile = (skillDir: string, relativePath: string, content: string): void => {
+  assertSkillSupportingFileWithinCap(relativePath, content);
   const fullPath = path.join(skillDir, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, 'utf8');
@@ -3640,8 +3646,18 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
     applyModelInvocation(frontmatter, true);
   }
   
+  // Refuse an over-cap supporting file before anything is written, so a
+  // failed create leaves no partial skill behind (#1444, Codex review).
+  if (supportingFilesData && Array.isArray(supportingFilesData)) {
+    for (const file of supportingFilesData) {
+      if (file.path && file.content !== undefined) {
+        assertSkillSupportingFileWithinCap(file.path, file.content);
+      }
+    }
+  }
+
   writeMdFile(targetPath, frontmatter, typeof instructions === 'string' ? instructions : '');
-  
+
   // Write supporting files if provided
   if (supportingFilesData && Array.isArray(supportingFilesData)) {
     for (const file of supportingFilesData) {
@@ -3661,6 +3677,17 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
   const mdPath = existing.path;
   const mdDir = path.dirname(mdPath);
   const mdData = parseMdFile(mdPath);
+
+  // Refuse an over-cap supporting file before any field is applied, so a
+  // failed update leaves the skill exactly as it was (#1444).
+  if (Array.isArray(updates.supportingFiles)) {
+    for (const file of updates.supportingFiles as Array<{ delete?: boolean; path?: string; content?: string }>) {
+      if (!file.delete && file.path && file.content !== undefined) {
+        assertSkillSupportingFileWithinCap(file.path, file.content);
+      }
+    }
+  }
+
   let mdModified = false;
   
   for (const [field, value] of Object.entries(updates || {})) {
