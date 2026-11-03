@@ -524,6 +524,24 @@ describe('buildSessionSidebarRowModel', () => {
     expect(chatRows('timeline')).toMatchObject({ contexts: ['timeline-chat'], control: { flat: true } });
   });
 
+  test('Chats take two lines when asked: the List two-line row in List, the tree-slot row in Tree', () => {
+    const input = args([]);
+    input.chatGroup = group(Array.from({ length: 3 }, (_, index) => node(`chat-${index}`)), { id: 'managed-chats' });
+    input.chatsRowLines = 'two';
+    const chatKinds = (viewMode: SessionSidebarRowModelArgs['viewMode']) => buildSessionSidebarRowModel({ ...input, viewMode }).rows
+      .flatMap((row) => (row.kind === 'session' ? [`${row.renderContext}:${row.estimateSize}`] : []));
+    expect(chatKinds('timeline')).toEqual(['timeline:52', 'timeline:52', 'timeline:52']);
+    expect(chatKinds('projects')).toEqual(['tree-chat:52', 'tree-chat:52', 'tree-chat:52']);
+  });
+
+  test('project rows keep their context and take the two-line size when project rows take two lines', () => {
+    const input = args([project([group([node('a')])])]);
+    const projectRow = (model: ReturnType<typeof buildSessionSidebarRowModel>) => model.rows.find((row) => row.kind === 'session');
+    expect(projectRow(buildSessionSidebarRowModel(input))).toMatchObject({ renderContext: 'project', estimateSize: 32 });
+    input.projectRowLines = 'two';
+    expect(projectRow(buildSessionSidebarRowModel(input))).toMatchObject({ renderContext: 'project', estimateSize: 52 });
+  });
+
   test('Chats failure stays visible beside retained sessions', () => {
     const input = args([]);
     input.chatGroup = group([node('retained-chat')], { id: 'managed-chats' });

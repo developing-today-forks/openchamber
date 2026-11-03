@@ -114,7 +114,7 @@ describe('useSessionDisplayStore animated activity', () => {
       await useSessionDisplayStore.persist.rehydrate();
       expect(useSessionDisplayStore.getState().animatedActivityIndicators).toBe(false);
       expect(useSessionDisplayStore.getState().sidebarViewMode).toBe('timeline');
-      expect(useSessionDisplayStore.persist.getOptions().version).toBe(12);
+      expect(useSessionDisplayStore.persist.getOptions().version).toBe(13);
       useSessionDisplayStore.getState().setAnimatedActivityIndicators(true);
       const enabledSnapshot = stored;
       useSessionDisplayStore.setState({ animatedActivityIndicators: false });
@@ -163,6 +163,9 @@ describe('useSessionDisplayStore session row display', () => {
   test('defaults to one-line Tree zone rows with every element shown', () => {
     expect(useSessionDisplayStore.getState().sessionRowDisplay).toEqual({
       zoneLines: 'one',
+      listLines: 'two',
+      chatsLines: 'one',
+      projectLines: 'one',
       showBranch: true,
       showPrBadge: true,
       showProviderLogo: true,
@@ -188,10 +191,21 @@ describe('useSessionDisplayStore session row display', () => {
     expect(migrated.sessionRowDisplay).toMatchObject({ zoneLines: 'two', showBranch: false, showPrBadge: true });
   });
 
+  test('v12→v13 folds the List one-line layout option into listLines', () => {
+    expect(migrateSessionDisplayState({ sidebarLayout: { timelineCompactRows: true } }, 12).sessionRowDisplay?.listLines).toBe('one');
+    expect(migrateSessionDisplayState({ sidebarLayout: { timelineCompactRows: false } }, 12).sessionRowDisplay?.listLines).toBe('two');
+    expect(migrateSessionDisplayState({}, 12).sessionRowDisplay?.listLines).toBe('two');
+    // A row display that already carries listLines keeps its own value.
+    expect(migrateSessionDisplayState({ sidebarLayout: { timelineCompactRows: true }, sessionRowDisplay: { listLines: 'two' } }, 12).sessionRowDisplay?.listLines).toBe('two');
+  });
+
   test('a display saved before the pin, done and directory toggles keeps them shown', () => {
     const parsed = sessionRowDisplaySchema.parse({ zoneLines: 'two', showBranch: false });
     expect(parsed).toEqual({
       zoneLines: 'two',
+      listLines: 'two',
+      chatsLines: 'one',
+      projectLines: 'one',
       showBranch: false,
       showPrBadge: true,
       showProviderLogo: true,

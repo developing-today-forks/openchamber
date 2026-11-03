@@ -86,6 +86,10 @@ describe('OpenChamberVisualSettings', () => {
 
     expect(host.querySelector('[data-settings-item="appearance.sidebar-rows"]')).not.toBeNull();
     expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-lines"]')).not.toBeNull();
+    // One line-count control per row kind: List, Chats, and Tree projects join the Tree zones.
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-list-lines"]')).not.toBeNull();
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-chats-lines"]')).not.toBeNull();
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-project-lines"]')).not.toBeNull();
     const branchRow = host.querySelector('[data-settings-item="appearance.sidebar-rows-branch"]');
     expect(branchRow?.getAttribute('aria-pressed')).toBe('true');
     // The pin, done-hint and directory indicators join the element set, shown by default.

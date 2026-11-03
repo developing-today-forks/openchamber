@@ -4,7 +4,16 @@ import path from 'path';
 
 import { assertGitAvailable, looksLikeAuthError, runGit } from './git.js';
 import { parseSkillRepoSource } from './source.js';
-import { OPENCODE_CONFIG_DIR } from '../opencode/shared.js';
+import { OPENCODE_CONFIG_DIR, SKILL_SUPPORTING_FILE_MAX_BYTES } from '../opencode/shared.js';
+
+// A skill is a SKILL.md plus small supporting text and assets, so an install
+// never needs a large tree. These caps keep a cloned repository from turning
+// one install into an unbounded copy: entries counts files and directories
+// (a tree of empty directories is the same denial of service as a tree of
+// files), and the per-file limit is the one the skill loader already enforces
+// when it reads a supporting file.
+export const SKILL_COPY_MAX_ENTRIES = 1_000;
+export const SKILL_COPY_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$/;
 
@@ -99,6 +108,22 @@ export async function copyDirectoryNoSymlinks(srcDir, dstDir, cloneRoot) {
 
   await ensureDir(dstDir);
 
+  const copyState = { entries: 0, bytes: 0 };
+  const countEntry = (stat) => {
+    copyState.entries += 1;
+    if (copyState.entries > SKILL_COPY_MAX_ENTRIES) {
+      throw new Error(`Skill directory is too large to install: more than ${SKILL_COPY_MAX_ENTRIES} entries`);
+    }
+    if (!stat.isFile()) return;
+    if (stat.size > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+      throw new Error(`Skill file is too large to install: ${stat.size} bytes exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`);
+    }
+    copyState.bytes += stat.size;
+    if (copyState.bytes > SKILL_COPY_MAX_TOTAL_BYTES) {
+      throw new Error(`Skill directory is too large to install: more than ${SKILL_COPY_MAX_TOTAL_BYTES} bytes`);
+    }
+  };
+
   const walk = async (currentSrc, currentDst) => {
     const entries = await fs.promises.readdir(currentSrc, { withFileTypes: true });
     for (const entry of entries) {
@@ -117,12 +142,14 @@ export async function copyDirectoryNoSymlinks(srcDir, dstDir, cloneRoot) {
       }
 
       if (stat.isDirectory()) {
+        countEntry(stat);
         await ensureDir(nextDst);
         await walk(nextSrc, nextDst);
         continue;
       }
 
       if (stat.isFile()) {
+        countEntry(stat);
         await ensureDir(path.dirname(nextDst));
         await fs.promises.copyFile(nextSrc, nextDst);
         try {
