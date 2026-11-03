@@ -77,6 +77,17 @@
         }
       );
 
+      # The mcpx daemon modules pass through from the opencode fork,
+      # which re-exports the canonical modules originating in
+      # developing-today/code (defaulted there to the fork's own mcpx
+      # build). This flake adds no default and alters nothing: it
+      # exposes the fork's modules as its own outputs so a consumer
+      # can take opencode, openchamber, and the mcpx daemon from
+      # this one input.
+      nixosModules.mcpx = opencode.nixosModules.mcpx;
+      homeManagerModules.mcpx = opencode.homeManagerModules.mcpx;
+      darwinModules.mcpx = opencode.darwinModules.mcpx;
+
       # `nix run .#update-hashes` re-bakes the current system's
       # node_modules hash in nix/hashes.json (see nix/update-hashes.sh).
       apps = forAllSystems (system: {
