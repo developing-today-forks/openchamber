@@ -798,6 +798,135 @@ describe('GitHub account routes', () => {
     expect(requestedPages.at(-1)).toBe(21);
   });
 
+  it('merges every page of check-run annotations past the old silent 150 cap (#1420)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = [];
+    const total = 350;
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        return Response.json({ total_count: 1, check_runs: [{ id: 9001, name: 'lint', status: 'completed', conclusion: 'failure', started_at: '2026-01-01T00:00:00Z' }] });
+      }
+      if (pathname === '/repos/team/project/check-runs/9001/annotations') {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const per = Number(url.searchParams.get('per_page') ?? 100);
+        requestedPages.push(page);
+        const start = (page - 1) * per;
+        const items = [];
+        for (let i = start; i < Math.min(start + per, total); i += 1) {
+          items.push({ path: 'src/file.js', start_line: 1, end_line: 1, annotation_level: 'warning', message: `annotation ${i}`, title: 'lint' });
+        }
+        return Response.json(items);
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5, checkDetails: '1' })).expect(200);
+
+    expect(response.body.checkRuns).toHaveLength(1);
+    expect(response.body.checkRuns[0].annotations).toHaveLength(350);
+    expect(response.body.checkRuns[0].annotations[349].message).toBe('annotation 349');
+    expect(response.body.checkRuns[0].annotationsTruncated).toBeUndefined();
+    expect(requestedPages).toEqual([1, 2, 3, 4]);
+  });
+
+  it('flags a check run instead of returning page-1-only annotations when a later page fails (#1420)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        return Response.json({ total_count: 1, check_runs: [{ id: 9001, name: 'lint', status: 'completed', conclusion: 'failure', started_at: '2026-01-01T00:00:00Z' }] });
+      }
+      if (pathname === '/repos/team/project/check-runs/9001/annotations') {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        if (page === 2) return Response.json({ message: 'boom' }, { status: 500 });
+        const items = Array.from({ length: 100 }, (_, i) => ({
+          path: 'src/file.js', start_line: 1, end_line: 1, annotation_level: 'warning', message: `annotation ${i}`, title: 'lint',
+        }));
+        return Response.json(items);
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5, checkDetails: '1' })).expect(200);
+
+    // The summary survives, but the incomplete list is never presented as
+    // complete: no annotations array, and the run is explicitly flagged.
+    expect(response.body.checks).toMatchObject({ state: 'failure', total: 1 });
+    expect(response.body.checkRuns[0].annotations).toBeUndefined();
+    expect(response.body.checkRuns[0].annotationsTruncated).toBe(true);
+  });
+
+  it('flags a check run whose annotations cross the safety cap instead of returning a partial list (#1420)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = [];
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        return Response.json({ total_count: 1, check_runs: [{ id: 9001, name: 'lint', status: 'completed', conclusion: 'failure', started_at: '2026-01-01T00:00:00Z' }] });
+      }
+      if (pathname === '/repos/team/project/check-runs/9001/annotations') {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        requestedPages.push(page);
+        // Every page is full, including the probe past the cap.
+        const items = Array.from({ length: 100 }, (_, i) => ({
+          path: 'src/file.js', start_line: 1, end_line: 1, annotation_level: 'warning', message: `annotation ${(page - 1) * 100 + i}`, title: 'lint',
+        }));
+        return Response.json(items);
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5, checkDetails: '1' })).expect(200);
+
+    expect(response.body.checkRuns[0].annotations).toBeUndefined();
+    expect(response.body.checkRuns[0].annotationsTruncated).toBe(true);
+    expect(requestedPages).toHaveLength(21);
+    expect(requestedPages.at(-1)).toBe(21);
+  });
+
   it('merges every page of standalone issue comments instead of truncating at the first 100 (#1383)', async () => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
     const user = { id: 7, login: 'first' };
