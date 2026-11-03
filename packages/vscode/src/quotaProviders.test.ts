@@ -419,9 +419,11 @@ describe('OpenRouter quota provider (VS Code parity)', () => {
     const configurableFs = fs as {
       existsSync: (filePath: fs.PathLike) => boolean;
       readFileSync: (filePath: fs.PathOrFileDescriptor, options?: BufferEncoding) => string;
+      openSync: (filePath: fs.PathLike, flags?: string | number) => number;
     };
     const realExists = configurableFs.existsSync;
     const realRead = configurableFs.readFileSync;
+    const realOpen = configurableFs.openSync;
     // The config loader gates on existsSync before reading. Without this stub
     // a machine that has no global opencode.json (a clean CI runner) never
     // reaches the stubbed read, so the provider falls back to its default
@@ -433,11 +435,26 @@ describe('OpenRouter quota provider (VS Code parity)', () => {
     configurableFs.readFileSync = (filePath: fs.PathOrFileDescriptor, options?: BufferEncoding): string => (
       String(filePath).includes('opencode.json') ? configJson : realRead(filePath, options)
     );
+    // The reader does not read through readFileSync any more:
+    // readConfigFileContent in opencodeConfig.ts opens the file and reads
+    // from the handle, so a readFileSync stub alone serves nothing and the
+    // open fails on machines without a real config. Serve the config from a
+    // real temp file instead: opening the config path opens the temp file,
+    // and the fstat, read, and close calls in the capped read run for real
+    // against it.
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-openrouter-config-'));
+    const stubFile = path.join(stubDir, 'opencode.json');
+    fs.writeFileSync(stubFile, configJson);
+    configurableFs.openSync = (filePath: fs.PathLike, flags?: string | number): number => (
+      String(filePath).includes('opencode.json') ? realOpen(stubFile, flags) : realOpen(filePath, flags)
+    );
     try {
       await run();
     } finally {
+      configurableFs.openSync = realOpen;
       configurableFs.readFileSync = realRead;
       configurableFs.existsSync = realExists;
+      fs.rmSync(stubDir, { recursive: true, force: true });
     }
   };
 
