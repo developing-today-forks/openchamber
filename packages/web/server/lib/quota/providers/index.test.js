@@ -190,7 +190,7 @@ describe('shared upstream auth failure (#894)', () => {
       },
     });
     authState.rowsError = new Error('Authentication required');
-    await expect(listConfiguredQuotaProviders()).rejects.toThrow('OpenCode upstream authentication failed');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
   it('rethrows a non-auth instance credential read failure in the listing unchanged', async () => {
@@ -200,7 +200,7 @@ describe('shared upstream auth failure (#894)', () => {
       },
     });
     authState.rowsError = new Error('credential store exploded');
-    await expect(listConfiguredQuotaProviders()).rejects.toThrow('credential store exploded');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('credential store exploded');
   });
 
   it('leaves a provider-specific failure untouched', async () => {
