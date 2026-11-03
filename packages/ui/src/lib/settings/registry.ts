@@ -366,6 +366,10 @@ export const SETTINGS_REGISTRY = {
   terminalShell: field({ scope: 'instance', parse: parseTerminalShell, ui: uiStore('terminalShell', (v) => useUIStore.getState().setTerminalShell(v)) }),
   terminalLoginShells: field({ scope: 'instance', parse: parseTerminalShells(isTerminalShell), ui: uiStore('terminalLoginShells', (v) => useUIStore.getState().setTerminalLoginShells(v)) }),
   openInAppId: field({ scope: 'instance', parse: parseNonEmptyTrimmedString }),
+  // Server-wide scheduled-task run limit (ms) from #765: the scheduled-tasks
+  // runtime reads it from the instance settings; a task may override it with
+  // its own maxRunDurationMs. Registered so the settings API persists it.
+  scheduledTasksMaxRunDurationMs: field({ scope: 'instance', parse: parseFiniteNumber }),
   dictationEnabled: field({ scope: 'profile', parse: parseBoolean, ui: configField('dictationEnabled') }),
   sttProvider: field({ scope: 'instance', parse: parseSttProvider, ui: configField('sttProvider') }),
   sttServerUrl: field({ scope: 'instance', parse: parseTrimmedStringUpTo(2048), ui: configField('sttServerUrl') }),
