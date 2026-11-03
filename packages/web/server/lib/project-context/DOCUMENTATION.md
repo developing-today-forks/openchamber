@@ -92,6 +92,20 @@ beside the manifest because a plan that only lives in the team's folder has no
 link to carry it. Deleting a plan drops its entry; a `shared:` plan made
 personal takes its entry to the new id.
 
+## Plan metrics
+
+A listed plan whose `planSessions` entry names a session also carries
+`metrics` when the server can read that session from OpenCode
+(`plan-metrics.js`, wired in `server/index.js` as the runtime's
+`readPlanMetrics` dep): the session's token totals and its USD cost. The
+session's own cost figure is authoritative (`costSource: 'opencode'`); the
+models.dev catalog prices the tokens only for a session whose record has no
+cost figure (`costSource: 'catalog'`, reasoning billed at the output rate),
+and a session the catalog cannot price reports `costUsd: null`. Metrics are
+computed on read and never stored; a session that cannot be read gives the
+plan no metrics, never an error and never a fabricated zero. The client
+validates the field in `toPlanLink` and drops a malformed one.
+
 ## Shared plans
 
 Every `.md` file in the repository plans folder is a plan too: `.openchamber/plans`

@@ -4,7 +4,7 @@ import { Window } from 'happy-dom';
 const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'window');
 const testWindow = new Window();
 Object.defineProperty(globalThis, 'window', { configurable: true, value: testWindow });
-const { migrateSessionDisplayState, useSessionDisplayStore } = await import('./useSessionDisplayStore');
+const { migrateSessionDisplayState, sessionRowDisplaySchema, useSessionDisplayStore } = await import('./useSessionDisplayStore');
 afterAll(() => {
   testWindow.close();
   if (previousStorage) Object.defineProperty(globalThis, 'window', previousStorage);
@@ -169,6 +169,9 @@ describe('useSessionDisplayStore session row display', () => {
       showProjectIcon: true,
       showGoal: true,
       showTime: true,
+      showPinnedMarker: true,
+      showDoneHint: true,
+      showDirectoryIndicator: true,
     });
   });
 
@@ -183,5 +186,21 @@ describe('useSessionDisplayStore session row display', () => {
   test('v11→v12 keeps a stored row display and completes it with the defaults', () => {
     const migrated = migrateSessionDisplayState({ sessionRowDisplay: { zoneLines: 'two', showBranch: false } }, 11);
     expect(migrated.sessionRowDisplay).toMatchObject({ zoneLines: 'two', showBranch: false, showPrBadge: true });
+  });
+
+  test('a display saved before the pin, done and directory toggles keeps them shown', () => {
+    const parsed = sessionRowDisplaySchema.parse({ zoneLines: 'two', showBranch: false });
+    expect(parsed).toEqual({
+      zoneLines: 'two',
+      showBranch: false,
+      showPrBadge: true,
+      showProviderLogo: true,
+      showProjectIcon: true,
+      showGoal: true,
+      showTime: true,
+      showPinnedMarker: true,
+      showDoneHint: true,
+      showDirectoryIndicator: true,
+    });
   });
 });

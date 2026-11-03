@@ -244,7 +244,7 @@ const todoText = (value) => {
 };
 
 export const createProjectContextRuntime = (deps) => {
-  const { fsPromises, path, projectsDirPath, createId, resolveSharedPlansDir, onChanged } = deps;
+  const { fsPromises, path, projectsDirPath, createId, resolveSharedPlansDir, onChanged, readPlanMetrics } = deps;
   // The team's shared plans folder for a project (absolute path) or null; the
   // project config runtime owns that answer (`plansDir` in the shared file).
   const sharedPlansDirFor = typeof resolveSharedPlansDir === 'function'
@@ -543,9 +543,26 @@ export const createProjectContextRuntime = (deps) => {
         return info?.tooLarge ? { ...listed, tooLarge: true } : listed;
       }));
     const withSession = (plan) => (planSessions[plan.id] ? { ...plan, session: planSessions[plan.id] } : plan);
+    const plans = [...own, ...shared.plans].map(withSession);
+    // Metrics are a display enrichment on the linked session, read live and
+    // never stored: a plan whose session cannot be read shows no metrics,
+    // the same tolerance progress has. Without a reader (tests, embedding)
+    // plans carry no metrics at all.
+    const withMetrics = readPlanMetrics
+      ? await Promise.all(plans.map(async (plan) => {
+          if (!plan.session?.sessionId) return plan;
+          let metrics = null;
+          try {
+            metrics = await readPlanMetrics(plan.session.sessionId);
+          } catch {
+            metrics = null;
+          }
+          return metrics ? { ...plan, metrics } : plan;
+        }))
+      : plans;
     return {
       ...stored,
-      plans: [...own, ...shared.plans].map(withSession),
+      plans: withMetrics,
       sharedPlansDir: shared.dir,
     };
   };

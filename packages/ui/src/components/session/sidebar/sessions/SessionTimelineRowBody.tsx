@@ -145,9 +145,9 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
     {compact && elements.showGoal ? goal : null}
     {compact ? zombieIndicator ?? (elements.showPrBadge ? prBadge : null) : null}
     {compact ? badges : null}
-    {directoryIndicator}
-    {pinnedMarker}
-    {doneHint}
+    {elements.showDirectoryIndicator ? directoryIndicator : null}
+    {elements.showPinnedMarker ? pinnedMarker : null}
+    {elements.showDoneHint ? doneHint : null}
     {statusDot}
     {elements.showTime ? <span className="typography-micro leading-none text-muted-foreground/50 tabular-nums">{timeSlot}</span> : null}
   </span>;

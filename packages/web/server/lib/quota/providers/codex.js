@@ -168,8 +168,8 @@ const fetchQuotaForEntry = async (entry) => {
   }
 };
 
-export const fetchQuota = async () => {
-  const auth = await readOpenCodeCredentials();
+export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const auth = await readAuth();
   return fetchQuotaForEntry(normalizeAuthEntry(getAuthEntry(auth, aliases)));
 };
 

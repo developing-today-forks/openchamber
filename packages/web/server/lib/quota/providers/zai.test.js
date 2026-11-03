@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../opencode/auth.js', () => ({
-  readOpenCodeCredentials: async () => ({ 'zai-coding-plan': { key: 'test-token' } }),
-}));
+const readAuth = async () => ({ 'zai-coding-plan': { key: 'test-token' } });
 
 import { fetchQuota, useZaiGiftReset } from './zai.js';
 
@@ -20,7 +18,7 @@ describe('Z.ai quota provider', () => {
   it('reports a business failure sent inside an HTTP 200 body instead of an empty card', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ code: 1001, msg: 'Token expired', success: false })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);
@@ -38,7 +36,7 @@ describe('Z.ai quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -73,7 +71,7 @@ describe('Z.ai quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -91,7 +89,7 @@ describe('Z.ai quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows['5h'].usedPercent).toBeNull();
@@ -110,7 +108,7 @@ describe('Z.ai quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -161,7 +159,7 @@ describe('Z.ai quota provider', () => {
       }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -192,7 +190,7 @@ describe('Z.ai quota provider', () => {
         json: async () => ({}),
       }));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -223,7 +221,7 @@ describe('Z.ai quota provider', () => {
         },
       })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -253,7 +251,7 @@ describe('Z.ai quota provider', () => {
         },
       })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -271,7 +269,7 @@ describe('Z.ai gift reset activation', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(useZaiGiftReset({ recordId: 462029, resetType: 'FIVE_HOUR' })).resolves.toBe(true);
+    await expect(useZaiGiftReset({ readAuth, recordId: 462029, resetType: 'FIVE_HOUR' })).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -294,14 +292,14 @@ describe('Z.ai gift reset activation', () => {
       json: async () => ({ code: 400, msg: 'reset already used', success: false }),
     }));
 
-    await expect(useZaiGiftReset({ recordId: 1, resetType: 'WEEK' })).rejects.toThrow('reset already used');
+    await expect(useZaiGiftReset({ readAuth, recordId: 1, resetType: 'WEEK' })).rejects.toThrow('reset already used');
   });
 
   it('rejects an invalid reset type before any request', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(useZaiGiftReset({ recordId: 1, resetType: 'FOREVER' })).rejects.toThrow('Invalid gift reset request');
+    await expect(useZaiGiftReset({ readAuth, recordId: 1, resetType: 'FOREVER' })).rejects.toThrow('Invalid gift reset request');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -311,7 +309,7 @@ describe('Z.ai request deadline', () => {
     const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);
@@ -323,7 +321,7 @@ describe('Z.ai request deadline', () => {
     const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(useZaiGiftReset({ recordId: 1, resetType: 'WEEK' })).rejects.toMatchObject({ name: 'TimeoutError' });
+    await expect(useZaiGiftReset({ readAuth, recordId: 1, resetType: 'WEEK' })).rejects.toMatchObject({ name: 'TimeoutError' });
     expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 });

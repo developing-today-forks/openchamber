@@ -79,22 +79,40 @@ const DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR: LargeTextPasteBehavior = 'ask';
 const DEFAULT_AGENT_TERMINALS_PLACEMENT: AgentTerminalsPlacement = 'terminal-panel';
 const DEFAULT_ACTIVE_RUN_MODEL_CHANGE_BEHAVIOR: ActiveRunModelChangeBehavior = 'next-message';
 
-const normalizeLargeTextPasteBehavior = (value: unknown): LargeTextPasteBehavior => {
+/**
+ * One field of a persisted UI-store document: values are JSON-shaped, and
+ * each normalizer/sanitizer below narrows the field it owns. Typed store
+ * values (enums, tab records, template records) also satisfy this contract.
+ */
+type PersistedUIFieldValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | PersistedUIFieldValue[]
+  | { [key: string]: PersistedUIFieldValue };
+
+type PersistedUIStateRecord = Record<string, PersistedUIFieldValue>;
+
+type ContextPanelByDirectory = Record<string, ContextPanelDirectoryState>;
+
+const normalizeLargeTextPasteBehavior = (value: PersistedUIFieldValue): LargeTextPasteBehavior => {
   if (value === 'attach' || value === 'inline' || value === 'ask' || value === 'inline-double-paste') {
     return value;
   }
   return DEFAULT_LARGE_TEXT_PASTE_BEHAVIOR;
 };
 
-const normalizeAgentTerminalsPlacement = (value: unknown): AgentTerminalsPlacement => (
+const normalizeAgentTerminalsPlacement = (value: PersistedUIFieldValue): AgentTerminalsPlacement => (
   value === 'sidebar' ? 'sidebar' : DEFAULT_AGENT_TERMINALS_PLACEMENT
 );
 
-const normalizeActiveRunModelChangeBehavior = (value: unknown): ActiveRunModelChangeBehavior => (
+const normalizeActiveRunModelChangeBehavior = (value: PersistedUIFieldValue): ActiveRunModelChangeBehavior => (
   value === 'restart' ? 'restart' : DEFAULT_ACTIVE_RUN_MODEL_CHANGE_BEHAVIOR
 );
 
-function normalizeFileEditorKeymap(value: unknown): FileEditorKeymap {
+function normalizeFileEditorKeymap(value: PersistedUIFieldValue): FileEditorKeymap {
   return value === 'vim' ? 'vim' : 'default';
 }
 
@@ -187,7 +205,7 @@ const isSameTemplateValue = (
   return a.title === b.title && a.message === b.message;
 };
 
-const isLegacyDefaultTemplates = (value: unknown): boolean => {
+const isLegacyDefaultTemplates = (value: PersistedUIFieldValue): boolean => {
   if (!value || typeof value !== 'object') {
     return false;
   }
@@ -309,7 +327,7 @@ const normalizeContextTabLabel = (value: string | null | undefined): string | nu
     : trimmed;
 };
 
-const normalizePendingDiffScope = (value: unknown): PendingDiffScope | null => {
+const normalizePendingDiffScope = (value: PersistedUIFieldValue): PendingDiffScope | null => {
   return value === 'working' || value === 'staged' || value === 'turn' || value === 'branch' || value === 'commit' || value === 'pr' ? value : null;
 };
 
@@ -412,7 +430,7 @@ const clampContextPanelTabs = (
   return removeSet.size === 0 ? tabs : tabs.filter((tab) => !removeSet.has(tab.id));
 };
 
-const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
+const sanitizeContextPanelTabs = (tabs: PersistedUIFieldValue): ContextPanelTab[] => {
   if (!Array.isArray(tabs)) {
     return [];
   }
@@ -427,18 +445,18 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
     }
 
     const candidate = entry as {
-      mode?: unknown;
-      targetPath?: unknown;
+      mode?: PersistedUIFieldValue;
+      targetPath?: PersistedUIFieldValue;
       targetDirectory?: string | null;
-      dedupeKey?: unknown;
-      label?: unknown;
-      sessionTitleFallback?: unknown;
-      readOnly?: unknown;
-      stagedDiff?: unknown;
-      diffScope?: unknown;
-      preview?: unknown;
-      ownerSessionId?: unknown;
-      touchedAt?: unknown;
+      dedupeKey?: PersistedUIFieldValue;
+      label?: PersistedUIFieldValue;
+      sessionTitleFallback?: PersistedUIFieldValue;
+      readOnly?: PersistedUIFieldValue;
+      stagedDiff?: PersistedUIFieldValue;
+      diffScope?: PersistedUIFieldValue;
+      preview?: PersistedUIFieldValue;
+      ownerSessionId?: PersistedUIFieldValue;
+      touchedAt?: PersistedUIFieldValue;
     };
 
     // Legacy 'preview' tabs are converted to 'browser' by the v14 migration;
@@ -759,35 +777,33 @@ const withoutForeignComparisons = (
     : panel]));
 };
 
-const sanitizeContextPanelByDirectory = (
-  value: unknown,
-): Record<string, ContextPanelDirectoryState> => {
-  if (!value || typeof value !== 'object') {
+const sanitizeContextPanelByDirectory = (value: PersistedUIFieldValue) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
   }
 
-  const source = value as Record<string, unknown>;
-  const next: Record<string, ContextPanelDirectoryState> = {};
+  const source: PersistedUIStateRecord = value;
+  const next: ContextPanelByDirectory = {};
 
   for (const [rawDirectory, rawState] of Object.entries(source)) {
     const directory = normalizeDirectoryPath(rawDirectory);
-    if (!directory || !rawState || typeof rawState !== 'object') {
+    if (!directory || !rawState || typeof rawState !== 'object' || Array.isArray(rawState)) {
       continue;
     }
 
     const candidate = rawState as {
-      isOpen?: unknown;
-      expanded?: unknown;
-      zones?: unknown;
-      tabs?: unknown;
-      activeTabId?: unknown;
-      widthByMode?: unknown;
-      touchedAt?: unknown;
-      mode?: unknown;
-      targetPath?: unknown;
+      isOpen?: PersistedUIFieldValue;
+      expanded?: PersistedUIFieldValue;
+      zones?: PersistedUIFieldValue;
+      tabs?: PersistedUIFieldValue;
+      activeTabId?: PersistedUIFieldValue;
+      widthByMode?: PersistedUIFieldValue;
+      touchedAt?: PersistedUIFieldValue;
+      mode?: PersistedUIFieldValue;
+      targetPath?: PersistedUIFieldValue;
       targetDirectory?: string | null;
-      dedupeKey?: unknown;
-      label?: unknown;
+      dedupeKey?: PersistedUIFieldValue;
+      label?: PersistedUIFieldValue;
     };
 
     let tabs = sanitizeContextPanelTabs(candidate.tabs);
@@ -846,17 +862,14 @@ const sanitizeContextPanelByDirectory = (
   return next;
 };
 
-const clampContextPanelRoots = (
-  byDirectory: Record<string, ContextPanelDirectoryState>,
-  maxRoots: number
-): Record<string, ContextPanelDirectoryState> => {
+const clampContextPanelRoots = (byDirectory: ContextPanelByDirectory, maxRoots: number) => {
   const entries = Object.entries(byDirectory);
   if (entries.length <= maxRoots) {
     return byDirectory;
   }
 
   entries.sort((a, b) => (b[1]?.touchedAt ?? 0) - (a[1]?.touchedAt ?? 0));
-  const next: Record<string, ContextPanelDirectoryState> = {};
+  const next: ContextPanelByDirectory = {};
   for (const [directory, state] of entries.slice(0, maxRoots)) {
     next[directory] = state;
   }
@@ -3514,7 +3527,7 @@ export const useUIStore = create<UIStore>()(
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
           }
-          const state = persistedState as Record<string, unknown>;
+          const state = persistedState as PersistedUIStateRecord;
 
           // v22 -> v23: table cell wrap is on by default. The local copy only
           // ever held the old default; a choice the user made is restored from
@@ -3561,14 +3574,14 @@ export const useUIStore = create<UIStore>()(
           // user has not already sized the browser surface.
           if (version < 14) {
             const byDirectory = state.contextPanelByDirectory;
-            if (byDirectory && typeof byDirectory === 'object') {
-              for (const directoryState of Object.values(byDirectory as Record<string, unknown>)) {
-                if (!directoryState || typeof directoryState !== 'object') continue;
-                const entry = directoryState as Record<string, unknown>;
+            if (byDirectory && typeof byDirectory === 'object' && !Array.isArray(byDirectory)) {
+              for (const directoryState of Object.values(byDirectory)) {
+                if (!directoryState || typeof directoryState !== 'object' || Array.isArray(directoryState)) continue;
+                const entry: PersistedUIStateRecord = directoryState;
 
                 const widths = entry.widthByMode;
-                if (widths && typeof widths === 'object') {
-                  const widthRecord = widths as Record<string, unknown>;
+                if (widths && typeof widths === 'object' && !Array.isArray(widths)) {
+                  const widthRecord: PersistedUIStateRecord = widths;
                   if (widthRecord.preview !== undefined) {
                     if (widthRecord.browser === undefined) widthRecord.browser = widthRecord.preview;
                     delete widthRecord.preview;
@@ -3577,10 +3590,14 @@ export const useUIStore = create<UIStore>()(
 
                 if (!Array.isArray(entry.tabs)) continue;
                 const seenIds = new Set<string>();
-                const migrated: Array<Record<string, unknown>> = [];
-                for (const rawTab of entry.tabs as Array<unknown>) {
+                const migrated: PersistedUIFieldValue[] = [];
+                for (const rawTab of entry.tabs) {
                   if (!rawTab || typeof rawTab !== 'object') continue;
-                  const tab = rawTab as Record<string, unknown>;
+                  if (Array.isArray(rawTab)) {
+                    migrated.push(rawTab);
+                    continue;
+                  }
+                  const tab: PersistedUIStateRecord = rawTab;
                   if (tab.mode !== 'preview') {
                     if (typeof tab.id === 'string') seenIds.add(tab.id);
                     migrated.push(tab);
@@ -3601,8 +3618,14 @@ export const useUIStore = create<UIStore>()(
                 entry.tabs = migrated;
 
                 if (typeof entry.activeTabId === 'string' && entry.activeTabId.startsWith('preview')) {
-                  const nextActive = migrated.find((tab) => typeof tab.id === 'string');
-                  entry.activeTabId = nextActive && typeof nextActive.id === 'string' ? nextActive.id : null;
+                  let nextActiveId: string | null = null;
+                  for (const tab of migrated) {
+                    if (typeof tab === 'object' && tab !== null && !Array.isArray(tab) && typeof tab.id === 'string') {
+                      nextActiveId = tab.id;
+                      break;
+                    }
+                  }
+                  entry.activeTabId = nextActiveId;
                 }
               }
             }
@@ -3705,7 +3728,7 @@ export const useUIStore = create<UIStore>()(
             if (!state.shortcutOverrides || typeof state.shortcutOverrides !== 'object') {
               state.shortcutOverrides = {};
             } else {
-              const overrides = state.shortcutOverrides as Record<string, unknown>;
+              const overrides = state.shortcutOverrides;
               const cleaned: Record<string, string> = {};
               for (const [key, value] of Object.entries(overrides)) {
                 if (typeof key === 'string' && typeof value === 'string') {
