@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, SKILL_WALK_MAX_DIRS, MAX_CONFIG_FILE_BYTES } from './shared.js';
+import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, SKILL_WALK_MAX_DIRS, listSkillSupportingFiles, SKILL_SUPPORTING_FILES_MAX_DIRECTORIES, SKILL_SUPPORTING_FILES_MAX_FILES, MAX_CONFIG_FILE_BYTES } from './shared.js';
 import { updateAgent } from './agents.js';
 import { updateMcpConfig, createMcpConfig, deleteMcpConfig } from './mcp.js';
 
@@ -1014,4 +1014,116 @@ describe('writeConfig replaces the file atomically', () => {
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readConfigFile(real)).toEqual({ a: 2 });
   });
+});
+
+describe('listSkillSupportingFiles caps (#1365)', () => {
+  beforeEach(() => {
+    fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
+    fs.mkdirSync(FIXTURE_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
+  });
+
+  const SKILL_DIR = () => path.join(FIXTURE_DIR, 'skill');
+
+  const writeSupporting = (relativePath, content = 'x') => {
+    const filePath = path.join(SKILL_DIR(), relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf8');
+    return filePath;
+  };
+
+  it('pins the caps the VS Code twin shares', () => {
+    expect(SKILL_SUPPORTING_FILES_MAX_DIRECTORIES).toBe(5000);
+    expect(SKILL_SUPPORTING_FILES_MAX_FILES).toBe(5000);
+    const vscodeSource = fs.readFileSync(
+      new URL('../../../../vscode/src/opencodeConfig.ts', import.meta.url),
+      'utf8',
+    );
+    expect(vscodeSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
+    expect(vscodeSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+  });
+
+  it('lists supporting files under the caps, excluding SKILL.md, without truncation', async () => {
+    writeSupporting('SKILL.md', STANDARD_MD);
+    writeSupporting(path.join('references', 'guide.md'), '# Guide');
+    writeSupporting('notes.txt', 'notes');
+
+    const result = await listSkillSupportingFiles(SKILL_DIR());
+
+    expect(result.truncated).toBe(false);
+    expect(result.files.map((file) => file.path).sort()).toEqual([
+      'notes.txt',
+      path.join('references', 'guide.md'),
+    ]);
+    expect(result.files.find((file) => file.name === 'guide.md')).toEqual({
+      name: 'guide.md',
+      path: path.join('references', 'guide.md'),
+      fullPath: path.join(SKILL_DIR(), 'references', 'guide.md'),
+    });
+  });
+
+  it('returns an empty, untruncated listing for a missing skill directory', async () => {
+    expect(await listSkillSupportingFiles(path.join(FIXTURE_DIR, 'nope'))).toEqual({
+      files: [],
+      truncated: false,
+    });
+  });
+
+  it('stops at the directory cap and keeps the files found before it', async () => {
+    writeSupporting('SKILL.md', STANDARD_MD);
+    // One file per leaf: every visited leaf contributes exactly one file, so
+    // the count is deterministic whatever order readdir returns the leaves.
+    const leafCount = SKILL_SUPPORTING_FILES_MAX_DIRECTORIES + 10;
+    for (let i = 0; i < leafCount; i += 1) {
+      writeSupporting(path.join(`d${String(i).padStart(4, '0')}`, 'note.txt'));
+    }
+
+    const result = await listSkillSupportingFiles(SKILL_DIR());
+
+    // The root plus MAX - 1 leaves are visited.
+    expect(result.truncated).toBe(true);
+    expect(result.files).toHaveLength(SKILL_SUPPORTING_FILES_MAX_DIRECTORIES - 1);
+  }, 60_000);
+
+  it('returns complete results for a tree exactly at the directory cap', async () => {
+    writeSupporting('SKILL.md', STANDARD_MD);
+    const leafCount = SKILL_SUPPORTING_FILES_MAX_DIRECTORIES - 1;
+    for (let i = 0; i < leafCount; i += 1) {
+      fs.mkdirSync(path.join(SKILL_DIR(), `d${String(i).padStart(4, '0')}`), { recursive: true });
+    }
+    writeSupporting(path.join('d0000', 'note.txt'));
+
+    const result = await listSkillSupportingFiles(SKILL_DIR());
+
+    expect(result.truncated).toBe(false);
+    expect(result.files.map((file) => file.path)).toEqual([path.join('d0000', 'note.txt')]);
+  }, 60_000);
+
+  it('stops at the file cap and keeps the files collected before it', async () => {
+    writeSupporting('SKILL.md', STANDARD_MD);
+    const fileCount = SKILL_SUPPORTING_FILES_MAX_FILES + 10;
+    for (let i = 0; i < fileCount; i += 1) {
+      writeSupporting(`f${String(i).padStart(4, '0')}.txt`);
+    }
+
+    const result = await listSkillSupportingFiles(SKILL_DIR());
+
+    expect(result.truncated).toBe(true);
+    expect(result.files).toHaveLength(SKILL_SUPPORTING_FILES_MAX_FILES);
+  }, 60_000);
+
+  it('returns complete results for a tree exactly at the file cap', async () => {
+    writeSupporting('SKILL.md', STANDARD_MD);
+    for (let i = 0; i < SKILL_SUPPORTING_FILES_MAX_FILES; i += 1) {
+      writeSupporting(`f${String(i).padStart(4, '0')}.txt`);
+    }
+
+    const result = await listSkillSupportingFiles(SKILL_DIR());
+
+    expect(result.truncated).toBe(false);
+    expect(result.files).toHaveLength(SKILL_SUPPORTING_FILES_MAX_FILES);
+  }, 60_000);
 });

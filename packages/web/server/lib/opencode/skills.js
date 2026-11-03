@@ -471,7 +471,11 @@ async function getSkillSources(skillName, workingDirectory, discoveredSkill = nu
     }
   }
   if (includeSupportingFiles) {
-    sources.md.supportingFiles = mdExists && mdDir ? await listSkillSupportingFiles(mdDir) : [];
+    const listing = mdExists && mdDir
+      ? await listSkillSupportingFiles(mdDir)
+      : { files: [], truncated: false };
+    sources.md.supportingFiles = listing.files;
+    sources.md.supportingFilesTruncated = listing.truncated;
   }
 
   return sources;

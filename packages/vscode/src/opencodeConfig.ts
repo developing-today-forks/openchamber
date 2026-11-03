@@ -3015,6 +3015,7 @@ export type SkillConfigSources = {
     scope?: SkillScope | null;
     source?: SkillSource | null;
     supportingFiles: SupportingFile[];
+    supportingFilesTruncated?: boolean;
     name?: string;
     description?: string;
     instructions?: string;
@@ -3174,20 +3175,50 @@ const getSkillScope = (skillName: string, workingDirectory?: string): {
   return { scope: null, path: null, source: null };
 };
 
-const listSupportingFiles = (skillDir: string): SupportingFile[] => {
-  if (!fs.existsSync(skillDir)) return [];
-  
+type SkillSupportingFilesListing = {
+  files: SupportingFile[];
+  truncated: boolean;
+};
+
+// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+// node_modules, generated docs); one detail request must not walk all of it,
+// least of all synchronously on the extension host. Keep these in sync with
+// SKILL_SUPPORTING_FILES_MAX_* in packages/web/server/lib/opencode/shared.js.
+const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
+const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
+
+const listSupportingFiles = (skillDir: string): SkillSupportingFilesListing => {
+  if (!fs.existsSync(skillDir)) return { files: [], truncated: false };
+
   const files: SupportingFile[] = [];
-  
-  const walkDir = (dir: string, relativePath: string = '') => {
+  let visitedDirectories = 0;
+  let truncated = false;
+
+  // Returns false once a limit is hit, so every caller unwinds and the walk
+  // stops instead of merely stopping collection. Files and directories seen
+  // before the limit are kept, in the original traversal order; a tree that
+  // ends exactly at a limit is complete, not truncated.
+  const walkDir = (dir: string, relativePath: string = ''): boolean => {
+    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
+      truncated = true;
+      return false;
+    }
+    visitedDirectories += 1;
+
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
-      
+
       if (entry.isDirectory()) {
-        walkDir(fullPath, relPath);
+        if (!walkDir(fullPath, relPath)) {
+          return false;
+        }
       } else if (entry.name !== 'SKILL.md') {
+        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
+          truncated = true;
+          return false;
+        }
         files.push({
           name: entry.name,
           path: relPath,
@@ -3195,10 +3226,11 @@ const listSupportingFiles = (skillDir: string): SupportingFile[] => {
         });
       }
     }
+    return true;
   };
-  
+
   walkDir(skillDir);
-  return files;
+  return { files, truncated };
 };
 
 export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
@@ -3406,6 +3438,7 @@ export const getSkillSources = (
   const mdExists = isBuiltInDiscovered || !!mdPath;
   let mdFields: string[] = isBuiltInDiscovered ? ['description', 'instructions'] : [];
   let supportingFiles: SupportingFile[] = [];
+  let supportingFilesTruncated = false;
   let mdDescription = typeof matchedDiscovered?.description === 'string' ? matchedDiscovered.description : '';
   let mdInstructions = isBuiltInDiscovered && typeof matchedDiscovered?.content === 'string' ? matchedDiscovered.content : '';
   let mdDisableModelInvocation = false;
@@ -3418,7 +3451,9 @@ export const getSkillSources = (
     if (body) mdFields.push('instructions');
     mdInstructions = body || '';
     if (mdDir) {
-      supportingFiles = listSupportingFiles(mdDir);
+      const listing = listSupportingFiles(mdDir);
+      supportingFiles = listing.files;
+      supportingFilesTruncated = listing.truncated;
     }
   }
   
@@ -3431,6 +3466,7 @@ export const getSkillSources = (
       scope: mdScope,
       source: mdSource,
       supportingFiles,
+      supportingFilesTruncated,
       name: matchedDiscovered?.name || skillName,
       description: mdDescription,
       instructions: mdInstructions,

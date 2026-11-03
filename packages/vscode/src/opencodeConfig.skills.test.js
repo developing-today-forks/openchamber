@@ -118,6 +118,115 @@ describe('VS Code skill walk directory cap (#1357)', () => {
   }, 60_000);
 });
 
+describe('VS Code skill supporting-files caps (#1365)', () => {
+  const withTempDir = (run) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-supporting-'));
+    try {
+      return run(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const writeSkill = (skillDir, supporting) => {
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: supporting-skill\n---\n\nbody\n',
+      'utf8',
+    );
+    for (const rel of supporting) {
+      const filePath = path.join(skillDir, rel);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, 'x', 'utf8');
+    }
+  };
+
+  const sourcesFor = (dir, skillDir) => getSkillSources('supporting-skill', dir, {
+    name: 'supporting-skill',
+    path: path.join(skillDir, 'SKILL.md'),
+    scope: 'user',
+    source: 'agents',
+  });
+
+  test('pins the same cap values as the web twin in shared.js', () => {
+    const webSource = fs.readFileSync(
+      new URL('../../web/server/lib/opencode/shared.js', import.meta.url),
+      'utf8',
+    );
+    expect(webSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
+    expect(webSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+    const ownSource = fs.readFileSync(new URL('./opencodeConfig.ts', import.meta.url), 'utf8');
+    expect(ownSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
+    expect(ownSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+  });
+
+  test('lists supporting files under the caps without truncation', () => {
+    withTempDir((dir) => {
+      const skillDir = path.join(dir, 'supporting-skill');
+      writeSkill(skillDir, [path.join('references', 'guide.md'), 'notes.txt']);
+
+      const sources = sourcesFor(dir, skillDir);
+
+      expect(sources.md.supportingFilesTruncated).toBe(false);
+      expect(sources.md.supportingFiles.map((file) => file.path).sort()).toEqual([
+        'notes.txt',
+        path.join('references', 'guide.md'),
+      ]);
+    });
+  });
+
+  test('stops at the directory cap and keeps the files found before it', () => {
+    withTempDir((dir) => {
+      const skillDir = path.join(dir, 'supporting-skill');
+      const supporting = [];
+      for (let i = 0; i < 5010; i += 1) {
+        supporting.push(path.join(`d${String(i).padStart(4, '0')}`, 'note.txt'));
+      }
+      writeSkill(skillDir, supporting);
+
+      const sources = sourcesFor(dir, skillDir);
+
+      // The root plus 4,999 leaves are visited; each visited leaf adds one file.
+      expect(sources.md.supportingFilesTruncated).toBe(true);
+      expect(sources.md.supportingFiles).toHaveLength(4999);
+    });
+  }, 60_000);
+
+  test('is complete for a tree exactly at the directory cap', () => {
+    withTempDir((dir) => {
+      const skillDir = path.join(dir, 'supporting-skill');
+      writeSkill(skillDir, [path.join('d0000', 'note.txt')]);
+      for (let i = 1; i < 4999; i += 1) {
+        fs.mkdirSync(path.join(skillDir, `d${String(i).padStart(4, '0')}`), { recursive: true });
+      }
+
+      const sources = sourcesFor(dir, skillDir);
+
+      expect(sources.md.supportingFilesTruncated).toBe(false);
+      expect(sources.md.supportingFiles.map((file) => file.path)).toEqual([
+        path.join('d0000', 'note.txt'),
+      ]);
+    });
+  }, 60_000);
+
+  test('stops at the file cap and keeps the files collected before it', () => {
+    withTempDir((dir) => {
+      const skillDir = path.join(dir, 'supporting-skill');
+      const supporting = [];
+      for (let i = 0; i < 5010; i += 1) {
+        supporting.push(`f${String(i).padStart(4, '0')}.txt`);
+      }
+      writeSkill(skillDir, supporting);
+
+      const sources = sourcesFor(dir, skillDir);
+
+      expect(sources.md.supportingFilesTruncated).toBe(true);
+      expect(sources.md.supportingFiles).toHaveLength(5000);
+    });
+  }, 60_000);
+});
+
 describe('VS Code parseMdFile size gate (#1157)', () => {
   const withTempDir = (run) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-md-cap-'));

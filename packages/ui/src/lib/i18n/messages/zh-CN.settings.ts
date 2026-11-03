@@ -860,6 +860,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': '创建技能',
   'settings.skills.page.actions.createFile': '创建文件',
   'settings.skills.page.supportingFiles.empty': '暂无支持文件。使用“添加文件”包含参考资料。',
+  'settings.skills.page.supportingFiles.truncated': '此列表不完整：技能文件夹太大，无法完整列出。',
   'settings.skills.page.loading.details': '正在加载技能详情...',
   'settings.skills.page.loading.fileContent': '正在加载文件内容...',
   'settings.skills.page.empty.title': '从侧边栏选择一个技能',

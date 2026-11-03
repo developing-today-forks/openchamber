@@ -106,3 +106,17 @@ test('skill refresh preserves newer editor text while a save is pending and swit
   await act(async () => { finishPending(); });
   expect(currentView().state.doc.toString()).toContain('draft body');
 });
+
+test('shows the incomplete-list notice when the detail response flags truncation', async () => {
+  const skill = { name: 'wide', path: '/test/wide/SKILL.md', scope: 'user', source: 'opencode' } satisfies import('@/stores/useSkillsStore').DiscoveredSkill;
+  useSkillsStore.setState({ selectedSkillName: 'wide', skills: [skill],
+    getSkillByName: (name) => useSkillsStore.getState().skills.find((entry) => entry.name === name),
+    getSkillDetail: async (name) => ({ name, sources: { md: { exists: true, path: skill.path, dir: '/test/wide', fields: [], supportingFiles: [{ name: 'guide.md', path: 'references/guide.md', fullPath: '/test/wide/references/guide.md' }], supportingFilesTruncated: true, description: name, instructions: 'body' } } }),
+  });
+  const ownContainer = document.createElement('div');
+  document.body.appendChild(ownContainer);
+  const ownRoot = createRoot(ownContainer);
+  await act(async () => ownRoot.render(<I18nProvider><ThemeSystemContext.Provider value={themeContext}><SkillsPage /></ThemeSystemContext.Provider></I18nProvider>));
+  expect(ownContainer.textContent).toContain('This list is incomplete');
+  await act(async () => ownRoot.unmount());
+});

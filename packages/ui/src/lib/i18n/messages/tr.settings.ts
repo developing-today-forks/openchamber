@@ -868,6 +868,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'Skill Oluştur',
   'settings.skills.page.actions.createFile': 'Dosya Oluştur',
   'settings.skills.page.supportingFiles.empty': 'Destekleyici dosya yok. Başvuru materyalleri eklemek için "Dosya Ekle"yi kullanın.',
+  'settings.skills.page.supportingFiles.truncated': 'Bu liste eksik: skill klasörü tamamen listelenemeyecek kadar büyük.',
   'settings.skills.page.loading.details': 'Skill ayrıntıları yükleniyor...',
   'settings.skills.page.loading.fileContent': 'Dosya içeriği yükleniyor...',
   'settings.skills.page.empty.title': 'Kenar çubuğundan bir skill seçin',

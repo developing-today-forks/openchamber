@@ -893,6 +893,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'Skill を作成',
   'settings.skills.page.actions.createFile': 'ファイルを作成',
   'settings.skills.page.supportingFiles.empty': 'サポートファイルがありません。「ファイルを追加」を使用して参考資料を含めてください。',
+  'settings.skills.page.supportingFiles.truncated': 'この一覧は不完全です: スキルフォルダが大きすぎて全体を表示できません。',
   'settings.skills.page.loading.details': 'Skill 詳細を読み込み中...',
   'settings.skills.page.loading.fileContent': 'ファイル内容を読み込み中...',
   'settings.skills.page.empty.title': 'サイドバーから Skill を選択してください',

@@ -435,6 +435,7 @@ describe('skill-routes directory soft fallback', () => {
     expect(listed.sources.md).not.toHaveProperty('supportingFiles');
 
     const detail = await (await fetch(`${appHandle.baseUrl}/api/config/skills/files-skill${query}`)).json();
+    expect(detail.sources.md.supportingFilesTruncated).toBe(false);
     expect(detail.sources.md.supportingFiles).toEqual([{
       name: 'guide.md',
       path: path.join('references', 'guide.md'),
@@ -854,4 +855,25 @@ describe('skill-routes delete location', () => {
 
     expect(response.status).toBe(400);
   });
+
+  it('flags a supporting-files listing the directory cap truncated (#1365)', async () => {
+    projectRoot = createTempProject();
+    const skillDir = path.join(projectRoot, '.agents', 'skills', 'wide-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: wide-skill\ndescription: Has a wide tree\n---\nBody\n',
+    );
+    // Root + 5,000 subdirectories is one visit past the 5,000-directory cap.
+    for (let i = 0; i < 5000; i += 1) {
+      fs.mkdirSync(path.join(skillDir, `d${String(i).padStart(4, '0')}`));
+    }
+
+    appHandle = startSkillsApp({ projectRoot });
+    const query = `?directory=${encodeURIComponent(projectRoot)}`;
+
+    const detail = await (await fetch(`${appHandle.baseUrl}/api/config/skills/wide-skill${query}`)).json();
+    expect(detail.sources.md.supportingFiles).toEqual([]);
+    expect(detail.sources.md.supportingFilesTruncated).toBe(true);
+  }, 60_000);
 });

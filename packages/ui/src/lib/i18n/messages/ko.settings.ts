@@ -860,6 +860,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': '스킬 생성',
   'settings.skills.page.actions.createFile': '파일 생성',
   'settings.skills.page.supportingFiles.empty': '보조 파일이 없습니다. "파일 추가"로 참조 자료를 포함하세요.',
+  'settings.skills.page.supportingFiles.truncated': '이 목록은 불완전합니다. 스킬 폴더가 너무 커서 전체를 표시할 수 없습니다.',
   'settings.skills.page.loading.details': '스킬 세부 정보 로딩 중...',
   'settings.skills.page.loading.fileContent': '파일 내용 로딩 중...',
   'settings.skills.page.empty.title': '사이드바에서 스킬을 선택하세요',
