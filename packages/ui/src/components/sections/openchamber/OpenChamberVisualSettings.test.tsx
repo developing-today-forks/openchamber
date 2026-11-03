@@ -88,6 +88,10 @@ describe('OpenChamberVisualSettings', () => {
     expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-lines"]')).not.toBeNull();
     const branchRow = host.querySelector('[data-settings-item="appearance.sidebar-rows-branch"]');
     expect(branchRow?.getAttribute('aria-pressed')).toBe('true');
+    // The pin, done-hint and directory indicators join the element set, shown by default.
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-pin-marker"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-done-hint"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('[data-settings-item="appearance.sidebar-rows-directory"]')?.getAttribute('aria-pressed')).toBe('true');
     // One line by default: the title and time show, the branch has no slot.
     const section = host.querySelector('[data-settings-item="appearance.sidebar-rows"]');
     expect(section?.textContent).toContain('Design the empty states');
