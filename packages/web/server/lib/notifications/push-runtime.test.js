@@ -134,6 +134,37 @@ describe('push runtime store durability', () => {
     }
   });
 
+  it('preserves a wrong-version subscriptions file before a later write overwrites it', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { dir, filePath, runtime } = await makeRealRuntime();
+      const wrongVersion = JSON.stringify({ version: 2, subscriptionsBySession: {} });
+      await fsReal.writeFile(filePath, wrongVersion, 'utf8');
+
+      await runtime.addOrUpdatePushSubscription('session-1', subscription);
+
+      const preserved = (await fsReal.readdir(dir)).filter((name) => name.includes('.corrupt-'));
+      expect(preserved).toHaveLength(1);
+      expect(await fsReal.readFile(pathReal.join(dir, preserved[0]), 'utf8')).toBe(wrongVersion);
+      const stored = JSON.parse(await fsReal.readFile(filePath, 'utf8'));
+      expect(stored.version).toBe(1);
+      expect(Object.values(stored.subscriptionsBySession).flat()).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not preserve an empty subscriptions file; a later write just replaces it', async () => {
+    const { dir, filePath, runtime } = await makeRealRuntime();
+    await fsReal.writeFile(filePath, '', 'utf8');
+
+    await runtime.addOrUpdatePushSubscription('session-1', subscription);
+
+    expect((await fsReal.readdir(dir)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+    const stored = JSON.parse(await fsReal.readFile(filePath, 'utf8'));
+    expect(Object.values(stored.subscriptionsBySession).flat()).toHaveLength(1);
+  });
+
   it('keeps the persist queue usable after a preservation failure', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
