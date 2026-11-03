@@ -20,6 +20,14 @@ const DEFAULT_MAX_BUFFER = 4 * 1024 * 1024;
 const SKILL_MD_MAX_BYTES = DEFAULT_MAX_BUFFER;
 const SKILL_MD_TOO_LARGE_WARNING = 'SKILL.md is larger than the 4 MiB size limit; skipped';
 
+// Mirror of the web copy caps (packages/web/server/lib/skills-catalog/install.js):
+// a skill is a SKILL.md plus small supporting assets, so entries (files and
+// directories) and total bytes are bounded, and no single file may exceed the
+// same 1 MiB limit the loader enforces when it reads a supporting file.
+const SKILL_COPY_MAX_ENTRIES = 1_000;
+const SKILL_COPY_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+const SKILL_SUPPORTING_FILE_MAX_BYTES = 1024 * 1024;
+
 // Mirror of readSkillMdFile in the web scan: open once and read from the
 // handle so a symlink to a device or FIFO (stat size 0) cannot make the
 // read unbounded; a non-regular file throws so the caller falls back to
@@ -449,6 +457,22 @@ async function copyDirectoryNoSymlinks(srcDir: string, dstDir: string) {
     await fs.promises.mkdir(dirPath, { recursive: true });
   };
 
+  const copyState = { entries: 0, bytes: 0 };
+  const countEntry = (stat: fs.Stats) => {
+    copyState.entries += 1;
+    if (copyState.entries > SKILL_COPY_MAX_ENTRIES) {
+      throw new Error(`Skill directory is too large to install: more than ${SKILL_COPY_MAX_ENTRIES} entries`);
+    }
+    if (!stat.isFile()) return;
+    if (stat.size > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+      throw new Error(`Skill file is too large to install: ${stat.size} bytes exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`);
+    }
+    copyState.bytes += stat.size;
+    if (copyState.bytes > SKILL_COPY_MAX_TOTAL_BYTES) {
+      throw new Error(`Skill directory is too large to install: more than ${SKILL_COPY_MAX_TOTAL_BYTES} bytes`);
+    }
+  };
+
   const walk = async (currentSrc: string, currentDst: string) => {
     const entries = await fs.promises.readdir(currentSrc, { withFileTypes: true });
     for (const entry of entries) {
@@ -466,12 +490,14 @@ async function copyDirectoryNoSymlinks(srcDir: string, dstDir: string) {
       }
 
       if (stat.isDirectory()) {
+        countEntry(stat);
         await ensureDir(nextDst);
         await walk(nextSrc, nextDst);
         continue;
       }
 
       if (stat.isFile()) {
+        countEntry(stat);
         await ensureDir(path.dirname(nextDst));
         await fs.promises.copyFile(nextSrc, nextDst);
         try {
