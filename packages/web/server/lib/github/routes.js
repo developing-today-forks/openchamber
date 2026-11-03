@@ -27,6 +27,11 @@ const GITHUB_PR_CONTEXT_MAX_COUNT = GITHUB_PR_CONTEXT_PAGE_SIZE * GITHUB_PR_CONT
 const GITHUB_CHECK_RUN_PAGE_SIZE = 100;
 const GITHUB_CHECK_RUN_MAX_PAGES = 20;
 const GITHUB_CHECK_RUN_MAX_COUNT = GITHUB_CHECK_RUN_PAGE_SIZE * GITHUB_CHECK_RUN_MAX_PAGES;
+// Board-picker reads share the branches bound: named caps with one overflow
+// probe, so an over-cap collection fails loudly instead of reading short.
+const GITHUB_PICKER_PAGE_SIZE = 100;
+const GITHUB_PICKER_MAX_PAGES = 20;
+const GITHUB_PICKER_MAX_COUNT = GITHUB_PICKER_PAGE_SIZE * GITHUB_PICKER_MAX_PAGES;
 
 const githubAuthRoutePaths = (suffix) => [
   `/api/github${suffix}`,
@@ -2414,9 +2419,30 @@ export function registerGitHubRoutes(app, options = {}) {
     }
   });
 
+  // Every page of a small provider collection under the named picker cap.
+  // A full final page triggers one bounded overflow probe: an empty probe
+  // means the collection ends exactly at the cap, anything else is an
+  // explicit over-cap error, never a silent short list.
+  const readCappedPages = async (readPage, invalidMessage, limitMessage) => {
+    const items = [];
+    for (let page = 1; page <= GITHUB_PICKER_MAX_PAGES; page += 1) {
+      const payload = requireProviderArray((await readPage(page))?.data, invalidMessage);
+      if (payload.length === 0) break;
+      items.push(...payload);
+      if (payload.length < GITHUB_PICKER_PAGE_SIZE) break;
+      if (page === GITHUB_PICKER_MAX_PAGES) {
+        const probe = requireProviderArray((await readPage(GITHUB_PICKER_MAX_PAGES + 1))?.data, invalidMessage);
+        if (probe.length === 0) break;
+        throw new Error(limitMessage);
+      }
+    }
+    return items;
+  };
+
   // The repository's labels and the people who can be asked to review in it,
   // for the board's pickers. The repository must be in the bound project's
-  // network, as for the detail above; one page of 100 is what the pickers show.
+  // network, as for the detail above; collections larger than the named cap
+  // fail with an explicit over-cap error instead of reading short.
   const readRepositoryChoices = (suffix, read) => app.get(canonicalGitHubRoutePath(suffix), async (req, res) => {
     const directory = readQueryString(req, 'directory');
     const owner = readQueryString(req, 'owner');
@@ -2451,16 +2477,24 @@ export function registerGitHubRoutes(app, options = {}) {
   });
 
   readRepositoryChoices('/references/labels', async (octokit, repo) => {
-    const response = await octokit.rest.issues.listLabelsForRepo({ owner: repo.owner, repo: repo.repo, per_page: 100 });
-    return requireProviderArray(response?.data, 'GitHub returned an invalid label list').flatMap((label) => {
+    const items = await readCappedPages(
+      (page) => octokit.rest.issues.listLabelsForRepo({ owner: repo.owner, repo: repo.repo, per_page: GITHUB_PICKER_PAGE_SIZE, page }),
+      'GitHub returned an invalid label list',
+      `GitHub label list reached the ${GITHUB_PICKER_MAX_COUNT}-label safety limit and may be incomplete`,
+    );
+    return items.flatMap((label) => {
       if (!isProviderString(label?.name) || !label.name) return [];
       return [isProviderString(label.color) && label.color ? { name: label.name, color: label.color } : { name: label.name }];
     });
   });
 
   readRepositoryChoices('/references/reviewers', async (octokit, repo) => {
-    const response = await octokit.rest.issues.listAssignees({ owner: repo.owner, repo: repo.repo, per_page: 100 });
-    return requireProviderArray(response?.data, 'GitHub returned an invalid user list').flatMap((user) => {
+    const items = await readCappedPages(
+      (page) => octokit.rest.issues.listAssignees({ owner: repo.owner, repo: repo.repo, per_page: GITHUB_PICKER_PAGE_SIZE, page }),
+      'GitHub returned an invalid user list',
+      `GitHub reviewer list reached the ${GITHUB_PICKER_MAX_COUNT}-reviewer safety limit and may be incomplete`,
+    );
+    return items.flatMap((user) => {
       if (!isProviderString(user?.login) || !user.login) return [];
       return [isProviderString(user.avatar_url) && user.avatar_url
         ? { id: user.login, login: user.login, avatarUrl: user.avatar_url }

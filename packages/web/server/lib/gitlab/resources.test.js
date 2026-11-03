@@ -672,6 +672,33 @@ describe('GitLab resource service', () => {
     expect(result.ci).toBeNull();
   });
 
+  it('fails instead of returning capped board-picker collections as complete', async () => {
+    const labels = setup({ ProjectLabels: { all: list([{ name: 'bug', color: '#d73a4a' }], 2) } });
+    await expect(labels.service.listLabels('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more labels');
+    const members = setup({ ProjectMembers: { all: list([{ id: 7, username: 'ann', state: 'active' }], 2) } });
+    await expect(members.service.listReviewerCandidates('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more members');
+  });
+
+  it('reads multi-page board-picker collections under the shared collection bound', async () => {
+    const labels = Array.from({ length: 101 }, (_, index) => ({ name: `label-${index + 1}` }));
+    const members = Array.from({ length: 101 }, (_, index) => ({
+      id: index + 1, username: `user-${index + 1}`, state: 'active',
+    }));
+    const labelRead = vi.fn(async () => ({ data: labels, paginationInfo: { next: null } }));
+    const memberRead = vi.fn(async () => ({ data: members, paginationInfo: { next: null } }));
+    const { service } = setup({
+      ProjectLabels: { all: labelRead },
+      ProjectMembers: { all: memberRead },
+    });
+
+    await expect(service.listLabels('/repo', { owner: 'team', name: 'repo' })).resolves.toHaveLength(101);
+    await expect(service.listReviewerCandidates('/repo', { owner: 'team', name: 'repo' })).resolves.toHaveLength(101);
+    expect(labelRead).toHaveBeenCalledWith('2', { maxPages: 20, perPage: 100, showExpanded: true });
+    expect(memberRead).toHaveBeenCalledWith('2', {
+      includeInherited: true, maxPages: 20, perPage: 100, showExpanded: true,
+    });
+  });
+
   it('reads fork pipeline jobs from the pipeline project', async () => {
     const forkMR = { ...openMR, head_pipeline: { id: 9, status: 'running', project_id: 1 } };
     const { service, client } = setup({ MergeRequests: { ...setup().client.MergeRequests, show: vi.fn(async () => forkMR) } });
@@ -765,8 +792,8 @@ describe('GitLab comments and reviews', () => {
     const { service } = setup({
       MergeRequests: { ...setup().client.MergeRequests, edit: editMR, show: vi.fn(async () => ({ ...openMR, labels: ['bug'], reviewers: [{ id: 7, username: 'ann' }] })) },
       Issues: { ...setup().client.Issues, edit: editIssue },
-      ProjectLabels: { all: vi.fn(async () => [{ name: 'bug', color: '#d73a4a' }, { name: '' }]) },
-      ProjectMembers: { all: vi.fn(async () => [
+      ProjectLabels: { all: list([{ name: 'bug', color: '#d73a4a' }, { name: '' }]) },
+      ProjectMembers: { all: list([
         { id: 7, username: 'ann', avatar_url: `${origin}/a.png`, state: 'active' },
         { id: 8, username: 'gone', state: 'blocked' },
       ]) },
