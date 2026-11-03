@@ -7,11 +7,13 @@ import path from 'node:path';
 
 import {
   BUILT_IN_SKILL_LOCATION,
+  discoverSkills,
   getSkillSources,
   listSnippets,
   MD_FILE_MAX_BYTES,
   mergeDiscoveredSkills,
   parseMdFile,
+  SKILL_WALK_MAX_DIRS,
 } from './opencodeConfig';
 
 describe('VS Code skill discovery parity', () => {
@@ -52,6 +54,70 @@ describe('VS Code skill discovery parity', () => {
     expect(sources.md.fields).toEqual(['description', 'instructions']);
   });
 });
+describe('VS Code skill walk directory cap (#1357)', () => {
+  const withTempDir = (run) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-skill-walk-'));
+    try {
+      return run(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  const writeLeafSkills = (skillsRoot, leafCount) => {
+    for (let i = 0; i < leafCount; i += 1) {
+      const leaf = path.join(skillsRoot, `d${String(i).padStart(4, '0')}`);
+      fs.mkdirSync(leaf, { recursive: true });
+      fs.writeFileSync(
+        path.join(leaf, 'SKILL.md'),
+        `---\nname: cap-skill-${i}\n---\n\nbody\n`,
+        'utf8',
+      );
+    }
+  };
+
+  test('exports the same cap value as the web twin in shared.js', () => {
+    expect(SKILL_WALK_MAX_DIRS).toBe(5000);
+    const webSource = fs.readFileSync(
+      new URL('../../web/server/lib/opencode/shared.js', import.meta.url),
+      'utf8',
+    );
+    expect(webSource).toContain('SKILL_WALK_MAX_DIRS = 5000');
+  });
+
+  test('discovery stops at the directory cap and keeps the partial results', () => {
+    withTempDir((dir) => {
+      const skillsRoot = path.join(dir, '.claude', 'skills');
+      writeLeafSkills(skillsRoot, SKILL_WALK_MAX_DIRS + 10);
+
+      const discovered = discoverSkills(dir)
+        .filter((skill) => skill.path.startsWith(skillsRoot));
+
+      // The root plus SKILL_WALK_MAX_DIRS - 1 leaves are visited.
+      expect(discovered).toHaveLength(SKILL_WALK_MAX_DIRS - 1);
+    });
+  }, 60_000);
+
+  test('discovery is complete for a tree exactly at the directory cap', () => {
+    withTempDir((dir) => {
+      const skillsRoot = path.join(dir, '.claude', 'skills');
+      fs.mkdirSync(skillsRoot, { recursive: true });
+      // Empty leaves fill the walk to the cap; the one SKILL.md sits in a
+      // leaf, so it is found only if every leaf at the cap is visited.
+      for (let i = 0; i < SKILL_WALK_MAX_DIRS - 1; i += 1) {
+        fs.mkdirSync(path.join(skillsRoot, `d${String(i).padStart(4, '0')}`));
+      }
+      const leaf = path.join(skillsRoot, 'd0000');
+      fs.writeFileSync(path.join(leaf, 'SKILL.md'), '---\nname: cap-skill-at-bound\n---\n\nbody\n', 'utf8');
+
+      const discovered = discoverSkills(dir)
+        .filter((skill) => skill.path.startsWith(skillsRoot));
+
+      expect(discovered.map((skill) => skill.name)).toEqual(['cap-skill-at-bound']);
+    });
+  }, 60_000);
+});
+
 describe('VS Code parseMdFile size gate (#1157)', () => {
   const withTempDir = (run) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-md-cap-'));

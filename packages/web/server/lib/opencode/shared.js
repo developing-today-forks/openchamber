@@ -946,11 +946,19 @@ async function pathExists(target) {
 // At most this many file-system calls of one walk are in flight at once.
 const SKILL_WALK_CONCURRENCY = 8;
 
+// At most this many directories one walk visits per root, the root itself
+// included. A skills root is project-controlled, and a link inside it can
+// point at a tree with tens of thousands of directories; past the cap the
+// walk stops opening new directories and returns the SKILL.md paths found
+// so far. The VS Code twin in opencodeConfig.ts uses the same value.
+const SKILL_WALK_MAX_DIRS = 5000;
+
 // Async so a skills tree with tens of thousands of entries (a bundled `.venv`
 // or `node_modules`) does not hold the server's event loop for seconds.
-// Sibling directories are read in parallel, a few calls at a time, and their
-// results are joined in readdir order, so the order matches the old
-// synchronous depth-first walk exactly.
+// Directories are visited one at a time in depth-first readdir order, so the
+// order matches the old synchronous walk exactly and the directory cap below
+// is allocated deterministically: an over-cap tree always yields the same
+// partial result, never whichever subtree's readdir finished first.
 async function walkSkillMdFiles(rootDir) {
   if (!rootDir || !(await pathExists(rootDir))) return [];
 
@@ -972,7 +980,14 @@ async function walkSkillMdFiles(rootDir) {
   // back to one of its own ancestors is skipped instead of recursing forever.
   // Two links to the same target elsewhere in the tree are both walked, as the
   // top level always did.
+  let visitedDirs = 0;
   const walk = async (dir, ancestors) => {
+    // Counted on entry, in the walk's deterministic depth-first order, so
+    // the total never passes the cap and the same tree always allocates the
+    // cap to the same directories.
+    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return [];
+    visitedDirs += 1;
+
     let realDir;
     try {
       realDir = await limited(() => fs.promises.realpath(dir));
@@ -989,7 +1004,13 @@ async function walkSkillMdFiles(rootDir) {
     }
 
     const childAncestors = new Set(ancestors).add(realDir);
-    const found = await Promise.all(entries.map(async (entry) => {
+    // Entries are processed one at a time, in readdir order: recursing into
+    // sibling subtrees in parallel would let their readdir completions race
+    // for the shared directory cap, so an unchanged over-cap tree could
+    // return different partial results (and different duplicate-name
+    // winners) from one scan to the next.
+    const found = [];
+    for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       // Junctions report as links, not directories. A link whose target cannot be
       // stat'ed is skipped, the way an unreadable directory is, instead of failing
@@ -1002,13 +1023,16 @@ async function walkSkillMdFiles(rootDir) {
           isDirectoryEntry = target.isDirectory();
           isFileEntry = target.isFile();
         } catch {
-          return [];
+          continue;
         }
       }
-      if (isDirectoryEntry) return walk(fullPath, childAncestors);
-      return isFileEntry && entry.name === 'SKILL.md' ? [fullPath] : [];
-    }));
-    return found.flat();
+      if (isDirectoryEntry) {
+        found.push(...(await walk(fullPath, childAncestors)));
+      } else if (isFileEntry && entry.name === 'SKILL.md') {
+        found.push(fullPath);
+      }
+    }
+    return found;
   };
 
   return walk(rootDir, new Set());
@@ -1236,6 +1260,7 @@ export {
   resolvePromptFilePath,
   writePromptFile,
   walkSkillMdFiles,
+  SKILL_WALK_MAX_DIRS,
   addSkillFromMdFile,
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
