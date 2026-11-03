@@ -124,17 +124,18 @@ describe('managed tunnel config runtime', () => {
     await fsPromises.writeFile(filePath, corrupt);
     const validRaw = JSON.stringify({ version: 1, tunnels: [tunnel('b', 'b.example.com', 'token-b')] }, null, 2);
     // The other process lands its save in the window between this process
-    // validating the corrupt bytes and preserving them: the preservation
-    // candidate-name check is the last step before the re-read/rename.
+    // validating the corrupt bytes and preserving them: the primitive's
+    // preservation candidate-name check (an access call on the
+    // .corrupt- candidate) is the last step before the re-read/rename.
     let swapped = false;
     const racingFs = {
       ...fsPromises,
-      stat: async (...args) => {
+      access: async (...args) => {
         if (!swapped && String(args[0]).includes('.corrupt-')) {
           swapped = true;
           await fsPromises.writeFile(filePath, validRaw);
         }
-        return fsPromises.stat(...args);
+        return fsPromises.access(...args);
       },
     };
     const { runtime } = await makeRuntime({ dir, fsPromises: racingFs });
@@ -204,6 +205,141 @@ describe('managed tunnel config runtime', () => {
     expect(await runtime.readManagedRemoteTunnelConfigFromDisk()).toEqual({ version: 1, tunnels: [] });
     expect(fs.readdirSync(dir)).toEqual([]);
   });
+  it('treats an empty config file as missing: reads empty, preserves nothing', async () => {
+    const { dir, filePath, runtime } = await makeRuntime();
+    await fsPromises.writeFile(filePath, '');
+    expect(await runtime.readManagedRemoteTunnelConfigFromDisk()).toEqual({ version: 1, tunnels: [] });
+    expect(preservedFiles(dir)).toEqual([]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('');
+  });
+
+  it('migrates the legacy file when the managed file is empty', async () => {
+    const { filePath, legacyPath, runtime } = await makeRuntime();
+    await fsPromises.writeFile(filePath, '');
+    await fsPromises.writeFile(
+      legacyPath,
+      JSON.stringify({ tunnels: [tunnel('legacy', 'legacy.example.com', 'token-legacy')] }),
+    );
+    const config = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(config.tunnels.map((entry) => entry.id)).toEqual(['legacy']);
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).tunnels.map((entry) => entry.id)).toEqual(['legacy']);
+  });
+
+  it('migrates legacy tunnels on a read when the corrupt file vanishes before preservation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seeded = await makeRuntime();
+    await fsPromises.writeFile(
+      seeded.legacyPath,
+      JSON.stringify({ tunnels: [tunnel('legacy', 'legacy.example.com', 'token-legacy')] }),
+    );
+    const corrupt = '{"version":1,"tunnels":[{"id":"x"';
+    let reads = 0;
+    const vanishingFs = {
+      ...fsPromises,
+      readFile: async (...args) => {
+        if (String(args[0]).endsWith('cloudflare-managed-remote-tunnels.json')) {
+          reads += 1;
+          if (reads <= 2) return corrupt;
+          const error = new Error('simulated vanish');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return fsPromises.readFile(...args);
+      },
+    };
+    const { runtime } = await makeRuntime({ fsPromises: vanishingFs, dir: seeded.dir });
+    const config = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(config.tunnels.map((entry) => entry.id)).toEqual(['legacy']);
+  });
+
+  it('migrates legacy tunnels in the locked migration when the corrupt file vanishes before preservation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seeded = await makeRuntime();
+    await fsPromises.writeFile(
+      seeded.legacyPath,
+      JSON.stringify({ tunnels: [tunnel('legacy', 'legacy.example.com', 'token-legacy')] }),
+    );
+    const corrupt = '{"version":1,"tunnels":[{"id":"x"';
+    let reads = 0;
+    const vanishingFs = {
+      ...fsPromises,
+      readFile: async (...args) => {
+        if (String(args[0]).endsWith('cloudflare-managed-remote-tunnels.json')) {
+          reads += 1;
+          if (reads === 2) return corrupt;
+          const error = new Error('simulated vanish');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return fsPromises.readFile(...args);
+      },
+    };
+    const { runtime } = await makeRuntime({ fsPromises: vanishingFs, dir: seeded.dir });
+    const config = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(config.tunnels.map((entry) => entry.id)).toEqual(['legacy']);
+  });
+
+  it('upserts onto the migrated legacy config when the corrupt file vanishes before preservation', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seeded = await makeRuntime();
+    await fsPromises.writeFile(
+      seeded.legacyPath,
+      JSON.stringify({ tunnels: [tunnel('legacy', 'legacy.example.com', 'token-legacy')] }),
+    );
+    const corrupt = '{"version":1,"tunnels":[{"id":"x"';
+    let reads = 0;
+    const vanishingFs = {
+      ...fsPromises,
+      readFile: async (...args) => {
+        if (String(args[0]).endsWith('cloudflare-managed-remote-tunnels.json')) {
+          reads += 1;
+          if (reads === 1) return corrupt;
+          const error = new Error('simulated vanish');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return fsPromises.readFile(...args);
+      },
+    };
+    const { runtime } = await makeRuntime({ fsPromises: vanishingFs, dir: seeded.dir });
+    await runtime.upsertManagedRemoteTunnelToken({ id: 'new', name: 'Tunnel new', hostname: 'new.example.com', token: 'token-new' });
+    const written = JSON.parse(fs.readFileSync(seeded.filePath, 'utf8'));
+    expect(written.tunnels.map((entry) => entry.id)).toEqual(['legacy', 'new']);
+  });
+
+  it('refuses an upsert when preservation fails and the live file is gone', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const seeded = await makeRuntime();
+    const corrupt = '{"version":1,"tunnels":[{"id":"x"';
+    let reads = 0;
+    const failingFs = {
+      ...fsPromises,
+      readFile: async (...args) => {
+        if (String(args[0]).endsWith('cloudflare-managed-remote-tunnels.json')) {
+          reads += 1;
+          if (reads <= 2) return corrupt;
+          const error = new Error('simulated vanish');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return fsPromises.readFile(...args);
+      },
+      access: async (...args) => {
+        if (String(args[0]).includes('.corrupt-')) {
+          const error = new Error('simulated preserve failure');
+          error.code = 'EIO';
+          throw error;
+        }
+        return fsPromises.access(...args);
+      },
+    };
+    const { runtime } = await makeRuntime({ fsPromises: failingFs, dir: seeded.dir });
+    await expect(
+      runtime.upsertManagedRemoteTunnelToken({ id: 'new', name: 'Tunnel new', hostname: 'new.example.com', token: 'token-new' }),
+    ).rejects.toThrow('Refusing to overwrite');
+    expect(fs.existsSync(seeded.filePath)).toBe(false);
+  });
+
   it('refuses an update when the existing config cannot be read (non-ENOENT)', async () => {
     const seeded = await makeRuntime();
     await seeded.runtime.upsertManagedRemoteTunnelToken({ id: 'a', name: 'Tunnel a', hostname: 'a.example.com', token: 'token-a' });
