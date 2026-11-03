@@ -167,6 +167,15 @@ describe('shared upstream auth failure (#894)', () => {
     expect(result.error).toContain('OpenCode upstream authentication failed');
     expect(result.errorKind).toBe('opencode_upstream_auth');
   });
+  it('classifies the xAI result from its credential-read marker, not its text', async () => {
+    authState.readError = new Error('Authentication required');
+    const result = await fetchQuotaForProvider('xai');
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('OpenCode upstream authentication failed');
+    expect(result.errorKind).toBe('opencode_upstream_auth');
+    // The marker is an internal signal; it never reaches consumers.
+    expect(result.credentialReadFailure).toBeUndefined();
+  });
 
   it('answers one marked row when the credential-store read itself is rejected', async () => {
     authState.rowsError = new Error('Authentication required');
