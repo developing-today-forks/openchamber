@@ -112,6 +112,9 @@ const referenceDetailResultSchema = z.discriminatedUnion('connected', [
         }).optional(),
       })),
       commentTotal: z.number(),
+      labels: z.array(z.object({ name: z.string(), color: z.string().optional() })).optional(),
+      // How many labels the item has in total; `labels` holds at most six (#1427).
+      labelTotal: z.number().optional(),
       pull: z.object({
         reviewDecision: z.enum(['approved', 'changes_requested', 'review_required']).nullable(),
         // How many review requests the PR has in total; `reviewers` holds at most 30 (#1427).

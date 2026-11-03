@@ -184,6 +184,7 @@ describe('toReference', () => {
       updatedAt: '2026-09-30T10:00:00Z',
       author: { login: 'octo', avatarUrl: 'https://avatars/octo' },
       labels: [{ name: 'bug', color: 'd73a4a' }],
+      labelTotal: 1,
       commentCount: 4,
       sourceRepo: { owner: 'acme', repo: 'app', source: 'origin' },
       state: 'open',
@@ -245,6 +246,7 @@ describe('fetchReferenceDetail', () => {
     __typename: 'PullRequest',
     number: 9,
     state: 'OPEN',
+    labels: { totalCount: 1, nodes: [{ name: 'bug', color: 'd73a4a' }] },
     reviewDecision: 'CHANGES_REQUESTED',
     headCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { totalCount: 2, nodes: [
       { __typename: 'CheckRun', databaseId: 1, name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
@@ -302,6 +304,7 @@ describe('fetchReferenceDetail', () => {
     ]);
     expect(detail?.pull).toEqual({
       reviewDecision: 'changes_requested',
+      reviewRequestTotal: 1,
       reviewers: [{ id: 'hubot', login: 'hubot', avatarUrl: undefined }],
       checks: expect.objectContaining({ state: 'failure', total: 2, success: 1, failure: 1 }),
       additions: 12,

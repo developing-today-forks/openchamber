@@ -160,6 +160,7 @@ query ReferenceDetail($owner: String!, $repo: String!, $number: Int!) {
             }
           }
         }
+        labels(first: 6) { totalCount nodes { name color } }
         reviewRequests(first: 30) { totalCount nodes { requestedReviewer { __typename ... on User { login avatarUrl } } } }
         additions
         deletions
@@ -279,6 +280,10 @@ const detailSchema = z.object({
             }),
           })),
         }),
+        labels: z.object({
+          totalCount: z.number().int(),
+          nodes: z.array(z.object({ name: z.string(), color: z.string().nullable() }).nullable()),
+        }).nullable(),
         reviewRequests: z.object({
           totalCount: z.number().int(),
           nodes: z.array(z.object({
@@ -476,6 +481,12 @@ export async function fetchReferenceDetail({ octokit, owner, repo, number }) {
     number: item.number,
     comments,
     commentTotal: item.comments.totalCount,
+    labels: (item.labels?.nodes ?? [])
+      .filter((label) => label !== null)
+      .map((label) => ({ name: label.name, color: label.color ?? undefined })),
+    // The detail query returns at most six labels; the total says whether
+    // the returned list is the whole set (#1427).
+    labelTotal: item.labels?.totalCount ?? 0,
     pull: {
       reviewDecision: item.reviewDecision ? REVIEW_DECISIONS[item.reviewDecision] : null,
       // The query returns at most 30 requests; the total says whether the
