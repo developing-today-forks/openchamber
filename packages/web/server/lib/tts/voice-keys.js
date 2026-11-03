@@ -63,9 +63,10 @@ const readStoredKeys = () => {
 
 // The update path cannot treat a malformed file as an empty store the way
 // a read can: it rewrites the file from what it read, so the stored keys
-// would be erased for good. Preserve the malformed bytes to a .corrupt-
-// sibling first, and fail closed when the file cannot even be read — an
-// update that cannot see the current keys must not replace them. A
+// would be erased for good. Preserve the malformed bytes to the
+// primitive's preserved sibling first, and fail closed when the file
+// cannot even be read — an update that cannot see the current keys must
+// not replace them. A
 // 'replaced' preserve outcome means a valid file landed in the meantime:
 // read that instead of the preserved one (bounded — repeated replacement
 // is a race no update should chase).

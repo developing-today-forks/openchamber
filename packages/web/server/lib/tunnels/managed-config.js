@@ -273,7 +273,7 @@ export const createManagedTunnelConfigRuntime = (deps) => {
       // A non-ENOENT read failure (EIO, EACCES, ...) leaves the on-disk
       // state unknown: treating it as empty and writing the mutation over
       // it would silently discard every stored token, the same loss the
-      // corrupt-file branch below refuses. Read paths may degrade to
+      // unreadable-file branch below refuses. Read paths may degrade to
       // empty; the update path must not.
       throw new Error(
         `Refusing to overwrite the managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be read`,
