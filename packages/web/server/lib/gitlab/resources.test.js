@@ -679,6 +679,26 @@ describe('GitLab resource service', () => {
     await expect(members.service.listReviewerCandidates('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more members');
   });
 
+  it('reads multi-page board-picker collections under the shared collection bound', async () => {
+    const labels = Array.from({ length: 101 }, (_, index) => ({ name: `label-${index + 1}` }));
+    const members = Array.from({ length: 101 }, (_, index) => ({
+      id: index + 1, username: `user-${index + 1}`, state: 'active',
+    }));
+    const labelRead = vi.fn(async () => ({ data: labels, paginationInfo: { next: null } }));
+    const memberRead = vi.fn(async () => ({ data: members, paginationInfo: { next: null } }));
+    const { service } = setup({
+      ProjectLabels: { all: labelRead },
+      ProjectMembers: { all: memberRead },
+    });
+
+    await expect(service.listLabels('/repo', { owner: 'team', name: 'repo' })).resolves.toHaveLength(101);
+    await expect(service.listReviewerCandidates('/repo', { owner: 'team', name: 'repo' })).resolves.toHaveLength(101);
+    expect(labelRead).toHaveBeenCalledWith('2', { maxPages: 20, perPage: 100, showExpanded: true });
+    expect(memberRead).toHaveBeenCalledWith('2', {
+      includeInherited: true, maxPages: 20, perPage: 100, showExpanded: true,
+    });
+  });
+
   it('reads fork pipeline jobs from the pipeline project', async () => {
     const forkMR = { ...openMR, head_pipeline: { id: 9, status: 'running', project_id: 1 } };
     const { service, client } = setup({ MergeRequests: { ...setup().client.MergeRequests, show: vi.fn(async () => forkMR) } });
