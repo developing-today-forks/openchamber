@@ -124,6 +124,8 @@ fragment PullReference on PullRequest {
 const DETAIL_COMMENT_LIMIT = 50;
 // The newest commits, so the preview can show what each review answered.
 const DETAIL_COMMIT_LIMIT = 50;
+// The newest reviews; `totalCount` says how many there are.
+const DETAIL_REVIEW_LIMIT = 30;
 // The newest review threads, and the comments that open and answer each.
 const DETAIL_THREAD_LIMIT = 50;
 const DETAIL_THREAD_COMMENT_LIMIT = 50;
@@ -166,11 +168,13 @@ query ReferenceDetail($owner: String!, $repo: String!, $number: Int!) {
           totalCount
           nodes { commit { oid messageHeadline committedDate url author { name user { login avatarUrl } } } }
         }
-        reviews(last: 30) {
+        reviews(last: ${DETAIL_REVIEW_LIMIT}) {
+          totalCount
           nodes { author { login avatarUrl } body state createdAt url }
         }
         # Comments on lines come as the threads they open, replies included.
         reviewThreads(last: ${DETAIL_THREAD_LIMIT}) {
+          totalCount
           nodes {
             id
             isResolved
@@ -178,6 +182,7 @@ query ReferenceDetail($owner: String!, $repo: String!, $number: Int!) {
             viewerCanUnresolve
             viewerCanReply
             comments(first: ${DETAIL_THREAD_COMMENT_LIMIT}) {
+              totalCount
               nodes { author { login avatarUrl } body createdAt url path line originalLine }
             }
           }
@@ -296,6 +301,7 @@ const detailSchema = z.object({
           })),
         }),
         reviews: z.object({
+          totalCount: z.number().int(),
           nodes: z.array(z.object({
             author: userSchema,
             body: z.string(),
@@ -305,6 +311,7 @@ const detailSchema = z.object({
           })),
         }),
         reviewThreads: z.object({
+          totalCount: z.number().int(),
           nodes: z.array(z.object({
             id: z.string().min(1),
             isResolved: z.boolean(),
@@ -312,6 +319,7 @@ const detailSchema = z.object({
             viewerCanUnresolve: z.boolean(),
             viewerCanReply: z.boolean(),
             comments: z.object({
+              totalCount: z.number().int(),
               nodes: z.array(detailCommentSchema.extend({
                 path: z.string().nullable(),
                 line: z.number().int().nullable(),
@@ -447,6 +455,7 @@ export async function fetchReferenceDetail({ octokit, owner, repo, number }) {
       ...lineComment(first),
       thread: {
         id: thread.id,
+        commentTotal: thread.comments.totalCount,
         resolved: thread.isResolved,
         canResolve: thread.isResolved ? thread.viewerCanUnresolve : thread.viewerCanResolve,
         canReply: thread.viewerCanReply,
@@ -484,6 +493,11 @@ export async function fetchReferenceDetail({ octokit, owner, repo, number }) {
         url: commit.url,
       })),
       commitTotal: item.commits.totalCount,
+      // How many reviews and review threads the PR has in all: the query
+      // returns only the newest under each cap, so a total above the
+      // returned count is the only sign the preview is incomplete.
+      reviewTotal: item.reviews.totalCount,
+      threadTotal: item.reviewThreads.totalCount,
     },
   };
 }
