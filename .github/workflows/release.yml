@@ -56,6 +56,8 @@ jobs:
       actions: read
       contents: read
     uses: ./.github/workflows/require-main-gate.yml
+    # No timeout-minutes here: GitHub rejects it on reusable-workflow caller
+    # jobs and the whole workflow dies at startup with zero jobs (#1399).
     with:
       release_sha: ${{ github.sha }}
 
@@ -639,6 +641,9 @@ jobs:
       contents: write
     if: ${{ github.event.inputs.dry_run != 'true' }}
     uses: ./.github/workflows/mobile-release.yml
+    # No timeout-minutes here: GitHub rejects it on reusable-workflow caller
+    # jobs and the whole workflow dies at startup with zero jobs (#1399,
+    # recurrence of #118 - this is the same caller job #118 was filed over).
     with:
       version_name: ${{ needs.create-release.outputs.version }}
       build_number: ${{ github.run_number }}
