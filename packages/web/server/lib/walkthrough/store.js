@@ -219,6 +219,11 @@ export async function pruneMissingRepositories() {
     const full = path.join(POINTERS_DIR, name);
     let repoRoot = null;
     try {
+      // Honour the store's own size bound, as readJson does (#1482): an
+      // oversized pointer is skipped, never buffered whole or parsed, and
+      // never deleted on the basis of a file we refused to read.
+      const stat = await fsp.stat(full);
+      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
       const value = JSON.parse(await fsp.readFile(full, 'utf8'));
       repoRoot = value && typeof value.repoRoot === 'string' ? value.repoRoot : null;
     } catch {
