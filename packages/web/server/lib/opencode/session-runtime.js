@@ -1,3 +1,5 @@
+import { asNonEmptyString, isRecord } from '../shared/guards.js';
+
 const SESSION_COOLDOWN_DURATION_MS = 2000;
 const SESSION_STATE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SESSION_ATTENTION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -40,7 +42,22 @@ const extractSessionStatusUpdate = (payload) => {
 
 const readRequestId = (value) => (typeof value === 'string' && value.trim() ? value.trim() : '');
 
-export const createSessionRuntime = ({ writeSseEvent, getNotificationClients, broadcastEvent, getSessionModelProvider }) => {
+// Allowlist projection for a session's queue binding (observability
+// contract v1, #1473): only the four binding components can reach the
+// snapshot, each an explicit null when the source cannot verify it, and
+// a non-object source value means no known binding at all.
+const normalizeQueueBinding = (binding) => {
+  if (!isRecord(binding)) return null;
+  const numberOrNull = (value) => (Number.isFinite(value) ? value : null);
+  return {
+    taskId: numberOrNull(binding.taskId),
+    issueNumber: numberOrNull(binding.issueNumber),
+    queue: asNonEmptyString(binding.queue),
+    lane: asNonEmptyString(binding.lane),
+  };
+};
+
+export const createSessionRuntime = ({ writeSseEvent, getNotificationClients, broadcastEvent, getSessionModelProvider, getSessionQueueBinding }) => {
   const sessionActivityPhases = new Map();
   const sessionActivityCooldowns = new Map();
   const sessionStates = new Map();
@@ -379,7 +396,10 @@ export const createSessionRuntime = ({ writeSseEvent, getNotificationClients, br
   // External observability contract v1 (design #612, phase 1 - #524): the
   // per-session { type } phase is frozen; every other field is additive and
   // an unknown is an explicit null, never a fabricated value. toolInFlight
-  // has no in-process per-session source today, so it ships null.
+  // has no in-process per-session source today, so it ships null. queue is
+  // the session's queue binding from the source the launch side registered
+  // (the task ledger row bound to the session id, code#1656 step 3), or
+  // null when no binding is known for the session (#1473).
   const getSessionActivitySnapshot = () => {
     const sessions = {};
     for (const [sessionId, data] of sessionActivityPhases) {
@@ -392,6 +412,7 @@ export const createSessionRuntime = ({ writeSseEvent, getNotificationClients, br
           ? { modelID: modelProvider.modelID ?? null, providerID: modelProvider.providerID ?? null }
           : null,
         toolInFlight: null,
+        queue: normalizeQueueBinding(getSessionQueueBinding ? getSessionQueueBinding(sessionId) : null),
       };
     }
     return {
