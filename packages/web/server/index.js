@@ -643,11 +643,19 @@ const updateSessionMetadataWith = async (sessionID, decide, { directory = '' } =
 // this ref, filled in once the notifications runtime exists.
 const sessionModelProviderRef = { current: null };
 
+// The queue binding for a session lives in the repo-queue task ledger
+// (bound at launch by the claimant, code#1656 step 3); the launch-side
+// owner registers its lookup here once it exists in this process, and
+// until then the session-activity snapshot reports queue: null (no known
+// binding) rather than inferring one (#1473).
+const sessionQueueBindingRef = { current: null };
+
 const sessionRuntime = createSessionRuntime({
   writeSseEvent,
   getNotificationClients: () => uiNotificationClients,
   broadcastEvent: broadcastGlobalUiEvent,
   getSessionModelProvider: (sessionId) => sessionModelProviderRef.current?.(sessionId) ?? null,
+  getSessionQueueBinding: (sessionId) => sessionQueueBindingRef.current?.(sessionId) ?? null,
 });
 
 const getActiveSessionCount = () => sessionRuntime.getActiveSessionCount();

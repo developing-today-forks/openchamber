@@ -19,7 +19,8 @@ import { buildManagedServersResponse } from './managed-servers.js';
 import { createSessionRuntime } from './session-runtime.js';
 
 const ACTIVITY_ENVELOPE_KEYS = ['serverTime', 'sessions', 'version', 'watcherReady'];
-const SESSION_ENTRY_KEYS = ['lastActivityAt', 'model', 'status', 'toolInFlight', 'type'];
+const SESSION_ENTRY_KEYS = ['lastActivityAt', 'model', 'queue', 'status', 'toolInFlight', 'type'];
+const QUEUE_BINDING_KEYS = ['issueNumber', 'lane', 'queue', 'taskId'];
 const MODEL_KEYS = ['modelID', 'providerID'];
 const SERVERS_ENVELOPE_KEYS = ['serverTime', 'servers', 'version'];
 const SERVER_ENTRY_KEYS = ['directory', 'pid', 'port', 'sessionCount', 'startedAt', 'status', 'version'];
@@ -85,10 +86,17 @@ describe('observability contract v1 conformance (design #612, #614)', () => {
     }
   });
 
-  it('session-activity: session entries pin the five-key set and the observed model pair', () => {
+  it('session-activity: session entries pin the six-key set and the observed model pair', () => {
     const runtime = createRuntime({
       getSessionModelProvider: (sessionId) => (sessionId === 'session-1'
         ? { modelID: 'model-1', providerID: 'provider-1' }
+        : null),
+      // The extra sessionSecret key proves the binding is projected
+      // through the allowlist: it must never reach the response.
+      getSessionQueueBinding: (sessionId) => (sessionId === 'session-1'
+        ? {
+          taskId: 8495, issueNumber: 1473, queue: 'repo-health-openchamber-pilot', lane: 'openchamber-a', sessionSecret: 'must-not-project',
+        }
         : null),
     });
     try {
@@ -116,12 +124,20 @@ describe('observability contract v1 conformance (design #612, #614)', () => {
       // Pinned null today: no in-process source tracks a per-session
       // in-flight tool, and the contract forbids fabricating one.
       expect(withModel.toolInFlight).toBeNull();
+      // The bound session's queue binding projects exactly the four
+      // allowlisted components (#1473).
+      expect(Object.keys(withModel.queue).sort()).toEqual(QUEUE_BINDING_KEYS);
+      expect(withModel.queue).toEqual({
+        taskId: 8495, issueNumber: 1473, queue: 'repo-health-openchamber-pilot', lane: 'openchamber-a',
+      });
 
       // No observed assistant message yet: the whole model field is an
       // explicit null, never a configured or guessed pair.
       const withoutModel = snapshot.sessions['session-2'];
       expect(Object.keys(withoutModel).sort()).toEqual(SESSION_ENTRY_KEYS);
       expect(withoutModel.model).toBeNull();
+      // No binding source knows this session: queue is an explicit null.
+      expect(withoutModel.queue).toBeNull();
 
       expectNoSecretKeys(snapshot);
     } finally {
