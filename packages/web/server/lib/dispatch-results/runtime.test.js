@@ -352,6 +352,44 @@ describe('dispatch results runtime', () => {
     expect(runtime.pending()).toEqual([]);
   });
 
+  it('keeps a file of the wrong shape aside instead of overwriting it', async () => {
+    const dataDir = await makeDataDir();
+    await fs.writeFile(path.join(dataDir, 'dispatch-results.json'), JSON.stringify({ version: 1 }));
+    const { runtime } = await createRuntime({ dataDir });
+    await runtime.load();
+    const files = await fs.readdir(dataDir);
+    expect(files.some((name) => name.startsWith('dispatch-results.json.corrupt-'))).toBe(true);
+    expect(runtime.pending()).toEqual([]);
+  });
+
+  it('reads an empty file as nothing pending and persists over it', async () => {
+    const dataDir = await makeDataDir();
+    await fs.writeFile(path.join(dataDir, 'dispatch-results.json'), '');
+    const { runtime } = await createRuntime({ dataDir });
+    await runtime.load();
+    expect(runtime.pending()).toEqual([]);
+    await runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 });
+    const files = await fs.readdir(dataDir);
+    expect(files.some((name) => name.startsWith('dispatch-results.json.corrupt-'))).toBe(false);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries).toHaveLength(1);
+  });
+
+  it('refuses to treat the file as empty when preserving it fails', async () => {
+    const dataDir = await makeDataDir();
+    await fs.writeFile(path.join(dataDir, 'dispatch-results.json'), '{ not json');
+    const fsPromises = {
+      ...fs,
+      rename: async () => {
+        throw new Error('rename blocked');
+      },
+    };
+    const { runtime } = await createRuntime({ dataDir, fsPromises });
+    await expect(runtime.load()).rejects.toThrow('refusing to treat it as empty');
+    // The bytes are still live at the store path: nothing overwrote them.
+    expect(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8')).toBe('{ not json');
+  });
+
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');

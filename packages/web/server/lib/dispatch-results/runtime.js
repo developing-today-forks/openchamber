@@ -17,7 +17,12 @@
 import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
-import { renameWithRetry } from '../shared/atomic-rename.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFile,
+  readDurableJsonFile,
+  writeDurableJsonFile,
+} from '../shared/durable-json-store.js';
 import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
 import { createSessionActivityProbe } from '../opencode/session-activity.js';
@@ -100,8 +105,6 @@ const deletedEventSchema = z.object({
   type: z.literal('session.deleted'),
   properties: z.object({ sessionID: z.string().min(1) }),
 });
-
-const errorCodeSchema = z.object({ code: z.string() });
 
 const parse = (schema, value) => {
   const parsed = schema.safeParse(value);
@@ -211,6 +214,7 @@ export function createDispatchResultsRuntime({
   // Archive is OpenChamber's: an archived parent records the answer but is not woken.
   isSessionArchived = async () => false,
   fetchImpl = fetch,
+  fsPromises = fs.promises,
   now = Date.now,
   quietMs = QUIET_MS,
   retryDelayMs = retryDelay,
@@ -233,27 +237,43 @@ export function createDispatchResultsRuntime({
 
   // --- persistence ---------------------------------------------------------
 
+  // This store rides the shared durable-store primitive (#976, phase 2 —
+  // #978). The value judgement is the one this store always made: a JSON
+  // object carrying an entries array. Anything else on disk (unparseable
+  // bytes, another shape) is malformed, and malformed bytes are pending
+  // deliveries, not "nothing pending": the primitive preserves them aside
+  // under its collision-proof name before any write can replace them.
+  // Parse errors are never logged: they can quote the file.
+  const isDispatchResultsValue = (value) => isJsonObject(value) && Array.isArray(value.entries);
+  const durableOptions = () => ({ fs: fsPromises, validateValue: isDispatchResultsValue });
+
   const readFile = async () => {
-    let raw;
-    try {
-      raw = await fs.promises.readFile(filePath, 'utf8');
-    } catch (error) {
-      if (parse(errorCodeSchema, error)?.code === 'ENOENT') return [];
-      throw error;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // A read failure other than absence throws (the primitive's rule):
+      // a failed read must not pass for "nothing pending", because the
+      // next write would clobber the file; load() below keeps writes off
+      // until a load succeeds.
+      const result = await readDurableJsonFile(filePath, durableOptions());
+      if (result.state === 'missing') return [];
+      if (result.state === 'malformed') {
+        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+        if (preservation.outcome === 'failed') {
+          // Fail closed, like a failed read: writes stay off rather than
+          // overwrite bytes whose preservation just failed.
+          throw new Error('failed to preserve the unreadable dispatch-results file; refusing to treat it as empty');
+        }
+        // A valid replacement landed while the malformed bytes were
+        // being judged: read that file instead of starting over.
+        if (preservation.outcome === 'replaced') continue;
+        if (preservation.preserved) {
+          console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
+        }
+        return [];
+      }
+      // One unreadable entry is dropped alone; the rest still deliver.
+      return (parse(storedFileSchema, result.value)?.entries ?? []).map((entry) => parse(entrySchema, entry)).filter(Boolean);
     }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      // Malformed is a failure, not "nothing pending": keep the bytes and
-      // start over rather than overwrite them on the next write.
-      const backup = `${filePath}.corrupt-${now()}`;
-      await fs.promises.rename(filePath, backup).catch(() => undefined);
-      console.warn(`[dispatch-results] file was unreadable and moved to ${backup}: ${error?.message ?? error}`);
-      return [];
-    }
-    // One unreadable entry is dropped alone; the rest still deliver.
-    return (parse(storedFileSchema, parsed)?.entries ?? []).map((entry) => parse(entrySchema, entry)).filter(Boolean);
+    return [];
   };
 
   const load = () => {
@@ -276,10 +296,20 @@ export function createDispatchResultsRuntime({
     const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
     writePromise = writePromise
       .then(async () => {
-        await fs.promises.mkdir(dataDir, { recursive: true });
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
-        await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
-        await renameWithRetry((from, to) => fs.promises.rename(from, to), tmpPath, filePath);
+        // Preserve before replacing, fail-closed (the primitive's
+        // contract): the load gate has normally judged the file already,
+        // but the write refuses on its own rather than trust that — a
+        // file that turned malformed since the load keeps its bytes.
+        // The thrown error lands in the catch below, so the write is
+        // skipped and warned about, never forced through.
+        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+        if (preservation.outcome === 'failed') {
+          throw new Error('failed to preserve the unreadable dispatch-results file; refusing to overwrite it');
+        }
+        if (preservation.preserved) {
+          console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
+        }
+        await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
       })
       .catch((error) => {
         console.warn('[dispatch-results] failed to persist pending results:', error?.message ?? error);
