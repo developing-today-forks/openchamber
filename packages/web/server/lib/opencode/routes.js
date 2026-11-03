@@ -23,7 +23,7 @@ import {
   isProviderConnectRequest,
 } from '../enterprise-mode.js';
 import { discoverProviderModels } from './model-discovery.js';
-import { readDisabledProviders, setProviderDisabled } from './providers.js';
+import { readDisabledProviders, readProviderOffState, setProviderDisabled } from './providers.js';
 import { vcsInitRefusal, vcsInitRefusalBody } from '../git/repository-root.js';
 
 // The local /api/info probes share one named 3s deadline: a stalled
@@ -334,7 +334,18 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
   // out of its provider list, so Settings reads them here to offer them back.
   app.get('/api/provider/disabled', (_req, res) => {
     try {
-      return res.json({ providers: readDisabledProviders(null) });
+      // `providers` stays the toggleable `disabled_providers` list the UI
+      // mirrors today; `offProviders`/`offReasons` add the effective off
+      // set (#218): providers OpenCode refuses through a `provider.use`
+      // deny policy or an `enabled_providers` omission, with the binding
+      // reason per provider so the UI can render them read-only-off.
+      const offState = readProviderOffState(null);
+      return res.json({
+        providers: readDisabledProviders(null),
+        offProviders: offState.providers,
+        offReasons: offState.reasons,
+        enabledProviders: offState.enabledProviders,
+      });
     } catch (error) {
       console.error('Failed to read disabled providers:', error);
       return res.status(500).json({ error: 'Failed to read disabled providers' });
