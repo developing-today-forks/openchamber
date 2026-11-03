@@ -553,22 +553,25 @@ function deleteAgent(agentName, workingDirectory, scope) {
 
 /** Agent ids under one agents directory, nested ones as `group/name`. */
 function collectAgentIds(dir, prefix, ids, budget = { visitedDirs: 0 }) {
-  if (budget.visitedDirs >= AGENT_WALK_MAX_DIRS) return;
+  // Propagate truncation so ancestor walks also stop at the first unvisited directory.
+  if (budget.visitedDirs >= AGENT_WALK_MAX_DIRS) return true;
   budget.visitedDirs += 1;
 
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return;
+    return false;
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids, budget);
+      const truncated = collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids, budget);
+      if (truncated) return true;
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
       ids.add(`${prefix}${entry.name.slice(0, -3)}`);
     }
   }
+  return false;
 }
 
 /**

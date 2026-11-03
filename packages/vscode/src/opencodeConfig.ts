@@ -2165,23 +2165,26 @@ const collectAgentIds = (
   prefix: string,
   ids: Set<string>,
   budget: { visitedDirs: number } = { visitedDirs: 0 },
-): void => {
-  if (budget.visitedDirs >= AGENT_WALK_MAX_DIRS) return;
+): boolean => {
+  // Propagate truncation so ancestor walks also stop at the first unvisited directory.
+  if (budget.visitedDirs >= AGENT_WALK_MAX_DIRS) return true;
   budget.visitedDirs += 1;
 
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
-    return;
+    return false;
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids, budget);
+      const truncated = collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids, budget);
+      if (truncated) return true;
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
       ids.add(`${prefix}${entry.name.slice(0, -3)}`);
     }
   }
+  return false;
 };
 
 export type DisabledAgent = { name: string; scope: AgentScope | null; path: string | null; description?: string };

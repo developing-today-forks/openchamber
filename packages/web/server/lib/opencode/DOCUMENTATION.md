@@ -671,6 +671,18 @@ Only files in the v2 `plugins/` directory are editable through the plugins
 page; a package directory or a v1 `plugin/` file is listed as a package that
 OpenCode loads and OpenChamber does not touch.
 
+Disabled-agent listing and user-agent path indexing walk synchronously. Each
+agent-directory root has its own `AGENT_WALK_MAX_DIRS` budget of 5000 visits,
+including the root. A capped root returns agents found in visited directories;
+later roots still receive their own budget. The visit order within each root
+stays unchanged.
+
+#### Why agent walks return partial results at the visit cap
+
+The disabled-agent Settings request runs these walks synchronously, so the cap
+bounds work for each root without changing discovery in smaller layouts. The
+partial result retains agents from directories already visited.
+
 The plugins page reads editable files through `GET /api/config/plugins/file/:id`
 and reads the existing file before `PUT /api/config/plugins/file/:id`. Both
 paths stat the file before reading and reject files larger than 1 MiB
