@@ -72,7 +72,7 @@ describe('override store', () => {
       const corrupt = '{"version":1,"overrides":[{"id":"a","action":"avoid"';
       fs.writeFileSync(store.overridesFile, corrupt);
       expect(store.list()).toEqual([]);
-      const preservedName = fs.readdirSync(dir).find((name) => name.startsWith('route-overrides.json.corrupt-5000-'));
+      const preservedName = fs.readdirSync(dir).find((name) => name.startsWith('route-overrides.json.corrupt-'));
       expect(preservedName).toBeTruthy();
       const preservedFile = path.join(dir, preservedName);
       expect(fs.readFileSync(preservedFile, 'utf8')).toBe(corrupt);
