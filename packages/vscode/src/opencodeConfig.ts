@@ -73,6 +73,7 @@ const PROMPT_FILE_PATTERN = /^\{file:(.+)\}$/i;
 // re-exports the web server module so both runtimes write identical files.
 const USER_AGENT_DIRS = ['agents', 'agent', 'modes', 'mode'].map((name) => path.join(OPENCODE_CONFIG_DIR, name));
 const PROJECT_AGENT_DIR_NAMES = ['agents', 'agent', 'modes', 'mode'];
+const AGENT_WALK_MAX_DIRS = 5000;
 const USER_COMMAND_DIRS = [COMMAND_DIR, path.join(OPENCODE_CONFIG_DIR, 'command')];
 const PROJECT_COMMAND_DIR_NAMES = ['commands', 'command'];
 const SNIPPET_EXTENSION = '.md';
@@ -211,9 +212,13 @@ const buildUserAgentIndex = (cache: AgentLookupCache): void => {
   if (!fs.existsSync(AGENT_DIR)) return;
 
   const dirsToVisit: string[] = [AGENT_DIR];
-  while (dirsToVisit.length > 0) {
+  let visitedDirs = 0;
+  // The root counts toward the cap. Remaining stack entries are intentionally
+  // left unread after the cap, so this index can contain partial results.
+  while (dirsToVisit.length > 0 && visitedDirs < AGENT_WALK_MAX_DIRS) {
     const dir = dirsToVisit.pop();
     if (!dir) continue;
+    visitedDirs += 1;
 
     let entries: fs.Dirent[];
     try {
@@ -2155,7 +2160,15 @@ export const getAgentConfig = (agentName: string, workingDirectory?: string): {
 };
 
 /** Agent ids under one agents directory, nested ones as `group/name`. */
-const collectAgentIds = (dir: string, prefix: string, ids: Set<string>): void => {
+const collectAgentIds = (
+  dir: string,
+  prefix: string,
+  ids: Set<string>,
+  budget: { visitedDirs: number } = { visitedDirs: 0 },
+): void => {
+  if (budget.visitedDirs >= AGENT_WALK_MAX_DIRS) return;
+  budget.visitedDirs += 1;
+
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -2164,7 +2177,7 @@ const collectAgentIds = (dir: string, prefix: string, ids: Set<string>): void =>
   }
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids);
+      collectAgentIds(path.join(dir, entry.name), `${prefix}${entry.name}/`, ids, budget);
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
       ids.add(`${prefix}${entry.name.slice(0, -3)}`);
     }
