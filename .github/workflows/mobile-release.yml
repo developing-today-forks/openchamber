@@ -85,6 +85,7 @@ jobs:
       actions: read
       contents: read
     uses: ./.github/workflows/require-main-gate.yml
+    timeout-minutes: 5
     with:
       release_sha: ${{ github.sha }}
 
