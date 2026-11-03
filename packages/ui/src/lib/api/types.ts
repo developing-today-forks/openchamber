@@ -1317,7 +1317,6 @@ interface ListDirectoryOptions {
 
 interface FileReadOptions {
   allowOutsideWorkspace?: boolean;
-  outsideFileGrant?: string;
   optional?: boolean;
   directory?: string;
   fresh?: boolean;

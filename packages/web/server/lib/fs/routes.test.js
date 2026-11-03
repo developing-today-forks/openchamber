@@ -8,7 +8,7 @@ import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createCommandTimeoutMs, createExecOutputMaxBytes, createGitReadCacheTtlMs, createUploadMaxBytes, mintOutsideFileGrant, registerFsRoutes } from './routes.js';
+import { createCommandTimeoutMs, createExecOutputMaxBytes, createGitReadCacheTtlMs, createUploadMaxBytes, registerFsRoutes } from './routes.js';
 import { createProjectDirectoryRuntime } from '../opencode/project-directory-runtime.js';
 
 const createRouteRegistry = () => {
@@ -1115,46 +1115,17 @@ describe('fs read', () => {
     expect(fsPromises.readFile).toHaveBeenCalledWith('/etc/passwd', 'utf8');
   });
 
-  it('allows outside workspace reads with an exact-path grant', async () => {
+  it('ignores a legacy grant parameter when reading an outside file', async () => {
     const fsPromises = {
-      realpath: vi.fn(async (targetPath) => targetPath),
       stat: vi.fn(async () => ({ isFile: () => true, size: 6 })),
       readFile: vi.fn(async () => 'secret'),
     };
-    const grant = await mintOutsideFileGrant('/outside/plan.txt', {
-      fsPromises,
-      path: path.posix,
-      crypto: { randomUUID: () => 'grant-read' },
-    });
-    const handler = registerRead(fsPromises);
-
-    const res = await callRead(handler, {
-      path: '/outside/plan.txt',
-      allowOutsideWorkspace: 'true',
-      outsideFileGrant: grant.outsideFileGrant,
-    });
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toBe('secret');
-  });
-
-  it('ignores legacy grants when reading another outside file', async () => {
-    const fsPromises = {
-      realpath: vi.fn(async (targetPath) => targetPath),
-      stat: vi.fn(async () => ({ isFile: () => true, size: 6 })),
-      readFile: vi.fn(async () => 'secret'),
-    };
-    const grant = await mintOutsideFileGrant('/outside/a.txt', {
-      fsPromises,
-      path: path.posix,
-      crypto: { randomUUID: () => 'grant-mismatch' },
-    });
     const handler = registerRead(fsPromises);
 
     const res = await callRead(handler, {
       path: '/outside/b.txt',
       allowOutsideWorkspace: 'true',
-      outsideFileGrant: grant.outsideFileGrant,
+      outsideFileGrant: 'legacy-token',
     });
 
     expect(res.statusCode).toBe(200);

@@ -233,6 +233,9 @@
     "openInAppId": {
       "scope": "instance"
     },
+    "scheduledTasksMaxRunDurationMs": {
+      "scope": "instance"
+    },
     "dictationEnabled": {
       "scope": "profile"
     },

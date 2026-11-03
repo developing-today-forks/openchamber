@@ -112,13 +112,11 @@ describe('session image assets', () => {
       path: path.join(fixture.directory, 'workspace.png'),
     });
     for (const [index, source] of [[1, outsideSource], [2, outsidePath]]) {
-      expect(response.body.results[index]).toEqual(expect.objectContaining({
+      expect(response.body.results[index]).toEqual({
         source,
         status: 'ready',
         path: canonicalOutsidePath,
-        outsideFileGrant: expect.any(String),
-        expiresAt: expect.any(Number),
-      }));
+      });
     }
   });
 
