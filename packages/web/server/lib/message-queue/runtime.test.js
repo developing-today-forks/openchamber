@@ -93,7 +93,7 @@ const createOpenCode = () => {
   return { state, fetchImpl };
 };
 
-const createRuntime = ({ dataDir = makeDataDir(), openCode = createOpenCode(), knowledge = null, retryDelayMs, resolveAutoSelection, now, beforeScheduledTaskSend, onScheduledTaskResult, persistSessionGoal } = {}) => {
+const createRuntime = ({ dataDir = makeDataDir(), openCode = createOpenCode(), knowledge = null, retryDelayMs, resolveAutoSelection, now, beforeScheduledTaskSend, onScheduledTaskResult, persistSessionGoal, fsPromises } = {}) => {
   let eventHandler = () => {};
   let statusHandler = () => {};
   const broadcasts = [];
@@ -118,6 +118,7 @@ const createRuntime = ({ dataDir = makeDataDir(), openCode = createOpenCode(), k
   if (retryDelayMs) options.retryDelayMs = retryDelayMs;
   if (resolveAutoSelection) options.resolveAutoSelection = resolveAutoSelection;
   if (now) options.now = now;
+  if (fsPromises) options.fsPromises = fsPromises;
   if (persistSessionGoal) options.persistSessionGoal = persistSessionGoal;
   const runtime = createMessageQueueRuntime(options);
   return {
@@ -775,6 +776,43 @@ describe('message queue runtime', () => {
     await runtime.load();
     expect(runtime.snapshot().sessions).toEqual([]);
     expect(fs.readdirSync(dataDir).some((name) => name.startsWith('message-queue.json.corrupt-'))).toBe(true);
+  });
+
+  it('keeps a queue file of the wrong shape aside instead of overwriting it', async () => {
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.join(dataDir, 'message-queue.json'), JSON.stringify([1, 2, 3]));
+    const { runtime } = createRuntime({ dataDir });
+    await runtime.load();
+    expect(runtime.snapshot().sessions).toEqual([]);
+    expect(fs.readdirSync(dataDir).some((name) => name.startsWith('message-queue.json.corrupt-'))).toBe(true);
+  });
+
+  it('reads an empty queue file as an empty queue and persists over it', async () => {
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.join(dataDir, 'message-queue.json'), '');
+    const { runtime } = createRuntime({ dataDir });
+    runtime.start();
+    await runtime.enqueue(SESSION, DIRECTORY, item({ content: 'after empty', text: 'after empty' }));
+    await runtime.flush();
+    runtime.stop();
+    expect(fs.readdirSync(dataDir).some((name) => name.startsWith('message-queue.json.corrupt-'))).toBe(false);
+    const stored = JSON.parse(fs.readFileSync(path.join(dataDir, 'message-queue.json'), 'utf8'));
+    expect(stored.sessions[SESSION].items).toHaveLength(1);
+  });
+
+  it('refuses to treat the queue file as empty when preserving it fails', async () => {
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.join(dataDir, 'message-queue.json'), '{ not json');
+    const fsPromises = {
+      ...fs.promises,
+      rename: async () => {
+        throw new Error('rename blocked');
+      },
+    };
+    const { runtime } = createRuntime({ dataDir, fsPromises });
+    await expect(runtime.load()).rejects.toThrow('refusing to treat it as empty');
+    // The bytes are still live at the store path: nothing overwrote them.
+    expect(fs.readFileSync(path.join(dataDir, 'message-queue.json'), 'utf8')).toBe('{ not json');
   });
 
   it('refuses to remove or take the item currently being sent', async () => {
