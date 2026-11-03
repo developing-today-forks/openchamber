@@ -100,6 +100,13 @@ describe('dedupeCheckRuns controls (both sides timestamped)', () => {
     expect(dedupeCheckRuns([newer, older])).toEqual([newer]);
   });
 
+  test('a later-started re-run wins even when its id is smaller', () => {
+    const previous = completedFailure(1000, '2026-09-30T10:00:00Z');
+    const rerun = completedSuccess(999, '2026-09-30T10:05:00Z');
+    expect(dedupeCheckRuns([previous, rerun])).toEqual([rerun]);
+    expect(dedupeCheckRuns([rerun, previous])).toEqual([rerun]);
+  });
+
   test('equal timestamps still break ties by larger id', () => {
     const first = completedFailure(100, '2026-09-30T10:00:00Z');
     const second = completedSuccess(101, '2026-09-30T10:00:00Z');
