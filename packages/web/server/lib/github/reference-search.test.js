@@ -14,7 +14,7 @@ const common = (number, repository = { name: 'app', owner: { login: 'acme' } }) 
   updatedAt: '2026-09-30T10:00:00Z',
   body: 'Steps to reproduce',
   author: { login: 'octo', avatarUrl: 'https://avatars/octo' },
-  labels: { nodes: [{ name: 'bug', color: 'd73a4a' }, null] },
+  labels: { totalCount: 1, nodes: [{ name: 'bug', color: 'd73a4a' }, null] },
   comments: { totalCount: 4 },
   repository,
 });
@@ -250,7 +250,7 @@ describe('fetchReferenceDetail', () => {
       { __typename: 'CheckRun', databaseId: 1, name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
       { __typename: 'CheckRun', databaseId: 2, name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
     ] } } } }] },
-    reviewRequests: { nodes: [
+    reviewRequests: { totalCount: 1, nodes: [
       { requestedReviewer: { __typename: 'User', login: 'hubot', avatarUrl: null } },
       { requestedReviewer: { __typename: 'Team' } },
       { requestedReviewer: null },
@@ -347,6 +347,21 @@ describe('fetchReferenceDetail', () => {
       replies: [{ author: null, body: 'done', createdAt: '2026-10-01T10:00:00Z', url: 'c2', path: 'src/a.ts', line: 3, review: 'commented' }],
     });
     expect(detail?.comments.some((comment) => comment.url === 'c2')).toBe(false);
+  });
+
+  it('surfaces label and review-request totals above the returned nodes (#1427)', async () => {
+    const item = pull();
+    // The list query returns at most six labels, the detail query at most
+    // 30 review requests; the totals are what the host reports.
+    item.labels.totalCount = 9;
+    item.reviewRequests.totalCount = 42;
+
+    const detail = await fetchReferenceDetail({ octokit: graphqlReturning(item), owner: 'acme', repo: 'app', number: 9 });
+
+    expect(detail?.labelTotal).toBe(9);
+    expect(detail?.labels).toEqual([{ name: 'bug', color: 'd73a4a' }]);
+    expect(detail?.pull?.reviewRequestTotal).toBe(42);
+    expect(detail?.pull?.reviewers).toEqual([{ id: 'hubot', login: 'hubot', avatarUrl: undefined }]);
   });
 
   it('surfaces review, thread and thread-comment totals above the returned counts (#1419)', async () => {
