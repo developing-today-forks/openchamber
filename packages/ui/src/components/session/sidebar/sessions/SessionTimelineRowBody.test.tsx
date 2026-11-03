@@ -76,15 +76,16 @@ test('hidden row elements hide without moving the row', async () => {
     titleClassName=""
     branchLabel="main"
     statusDot={<span data-testid="status">live</span>}
-    pinnedMarker={null}
+    pinnedMarker={<span>pin</span>}
     timeSlot="1m"
-    directoryIndicator={null}
+    directoryIndicator={<span>dir</span>}
     prBadge={<span>badge</span>}
     zombieIndicator={null}
     badges={null}
+    doneHint={<span>done</span>}
     providerId="anthropic"
     hideMetaOnHoverClass=""
-    elements={{ showBranch: false, showPrBadge: false, showProviderLogo: false, showProjectIcon: false, showGoal: false, showTime: false }}
+    elements={{ showBranch: false, showPrBadge: false, showProviderLogo: false, showProjectIcon: false, showGoal: false, showTime: false, showPinnedMarker: false, showDoneHint: false, showDirectoryIndicator: false }}
   />));
   const body = document.querySelector('.flex-col');
   expect(body?.textContent).toContain(title);
@@ -92,6 +93,9 @@ test('hidden row elements hide without moving the row', async () => {
   expect(body?.textContent).not.toContain('main');
   expect(body?.textContent).not.toContain('1m');
   expect(body?.textContent).not.toContain('badge');
+  expect(body?.textContent).not.toContain('pin');
+  expect(body?.textContent).not.toContain('done');
+  expect(body?.textContent).not.toContain('dir');
   // The branch line still renders, so the row keeps its neighbour's height.
   expect(body?.children).toHaveLength(2);
 });

@@ -45,7 +45,7 @@ export const SessionRowDisplaySettings: React.FC = () => {
 
   const elementRow = (
     key: keyof SessionRowElements,
-    labelKey: 'settings.openchamber.visual.field.rowBranch' | 'settings.openchamber.visual.field.rowPrBadge' | 'settings.openchamber.visual.field.rowProviderLogo' | 'settings.openchamber.visual.field.rowProjectIcon' | 'settings.openchamber.visual.field.rowGoal' | 'settings.openchamber.visual.field.rowTime',
+    labelKey: 'settings.openchamber.visual.field.rowBranch' | 'settings.openchamber.visual.field.rowPrBadge' | 'settings.openchamber.visual.field.rowProviderLogo' | 'settings.openchamber.visual.field.rowProjectIcon' | 'settings.openchamber.visual.field.rowGoal' | 'settings.openchamber.visual.field.rowTime' | 'settings.openchamber.visual.field.rowPinnedMarker' | 'settings.openchamber.visual.field.rowDoneHint' | 'settings.openchamber.visual.field.rowDirectoryIndicator',
     settingsItem: string,
   ) => (
     <SettingsCheckboxRow
@@ -86,6 +86,9 @@ export const SessionRowDisplaySettings: React.FC = () => {
         {elementRow('showProjectIcon', 'settings.openchamber.visual.field.rowProjectIcon', 'appearance.sidebar-rows-project-icon')}
         {elementRow('showGoal', 'settings.openchamber.visual.field.rowGoal', 'appearance.sidebar-rows-goal')}
         {elementRow('showTime', 'settings.openchamber.visual.field.rowTime', 'appearance.sidebar-rows-time')}
+        {elementRow('showPinnedMarker', 'settings.openchamber.visual.field.rowPinnedMarker', 'appearance.sidebar-rows-pin-marker')}
+        {elementRow('showDoneHint', 'settings.openchamber.visual.field.rowDoneHint', 'appearance.sidebar-rows-done-hint')}
+        {elementRow('showDirectoryIndicator', 'settings.openchamber.visual.field.rowDirectoryIndicator', 'appearance.sidebar-rows-directory')}
       </SettingsControlGroup>
     </SettingsSection>
   );

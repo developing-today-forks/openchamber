@@ -33,6 +33,12 @@ export type SessionRowElements = {
   showProjectIcon: boolean;
   showGoal: boolean;
   showTime: boolean;
+  /** The pin glyph on a pinned row. */
+  showPinnedMarker: boolean;
+  /** Jev's "looks done" check next to the time. */
+  showDoneHint: boolean;
+  /** The directory action indicator on rows whose session has a directory. */
+  showDirectoryIndicator: boolean;
 };
 
 /** Which row lines the Tree zones take, and which optional elements rows show. */
@@ -45,6 +51,9 @@ export const DEFAULT_SESSION_ROW_ELEMENTS: SessionRowElements = Object.freeze({
   showProjectIcon: true,
   showGoal: true,
   showTime: true,
+  showPinnedMarker: true,
+  showDoneHint: true,
+  showDirectoryIndicator: true,
 });
 
 const DEFAULT_SESSION_ROW_DISPLAY: SessionRowDisplay = Object.freeze({
@@ -66,6 +75,9 @@ export const sessionRowDisplaySchema = z.object({
   showProjectIcon: z.boolean().optional().catch(undefined),
   showGoal: z.boolean().optional().catch(undefined),
   showTime: z.boolean().optional().catch(undefined),
+  showPinnedMarker: z.boolean().optional().catch(undefined),
+  showDoneHint: z.boolean().optional().catch(undefined),
+  showDirectoryIndicator: z.boolean().optional().catch(undefined),
 }).transform((stored): SessionRowDisplay => ({
   zoneLines: stored.zoneLines ?? DEFAULT_SESSION_ROW_DISPLAY.zoneLines,
   showBranch: stored.showBranch ?? DEFAULT_SESSION_ROW_DISPLAY.showBranch,
@@ -74,6 +86,9 @@ export const sessionRowDisplaySchema = z.object({
   showProjectIcon: stored.showProjectIcon ?? DEFAULT_SESSION_ROW_DISPLAY.showProjectIcon,
   showGoal: stored.showGoal ?? DEFAULT_SESSION_ROW_DISPLAY.showGoal,
   showTime: stored.showTime ?? DEFAULT_SESSION_ROW_DISPLAY.showTime,
+  showPinnedMarker: stored.showPinnedMarker ?? DEFAULT_SESSION_ROW_DISPLAY.showPinnedMarker,
+  showDoneHint: stored.showDoneHint ?? DEFAULT_SESSION_ROW_DISPLAY.showDoneHint,
+  showDirectoryIndicator: stored.showDirectoryIndicator ?? DEFAULT_SESSION_ROW_DISPLAY.showDirectoryIndicator,
 }));
 
 type SessionDisplayStore = {
