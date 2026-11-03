@@ -671,6 +671,67 @@ describe('GitHub account routes', () => {
     expect(response.body.error).toContain('pull request file');
   });
 
+  it('merges every page of standalone issue comments instead of truncating at the first 100 (#1383)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = [];
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      if (url.pathname === '/repos/team/project/issues/5/comments') {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const per = Number(url.searchParams.get('per_page') ?? 100);
+        requestedPages.push(page);
+        const start = (page - 1) * per;
+        const items = [];
+        for (let i = start; i < Math.min(start + per, 130); i += 1) {
+          items.push({ id: 1000 + i, html_url: `https://github.com/team/project/issues/5#issuecomment-${i}`, body: `comment ${i}`, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', user });
+        }
+        return Response.json(items);
+      }
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/issues/comments')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(200);
+
+    expect(response.body.comments).toHaveLength(130);
+    expect(response.body.comments[0].id).toBe(1000);
+    expect(response.body.comments[129].id).toBe(1129);
+    expect(requestedPages).toEqual([1, 2]);
+  });
+
+  it('fails standalone issue comments explicitly when the list crosses the pagination safety limit (#1383)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    let commentRequests = 0;
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      if (url.pathname === '/repos/team/project/issues/5/comments') {
+        commentRequests += 1;
+        // Every page is full, including the probe past the cap.
+        return Response.json(Array.from({ length: 100 }, (_, i) => ({
+          id: 1000 + i, html_url: 'https://github.com/team/project/issues/5#issuecomment-x', body: 'comment', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', user,
+        })));
+      }
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/issues/comments')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(500);
+
+    expect(response.body.error).toContain('safety limit');
+    expect(response.body.error).toContain('issue comment');
+    expect(commentRequests).toBe(21);
+  });
+
   it.each(['10junk', '2.9', '1e3'])('rejects malformed canonical pull context number %s', async (number) => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
     const fetch = vi.fn();
