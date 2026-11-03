@@ -24,6 +24,9 @@ const GITHUB_BRANCH_MAX_COUNT = GITHUB_BRANCH_PAGE_SIZE * GITHUB_BRANCH_MAX_PAGE
 const GITHUB_PR_CONTEXT_PAGE_SIZE = 100;
 const GITHUB_PR_CONTEXT_MAX_PAGES = 20;
 const GITHUB_PR_CONTEXT_MAX_COUNT = GITHUB_PR_CONTEXT_PAGE_SIZE * GITHUB_PR_CONTEXT_MAX_PAGES;
+const GITHUB_CHECK_RUN_PAGE_SIZE = 100;
+const GITHUB_CHECK_RUN_MAX_PAGES = 20;
+const GITHUB_CHECK_RUN_MAX_COUNT = GITHUB_CHECK_RUN_PAGE_SIZE * GITHUB_CHECK_RUN_MAX_PAGES;
 
 const githubAuthRoutePaths = (suffix) => [
   `/api/github${suffix}`,
@@ -138,6 +141,43 @@ async function readPullContextCollection(label, invalidMessage, fetchPage) {
         return items;
       }
       throw new Error(`GitHub ${label} list reached the ${GITHUB_PR_CONTEXT_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return items;
+}
+
+// Reads one { total_count, items } collection (check runs for a ref, jobs
+// for a workflow run) page by page under the same named-cap discipline as
+// readPullContextCollection (#1405): paginate to a short page, probe one
+// page past the cap, and error when the probe is non-empty, so a partial
+// list is never summarised as complete. total_count from the first page is
+// honoured two ways: reading stops as soon as it is covered, and a short
+// page that still leaves runs unread is an explicit error, not an ending.
+async function readTotalCountCollection(label, extract, fetchPage) {
+  const items = [];
+  let totalCount = null;
+  for (let page = 1; page <= GITHUB_CHECK_RUN_MAX_PAGES; page += 1) {
+    const data = (await fetchPage(page))?.data;
+    const payload = extract(data);
+    if (page === 1 && Number.isSafeInteger(data?.total_count) && data.total_count >= 0) {
+      totalCount = data.total_count;
+    }
+    items.push(...payload);
+    if (totalCount !== null && items.length >= totalCount) {
+      return items;
+    }
+    if (payload.length < GITHUB_CHECK_RUN_PAGE_SIZE) {
+      if (totalCount !== null && items.length < totalCount) {
+        throw new Error(`GitHub ${label} list ended after ${items.length} of ${totalCount} entries and may be incomplete`);
+      }
+      return items;
+    }
+    if (page === GITHUB_CHECK_RUN_MAX_PAGES) {
+      const probe = extract((await fetchPage(page + 1))?.data);
+      if (probe.length === 0 && (totalCount === null || items.length >= totalCount)) {
+        return items;
+      }
+      throw new Error(`GitHub ${label} list reached the ${GITHUB_CHECK_RUN_MAX_COUNT} safety limit and may be incomplete`);
     }
   }
   return items;
@@ -1842,13 +1882,17 @@ export function registerGitHubRoutes(app, options = {}) {
       const sha = prData.head?.sha;
       if (sha && !isHistorical) {
         try {
-          const runs = await octokit.rest.checks.listForRef({
-            owner: searchRepo.owner,
-            repo: searchRepo.repo,
-            ref: sha,
-            per_page: 100,
-          });
-          const checkRuns = dedupeCheckRuns(requireGitHubCheckRuns(runs?.data?.check_runs));
+          const checkRuns = dedupeCheckRuns(await readTotalCountCollection(
+            'check run',
+            (data) => requireGitHubCheckRuns(data?.check_runs),
+            (page) => octokit.rest.checks.listForRef({
+              owner: searchRepo.owner,
+              repo: searchRepo.repo,
+              ref: sha,
+              per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+              page,
+            }),
+          ));
           if (checkRuns.length > 0) {
             checks = summarizeCheckRuns(checkRuns);
           }
@@ -3188,8 +3232,17 @@ export function registerGitHubRoutes(app, options = {}) {
       const sha = prData.head?.sha;
       if (sha) {
         try {
-          const runs = await octokit.rest.checks.listForRef({ owner: repo.owner, repo: repo.repo, ref: sha, per_page: 100 });
-          const checkRuns = dedupeCheckRuns(requireGitHubCheckRuns(runs?.data?.check_runs));
+          const checkRuns = dedupeCheckRuns(await readTotalCountCollection(
+            'check run',
+            (data) => requireGitHubCheckRuns(data?.check_runs),
+            (page) => octokit.rest.checks.listForRef({
+              owner: repo.owner,
+              repo: repo.repo,
+              ref: sha,
+              per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+              page,
+            }),
+          ));
           if (checkRuns.length > 0) {
             const parsedJobs = new Map();
             const parsedAnnotations = new Map();
@@ -3216,13 +3269,17 @@ export function registerGitHubRoutes(app, options = {}) {
 
               for (const runId of runIds) {
                 try {
-                  const jobsResp = await octokit.rest.actions.listJobsForWorkflowRun({
-                    owner: repo.owner,
-                    repo: repo.repo,
-                    run_id: runId,
-                    per_page: 100,
-                  });
-                  const jobs = requireGitHubWorkflowJobs(jobsResp?.data?.jobs);
+                  const jobs = await readTotalCountCollection(
+                    'workflow job',
+                    (data) => requireGitHubWorkflowJobs(data?.jobs),
+                    (page) => octokit.rest.actions.listJobsForWorkflowRun({
+                      owner: repo.owner,
+                      repo: repo.repo,
+                      run_id: runId,
+                      per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+                      page,
+                    }),
+                  );
                   parsedJobs.set(runId, jobs);
                 } catch {
                   parsedJobs.set(runId, []);

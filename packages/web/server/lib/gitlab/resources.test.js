@@ -29,7 +29,7 @@ function setup(overrides = {}, options = {}) {
       allDiffs: list([{ old_path: 'a.ts', new_path: 'a.ts', diff: '@@' }]),
     },
     MergeRequestNotes: { all: list([{ id: 4, body: 'Looks good', author: { id: 3, username: 'sam' } }]) },
-    Jobs: { all: vi.fn(async () => [{ id: 8, name: 'test', status: 'running' }]) },
+    Jobs: { all: list([{ id: 8, name: 'test', status: 'running' }]) },
     Issues: {
       all: list([{ iid: 3, title: 'Bug', web_url: `${origin}/me/repo/-/issues/3`, state: 'opened' }]),
       show: vi.fn(async () => ({ iid: 3, title: 'Bug', web_url: `${origin}/me/repo/-/issues/3`, state: 'opened' })),
@@ -664,6 +664,12 @@ describe('GitLab resource service', () => {
     await expect(service.changeRequestContext('/repo', 5, { includeDiff: true })).rejects.toThrow('more changed files');
     const branches = setup({ Branches: { all: list([{ name: 'main' }], 21) } });
     await expect(branches.service.projectBranches('/repo', { owner: 'team', name: 'repo' })).rejects.toThrow('more branches');
+  });
+
+  it('returns null CI instead of page-1 jobs when a pipeline has more jobs than OpenChamber reads (#1405)', async () => {
+    const { service } = setup({ Jobs: { all: list([{ id: 8, name: 'test', status: 'running' }], 2) } });
+    const result = await service.changeRequestContext('/repo', 5, { includeCIDetails: true });
+    expect(result.ci).toBeNull();
   });
 
   it('reads fork pipeline jobs from the pipeline project', async () => {
