@@ -8,6 +8,12 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-agent-wal
 const xdgConfigHome = path.join(root, 'xdg');
 process.env.XDG_CONFIG_HOME = xdgConfigHome;
 process.env.OPENCODE_CONFIG = '';
+// opencodeConfigPaths gives OPENCODE_CONFIG_DIR precedence over
+// XDG_CONFIG_HOME, so an exported one would send the module under test to
+// a different config directory than the scratch tree below. Clear it
+// before the module loads and restore it afterwards.
+const previousOpenCodeConfigDir = process.env.OPENCODE_CONFIG_DIR;
+delete process.env.OPENCODE_CONFIG_DIR;
 
 let configModule: Promise<typeof import('./opencodeConfig')> | undefined;
 const loadConfig = () => (configModule ??= import('./opencodeConfig'));
@@ -48,6 +54,8 @@ describe('VS Code agent directory walk limits', () => {
     fs.rmSync(root, { recursive: true, force: true });
     delete process.env.XDG_CONFIG_HOME;
     delete process.env.OPENCODE_CONFIG;
+    if (previousOpenCodeConfigDir === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+    else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDir;
   });
 
   test('keeps in-cap agents and skips directories beyond the cap', async () => {
