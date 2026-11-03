@@ -2,14 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const copilotAuth = vi.hoisted(() => ({ enterpriseUrl: null }));
 
-vi.mock('../../opencode/auth.js', () => ({
-  readOpenCodeCredentials: async () => ({
-    'github-copilot': {
-      access: 'test-token',
-      ...(copilotAuth.enterpriseUrl ? { enterpriseUrl: copilotAuth.enterpriseUrl } : undefined),
-    },
-  }),
-}));
+const readAuth = async () => ({
+  'github-copilot': {
+    access: 'test-token',
+    ...(copilotAuth.enterpriseUrl ? { enterpriseUrl: copilotAuth.enterpriseUrl } : undefined),
+  },
+});
 
 import { fetchQuota, fetchQuotaAddon } from './copilot.js';
 
@@ -40,7 +38,7 @@ describe('GitHub Copilot quota provider', () => {
   ])('exposes only premium interactions for the %s', async (_name, fetchProviderQuota) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse()));
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(Object.keys(result.usage.windows)).toEqual(['premium_interactions']);
@@ -72,7 +70,7 @@ describe('GitHub Copilot quota provider', () => {
       },
     })));
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows.premium_interactions.usedPercent).toBeCloseTo(34.87);
@@ -90,7 +88,7 @@ describe('GitHub Copilot quota provider', () => {
       },
     })));
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows.premium_interactions.valueLabel).toBe('34.7 / 100 used');
@@ -104,7 +102,7 @@ describe('GitHub Copilot quota provider', () => {
     const fetchMock = vi.fn().mockResolvedValue(mockResponse());
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledWith(
@@ -118,7 +116,7 @@ describe('GitHub Copilot quota provider', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Invalid GitHub Copilot Enterprise URL');
@@ -136,7 +134,7 @@ describe('GitHub Copilot quota provider', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Invalid GitHub Copilot Enterprise URL');
@@ -154,7 +152,7 @@ describe('GitHub Copilot quota provider', () => {
       },
     })));
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows.premium_interactions.usedPercent).toBeNull();
@@ -172,7 +170,7 @@ describe('GitHub Copilot quota provider', () => {
       },
     })));
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows.premium_interactions.usedPercent).toBeCloseTo(24.5);
@@ -188,7 +186,7 @@ describe('GitHub Copilot request deadline', () => {
     const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchProviderQuota();
+    const result = await fetchProviderQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);

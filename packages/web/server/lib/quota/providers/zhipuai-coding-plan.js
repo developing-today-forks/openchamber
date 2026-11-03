@@ -107,8 +107,8 @@ export const isConfigured = (auth) => {
   return Boolean(getApiKey(auth));
 };
 
-export const fetchQuota = async () => {
-  const apiKey = getApiKey(await readOpenCodeCredentials());
+export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const apiKey = getApiKey(await readAuth());
 
   if (!apiKey) {
     return buildResult({

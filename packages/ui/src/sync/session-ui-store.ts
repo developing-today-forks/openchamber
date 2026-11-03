@@ -143,11 +143,13 @@ export function expandSlashCommandGoalObjective(content: string, commands: GoalC
  * session already runs on the desired selection. Sending them on every turn
  * would make OpenCode record a switch (and two round trips) each time.
  */
+export type SendSelection = { model?: ModelRef; agent?: string }
+
 export function resolveSendSelection(
   sessionId: string,
   directory: string | undefined,
   desired: { providerID: string; modelID: string; variant?: string | null; agent?: string },
-): { model?: ModelRef; agent?: string } {
+): SendSelection {
   const sessions = getDirectoryState(directory)?.session ?? getAllSyncSessions()
   const session = sessions.find((candidate) => candidate.id === sessionId)
   // Compared in wire form: an explicit `Default` (null) switches the session
@@ -367,6 +369,20 @@ function revertedUserMessageIndex(
 
 type NewSessionDraftTarget = "chat" | "project"
 
+/**
+ * A patch over the draft target: every field is one the draft itself carries,
+ * plus the project id callers pin alongside (kept on the draft object by the
+ * spread in the implementation).
+ */
+export type NewSessionDraftTargetOverride = Partial<NewSessionDraftState> & { projectId?: string | null }
+
+/** The fields a finished worktree request resolves back into the draft. */
+export type PendingDraftWorktreeResolution = {
+  projectId?: string | null
+  bootstrapPendingDirectory?: string | null
+  preserveDirectoryOverride?: boolean
+}
+
 export type NewSessionDraftState = {
   draftId: number
   open: boolean
@@ -441,8 +457,8 @@ export type SessionUIState = {
   initializeNewOpenChamberSession: (sessionId: string, agents: unknown[]) => void
   /** `cwd` is where the session runs inside the checkout; it defaults to the worktree root. */
   setWorktreeMetadata: (sessionId: string, metadata: WorktreeMetadata | null, cwd?: string) => void
-  overrideNewSessionDraftTarget: (options: Record<string, unknown>) => void
-  resolvePendingDraftWorktreeTarget: (requestId: string, directory: string | null, options?: Record<string, unknown>) => void
+  overrideNewSessionDraftTarget: (options: NewSessionDraftTargetOverride) => void
+  resolvePendingDraftWorktreeTarget: (requestId: string, directory: string | null, options?: PendingDraftWorktreeResolution) => void
   setDraftBootstrapPendingDirectory: (directory: string | null) => void
   setPendingDraftWorktreeRequest: (requestId: string | null) => void
   getWorktreeMetadata: (sessionId: string) => WorktreeMetadata | undefined
@@ -589,10 +605,12 @@ const getAuthoritativeSessionDirectory = (sessionId: string): string | null => {
  * hardest source to observe and the one that survives reloads, so a report that
  * cannot show it cannot rule it out.
  */
-export const getRememberedSessionDirectory = (sessionId: string): {
+type RememberedSessionDirectory = {
   runtime: string | null
   persisted: string | null
-} => {
+}
+
+export const getRememberedSessionDirectory = (sessionId: string): RememberedSessionDirectory => {
   const key = runtimeMemoryKey()
   const runtimeMemory = runtimeSessionMemory.get(key)
   const persisted = readLastActiveSession(key)
@@ -1773,11 +1791,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return {
         newSessionDraft: {
           ...s.newSessionDraft,
-          selectedProjectId: (options as Record<string, unknown> | undefined)?.projectId as string ?? s.newSessionDraft.selectedProjectId ?? null,
+          selectedProjectId: options?.projectId ?? s.newSessionDraft.selectedProjectId ?? null,
           directoryOverride: normalizePath(directory),
           pendingWorktreeRequestId: null,
-          bootstrapPendingDirectory: normalizePath((options as Record<string, unknown> | undefined)?.bootstrapPendingDirectory as string ?? s.newSessionDraft.bootstrapPendingDirectory ?? null),
-          preserveDirectoryOverride: ((options as Record<string, unknown> | undefined)?.preserveDirectoryOverride ?? true) as boolean,
+          bootstrapPendingDirectory: normalizePath(options?.bootstrapPendingDirectory ?? s.newSessionDraft.bootstrapPendingDirectory ?? null),
+          preserveDirectoryOverride: options?.preserveDirectoryOverride ?? true,
         },
       }
     }),
