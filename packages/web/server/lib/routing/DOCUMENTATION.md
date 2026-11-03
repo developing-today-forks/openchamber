@@ -365,6 +365,15 @@ and how close a target's plan looks to its quota window. Several sessions on
 one target lose their prompt cache together when its plan runs out; the panel
 makes that visible so the user can spread them.
 
+Staggered rotation (#295) automates that spreading: `pool-rotation.js` is the
+planner — given the pool-health shape and the sessions on each target, it
+answers at most one move per pool per pace window (target projecting to ≥70%
+of its plan's quota window with ≥2 sessions on it; subagents first, then the
+primary idle longest; destination a sibling target on a different plan and
+not near its own limit; sessions on Auto never move). It only plans: the
+session-row source, the applier that switches a session's model, the pace and
+history state, and the Settings switch are the following stages.
+
 - `model-routes.js` validates a pool before Settings saves it, key by key
   against OpenCode's `Config.ModelRoute` schema, `schedules` included: a
   schedule carries an optional `id`, `targets` patterns and `note`, a required
