@@ -21,7 +21,7 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { opencodeClient } from '@/lib/opencode/client';
 import { loadIntegrationCatalog, peekIntegrationCatalog, type IntegrationCatalog } from '@/lib/opencode/integration-catalog';
-import { loadDisabledProviders, peekDisabledProviders, setProviderDisabled as setProviderDisabledRequest } from '@/lib/disabledProviders';
+import { loadDisabledProviders, peekDisabledProviders, peekProviderOffState, setProviderDisabled as setProviderDisabledRequest, type ProviderOffState } from '@/lib/disabledProviders';
 import { requiresProviderAuth } from './providerAvailability';
 import { listConnectableProviders } from './connectableProviders';
 import { ProviderConnectPicker } from './ProviderConnectPicker';
@@ -152,16 +152,20 @@ export const ProvidersPage: React.FC = () => {
   const integrations = catalog?.integrations ?? null;
   // Null until read, and where the runtime has no OpenChamber server (VS Code).
   const [disabledProviders, setDisabledProviders] = React.useState<string[] | null>(() => peekDisabledProviders());
+  // The effective off reasons (#218): providers off by policy or by omission
+  // from enabled_providers render read-only-off; the toggle cannot change them.
+  const [offReasons, setOffReasons] = React.useState<Readonly<ProviderOffState['offReasons']> | null>(() => peekProviderOffState()?.offReasons ?? null);
   React.useEffect(() => {
     let active = true;
     loadDisabledProviders()
-      .then((list) => { if (active) setDisabledProviders(list); })
+      .then((list) => { if (active) { setDisabledProviders(list); setOffReasons(peekProviderOffState()?.offReasons ?? null); } })
       .catch((error) => { console.warn('[providers] could not read disabled providers:', error); });
     return () => { active = false; };
   }, []);
   const handleProviderDisabled = React.useCallback(async (providerId: string, disabled: boolean) => {
     try {
       setDisabledProviders(await setProviderDisabledRequest(providerId, disabled));
+      setOffReasons(peekProviderOffState()?.offReasons ?? null);
       if (disabled) setSelectedProvider('');
       toast.success(disabled
         ? t('settings.providers.disabled.toast.disabled', { provider: providerId })
@@ -698,6 +702,7 @@ export const ProvidersPage: React.FC = () => {
         onConnect={() => setSelectedProvider(ADD_PROVIDER_ID)}
         onOpenClassification={() => setSelectedProvider(CLASSIFICATION_PAGE_ID)}
         disabledProviders={disabledProviders}
+        offReasons={offReasons}
         onEnableProvider={(providerId) => void handleProviderDisabled(providerId, false)}
       />
     );
@@ -826,17 +831,27 @@ export const ProvidersPage: React.FC = () => {
                 {t('settings.providers.page.actions.edit')}
               </Button>
             ) : null}
-            {disabledProviders !== null ? (
-              <Button
-                variant="outline"
-                size="xs"
-                className="!font-normal"
-                title={t('settings.providers.disabled.disableHint')}
-                onClick={() => void handleProviderDisabled(selectedProvider.id, true)}
-              >
-                {t('settings.providers.disabled.disable')}
-              </Button>
-            ) : null}
+            {(() => {
+              const selectedOffReason = offReasons?.[selectedProvider.id];
+              if (selectedOffReason === 'policy' || selectedOffReason === 'allowlist') {
+                return (
+                  <span className="typography-meta text-muted-foreground" title={t(selectedOffReason === 'policy' ? 'settings.providers.disabled.offByPolicy' : 'settings.providers.disabled.offByAllowlist')}>
+                    {t(selectedOffReason === 'policy' ? 'settings.providers.disabled.offByPolicyShort' : 'settings.providers.disabled.offByAllowlistShort')}
+                  </span>
+                );
+              }
+              return disabledProviders !== null ? (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="!font-normal"
+                  title={t('settings.providers.disabled.disableHint')}
+                  onClick={() => void handleProviderDisabled(selectedProvider.id, true)}
+                >
+                  {t('settings.providers.disabled.disable')}
+                </Button>
+              ) : null;
+            })()}
             {enterpriseLocked ? null : (
             <Button
               variant="outline"

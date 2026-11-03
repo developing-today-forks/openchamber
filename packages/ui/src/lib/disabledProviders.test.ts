@@ -16,7 +16,9 @@ mock.module('@/lib/runtime-fetch', () => ({
 
 const {
   loadDisabledProviders,
+  loadProviderOffState,
   peekDisabledProviders,
+  peekProviderOffState,
   rememberDisabledProviders,
   setProviderDisabled,
 } = await import('./disabledProviders');
@@ -77,5 +79,61 @@ describe('disabledProviders read/write ordering (#659)', () => {
 
     await expect(loadDisabledProviders()).rejects.toThrow('Could not read disabled providers (500)');
     expect(peekDisabledProviders()).toEqual(['copilot']);
+  });
+});
+
+interface OffStatePayload {
+  providers: string[];
+  offProviders: string[];
+  offReasons: { [providerId: string]: 'disabled' | 'policy' | 'allowlist' };
+}
+
+const offStateResponse = (payload: OffStatePayload) => new Response(JSON.stringify(payload), {
+  headers: { 'Content-Type': 'application/json' },
+});
+
+describe('provider off state (#218)', () => {
+  test('a full payload carries policy and allowlist reasons through the read', async () => {
+    getImpl = async () => offStateResponse({
+      providers: ['alpha'],
+      offProviders: ['alpha', 'beta', 'gamma'],
+      offReasons: { alpha: 'disabled', beta: 'policy', gamma: 'allowlist' },
+    });
+    putImpl = null;
+
+    expect(await loadProviderOffState()).toEqual({
+      offProviders: ['alpha', 'beta', 'gamma'],
+      offReasons: { alpha: 'disabled', beta: 'policy', gamma: 'allowlist' },
+    });
+    expect(peekProviderOffState()).toEqual({
+      offProviders: ['alpha', 'beta', 'gamma'],
+      offReasons: { alpha: 'disabled', beta: 'policy', gamma: 'allowlist' },
+    });
+    expect(peekDisabledProviders()).toEqual(['alpha']);
+  });
+
+  test('a legacy payload without off fields reports every off provider as toggleable', async () => {
+    getImpl = async () => providersResponse(['legacy']);
+    putImpl = null;
+
+    expect(await loadProviderOffState()).toEqual({
+      offProviders: ['legacy'],
+      offReasons: { legacy: 'disabled' },
+    });
+  });
+
+  test('a toggle write keeps binding reasons the toggle cannot change', async () => {
+    getImpl = async () => offStateResponse({
+      providers: ['alpha'],
+      offProviders: ['alpha', 'beta', 'gamma'],
+      offReasons: { alpha: 'disabled', beta: 'policy', gamma: 'allowlist' },
+    });
+    putImpl = async () => providersResponse([]);
+    await loadProviderOffState();
+
+    expect(await setProviderDisabled('alpha', false)).toEqual([]);
+    const offState = peekProviderOffState();
+    expect(offState?.offReasons).toEqual({ beta: 'policy', gamma: 'allowlist' });
+    expect([...(offState?.offProviders ?? [])].sort()).toEqual(['beta', 'gamma']);
   });
 });

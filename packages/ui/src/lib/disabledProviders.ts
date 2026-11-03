@@ -6,17 +6,64 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 const disabledProvidersSchema = z.object({ providers: z.array(z.string()) });
 const errorSchema = z.object({ error: z.string().min(1) });
 
+/** Why a provider is effectively off (#218): the toggleable list, or a source Settings cannot change. */
+export type ProviderOffReason = 'disabled' | 'policy' | 'allowlist';
+
+/** The effective off state: every provider OpenCode refuses, with its binding reason. */
+export interface ProviderOffState {
+  offProviders: string[];
+  offReasons: Record<string, ProviderOffReason>;
+}
+
+const providerOffStateSchema = z.object({
+  providers: z.array(z.string()),
+  offProviders: z.array(z.string()).optional(),
+  offReasons: z.record(z.string(), z.enum(['disabled', 'policy', 'allowlist'])).optional(),
+});
+
+/**
+ * Derives the effective off state from a read payload. Older servers answer
+ * only `{ providers }`: then the toggleable list is the whole off set.
+ */
+const offStateFromPayload = (payload: z.infer<typeof providerOffStateSchema>): ProviderOffState => {
+  if (!payload.offProviders || !payload.offReasons) {
+    return {
+      offProviders: [...payload.providers],
+      offReasons: Object.fromEntries(payload.providers.map((id) => [id, 'disabled' as const])),
+    };
+  }
+  return { offProviders: [...payload.offProviders], offReasons: { ...payload.offReasons } };
+};
+
+/**
+ * Recomputes the off state after a toggle write, which answers only the new
+ * toggleable list. A provider the toggle cannot affect keeps its previous
+ * binding reason; a provider newly on the list reports 'disabled' unless a
+ * policy already bound it (server precedence: policy over disabled).
+ */
+const offStateAfterToggle = (providers: string[], previous: ProviderOffState | null): ProviderOffState => {
+  const offReasons: Record<string, ProviderOffReason> = {};
+  for (const [id, reason] of Object.entries(previous?.offReasons ?? {})) {
+    if (reason !== 'disabled') offReasons[id] = reason;
+  }
+  for (const id of providers) {
+    if (offReasons[id] !== 'policy') offReasons[id] = 'disabled';
+  }
+  return { offProviders: Object.keys(offReasons), offReasons };
+};
+
 /**
  * Providers turned off in the user's OpenCode config (`disabled_providers`).
  * OpenCode leaves them out of its provider list entirely, so this is the only
  * way Settings can show them again. Null where the runtime has no OpenChamber
  * server to ask (VS Code): the feature is not offered there.
  */
-const fetchDisabledProviders = async (): Promise<string[] | null> => {
+const fetchDisabledProviders = async (): Promise<{ providers: string[]; offState: ProviderOffState } | null> => {
   const response = await runtimeFetch('/api/provider/disabled');
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Could not read disabled providers (${response.status})`);
-  return disabledProvidersSchema.parse(await response.json()).providers;
+  const payload = providerOffStateSchema.parse(await response.json());
+  return { providers: payload.providers, offState: offStateFromPayload(payload) };
 };
 
 // The last list read from the current runtime, kept so every part of the app
@@ -26,7 +73,7 @@ const fetchDisabledProviders = async (): Promise<string[] | null> => {
 // was read from; after a runtime switch it is ignored until a read from the
 // new runtime lands. A `null` list is a read answer too: the runtime has no
 // OpenChamber server, so there is nothing to filter with.
-let snapshot: { runtimeKey: string; providers: string[] | null } | null = null;
+let snapshot: { runtimeKey: string; providers: string[] | null; offState: ProviderOffState | null } | null = null;
 let inFlight: { runtimeKey: string; promise: Promise<string[] | null> } | null = null;
 let latestRead = 0;
 
@@ -34,13 +81,22 @@ let latestRead = 0;
 export const peekDisabledProviders = (): string[] | null =>
   snapshot?.runtimeKey === getRuntimeKey() ? snapshot.providers : null;
 
+/** The last effective off state read from the current runtime, or `null` when there is none. */
+export const peekProviderOffState = (): ProviderOffState | null =>
+  snapshot?.runtimeKey === getRuntimeKey() ? snapshot.offState : null;
+
 /** Keeps a list the caller just read or wrote, so later reads reuse it. */
 export const rememberDisabledProviders = (providers: string[] | null): void => {
   // A write is newer than every read already in flight: advancing the read
   // generation is what stops such a read from writing its pre-write list
   // back over this one when it lands.
   latestRead += 1;
-  snapshot = { runtimeKey: getRuntimeKey(), providers };
+  const previous = snapshot?.runtimeKey === getRuntimeKey() ? snapshot.offState : null;
+  snapshot = {
+    runtimeKey: getRuntimeKey(),
+    providers,
+    offState: providers === null ? null : offStateAfterToggle(providers, previous),
+  };
 };
 
 /**
@@ -53,9 +109,10 @@ export const rememberDisabledProviders = (providers: string[] | null): void => {
 export const loadDisabledProviders = async (): Promise<string[] | null> => {
   const runtimeKey = getRuntimeKey();
   const read = ++latestRead;
-  const providers = await fetchDisabledProviders();
+  const fetched = await fetchDisabledProviders();
+  const providers = fetched?.providers ?? null;
   if (read === latestRead && runtimeKey === getRuntimeKey()) {
-    snapshot = { runtimeKey, providers };
+    snapshot = { runtimeKey, providers, offState: fetched?.offState ?? null };
     return providers;
   }
   // Superseded while in flight - by a newer read, a provider toggle, or a
@@ -63,6 +120,16 @@ export const loadDisabledProviders = async (): Promise<string[] | null> => {
   // snapshot for the current runtime instead, so no caller filters a
   // catalog with the pre-toggle list.
   return peekDisabledProviders();
+};
+
+/**
+ * Reads the effective off state again (through the same generation guard as
+ * the list read) and keeps it. Answers `null` where the runtime has no
+ * OpenChamber server to ask.
+ */
+export const loadProviderOffState = async (): Promise<ProviderOffState | null> => {
+  await loadDisabledProviders();
+  return peekProviderOffState();
 };
 
 /**
