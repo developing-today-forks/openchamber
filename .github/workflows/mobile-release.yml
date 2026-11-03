@@ -79,10 +79,22 @@ env:
   ANDROID_PROJECT_DIR: packages/mobile/android
 
 jobs:
+  require-main-gate:
+    name: Require successful main gate
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/require-main-gate.yml
+    with:
+      release_sha: ${{ github.sha }}
+
   resolve-version:
+    needs: require-main-gate
     timeout-minutes: 10
     name: Resolve mobile version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version_name: ${{ steps.version.outputs.version_name }}
       build_number: ${{ steps.version.outputs.build_number }}
