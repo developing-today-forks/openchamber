@@ -487,6 +487,35 @@ describe('Linear issue list/get', () => {
       createdAt: '2026-08-24T10:00:00.000Z',
       user: { name: 'Ada', displayName: null, avatarUrl: 'https://linear.app/avatar/ada.png' },
     }]);
+    expect(result.issue?.commentsMore).toBe(false);
+  });
+
+  it('asks for comments pageInfo and reports commentsMore past one page', async () => {
+    const seen = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      seen.push(body.query);
+      return jsonResponse({
+        data: {
+          issue: {
+            ...issueNode,
+            description: 'Users cannot sign in.',
+            comments: {
+              nodes: [{ id: 'comment-50', body: 'Oldest shown', createdAt: null, user: null }],
+              pageInfo: { hasNextPage: true },
+            },
+          },
+        },
+      });
+    }));
+
+    const result = await getLinearIssue('ENG-12');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('query GetLinearIssue');
+    expect(seen[0]).toContain('comments(first: 50)');
+    expect(seen[0]).toContain('pageInfo { hasNextPage }');
+    expect(result.issue?.comments).toHaveLength(1);
+    expect(result.issue?.commentsMore).toBe(true);
   });
 
   it('reads the parent and how many sub-issues a listed issue has finished', async () => {
@@ -623,6 +652,29 @@ describe('Linear issue list/get', () => {
       'Canceled',
       'Duplicate',
     ]);
+    expect(result.statesMore).toBe(false);
+  });
+
+  it('reports statesMore when the workflow states run past one page', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      expect(body.query).toContain('query TeamWorkflowStates');
+      expect(body.query).toContain('pageInfo { hasNextPage }');
+      return jsonResponse({
+        data: {
+          team: {
+            states: {
+              nodes: [{ id: 'state-todo', name: 'Todo', type: 'unstarted', position: 0 }],
+              pageInfo: { hasNextPage: true },
+            },
+          },
+        },
+      });
+    }));
+
+    const result = await listLinearIssueStates('team-eng');
+    expect(result.states).toHaveLength(1);
+    expect(result.statesMore).toBe(true);
   });
 
   it('rejects workflow states without a team id', async () => {
@@ -636,6 +688,8 @@ describe('Linear issue list/get', () => {
     vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
       const body = JSON.parse(options.body);
       expect(body.query).toContain('mutation IssueUpdate');
+      expect(body.query).toContain('comments(first: 50)');
+      expect(body.query).toContain('pageInfo { hasNextPage }');
       expect(body.variables).toEqual({
         id: 'issue-uuid-1',
         input: { stateId: 'state-done' },
@@ -659,6 +713,7 @@ describe('Linear issue list/get', () => {
     const result = await updateLinearIssue({ id: 'issue-uuid-1', stateId: 'state-done' });
     expect(result.connected).toBe(true);
     expect(result.issue?.state).toEqual({ id: 'state-done', name: 'Done', type: 'completed' });
+    expect(result.issue?.commentsMore).toBe(false);
     expect(JSON.stringify(result)).not.toContain('access-1');
   });
 
