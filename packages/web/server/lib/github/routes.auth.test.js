@@ -671,6 +671,133 @@ describe('GitHub account routes', () => {
     expect(response.body.error).toContain('pull request file');
   });
 
+  it('summarises check runs from every page, so a failure past page 1 is not dropped (#1405)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = [];
+    const total = 250;
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        requestedPages.push(page);
+        const start = (page - 1) * 100;
+        const runs = [];
+        for (let i = start; i < Math.min(start + 100, total); i += 1) {
+          runs.push({
+            id: 5000 + i,
+            name: `check-${i}`,
+            status: 'completed',
+            conclusion: i === 210 ? 'failure' : 'success',
+            started_at: '2026-01-01T00:00:00Z',
+          });
+        }
+        return Response.json({ total_count: total, check_runs: runs });
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(200);
+
+    expect(response.body.checks).toMatchObject({ state: 'failure', total: 250, success: 249, failure: 1 });
+    expect(requestedPages).toEqual([1, 2, 3]);
+  });
+
+  it('reports a pending check run past page 1 instead of success (#1405)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const total = 150;
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        const start = (page - 1) * 100;
+        const runs = [];
+        for (let i = start; i < Math.min(start + 100, total); i += 1) {
+          runs.push(i === 120
+            ? { id: 5000 + i, name: `check-${i}`, status: 'in_progress', conclusion: null, started_at: '2026-01-01T00:00:00Z' }
+            : { id: 5000 + i, name: `check-${i}`, status: 'completed', conclusion: 'success', started_at: '2026-01-01T00:00:00Z' });
+        }
+        return Response.json({ total_count: total, check_runs: runs });
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(200);
+
+    expect(response.body.checks).toMatchObject({ state: 'pending', total: 150, success: 149, pending: 1 });
+  });
+
+  it('never summarises a partial check run list past the safety cap as success (#1405)', async () => {
+    const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
+    const user = { id: 7, login: 'first' };
+    const requestedPages = [];
+    vi.stubGlobal('fetch', vi.fn(async (urlString) => {
+      const url = new URL(urlString);
+      const pathname = url.pathname;
+      if (pathname === '/repos/team/project/pulls/5') {
+        return Response.json({
+          number: 5, title: 'Change', html_url: 'https://github.com/team/project/pull/5', state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null }, base: { ref: 'main' }, user, merged: false,
+        });
+      }
+      if (pathname.endsWith('/check-runs')) {
+        const page = Number(url.searchParams.get('page') ?? 1);
+        requestedPages.push(page);
+        const runs = Array.from({ length: 100 }, (_, i) => ({
+          id: 5000 + (page - 1) * 100 + i,
+          name: `check-${(page - 1) * 100 + i}`,
+          status: 'completed',
+          conclusion: 'success',
+          started_at: '2026-01-01T00:00:00Z',
+        }));
+        return Response.json({ total_count: 5000, check_runs: runs });
+      }
+      if (pathname.endsWith('/status')) return Response.json({ statuses: [] });
+      return Response.json([]);
+    }));
+    const app = makeApp({
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+
+    const response = await request(app).get('/api/source-control/github/pulls/context')
+      .query(boundQuery(account.accountId, { number: 5 })).expect(200);
+
+    // The over-cap read errors and the route falls back to the combined
+    // status (empty here): the answer is the fallback's unknown, never a
+    // success summary built from the 2,000 runs that fit under the cap.
+    expect(response.body.checks).toMatchObject({ state: 'unknown', total: 0 });
+    expect(requestedPages).toHaveLength(21);
+    expect(requestedPages.at(-1)).toBe(21);
+  });
+
   it('merges every page of standalone issue comments instead of truncating at the first 100 (#1383)', async () => {
     const account = await auth.setGitHubAuth({ accessToken: 'token-one', user: { id: 7, login: 'first' } });
     const user = { id: 7, login: 'first' };

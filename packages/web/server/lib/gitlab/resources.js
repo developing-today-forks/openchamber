@@ -314,9 +314,15 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     try {
       const jobs = details
         // A fork merge request runs its pipeline in the source project.
-        ? await client.Jobs.all(Number.isInteger(pipeline.project_id) ? pipeline.project_id : targetProjectId, {
-          pipelineId: pipeline.id, maxPages: 1, perPage: 100,
-        })
+        // Every page under the collection cap, and an explicit error past
+        // it (readCollection): a page-1-only read silently dropped the
+        // jobs of pipelines with more than 100 of them (#1405).
+        ? await readCollection(
+          (pageOptions) => client.Jobs.all(Number.isInteger(pipeline.project_id) ? pipeline.project_id : targetProjectId, {
+            pipelineId: pipeline.id, ...pageOptions,
+          }),
+          'GitLab pipeline has more jobs than OpenChamber reads',
+        )
         : [];
       if (details && (!Array.isArray(jobs) || jobs.some((job) => !isPlainObject(job)
         || !Number.isInteger(job.id) || !isString(job.name) || !job.name.trim()

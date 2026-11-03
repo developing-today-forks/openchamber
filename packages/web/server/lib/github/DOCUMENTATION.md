@@ -102,7 +102,7 @@
 - Canonical issue search rejects malformed or out-of-network `repository_url` values instead of assigning those results to another repository in the fork network.
 - Canonical branch, issue, pull-list, and pull-context reads reject malformed provider collections and records, including pull requests, comments, reviews, files, and fork metadata. Head-repository web and clone URLs must resolve to the reported repository on `github.com`. Pull-list reads may report failed non-primary repositories, but failure of the trusted primary remote fails the read.
 - Canonical upstream reads propagate repository metadata, default-branch ref, rate-limit, and network failures. No ambient best-effort upstream route remains.
-- Malformed optional check-run or combined-status collections are never summarized as zero checks. A valid fallback may still supply CI; otherwise CI remains unavailable. Failed or malformed workflow-job detail remains non-authoritative and may leave the check run without job details.
+- Malformed optional check-run or combined-status collections are never summarized as zero checks. A valid fallback may still supply CI; otherwise CI remains unavailable. Failed or malformed workflow-job detail remains non-authoritative and may leave the check run without job details. Check runs for a ref and jobs for a workflow run are read on every page under the 20-page / 2,000-entry safety cap (`readTotalCountCollection`, #1405), honouring `total_count`: an over-cap or short-of-`total_count` read fails into the combined-status fallback instead of summarising a partial page as complete.
 
 ## Consumers of PR data
 
