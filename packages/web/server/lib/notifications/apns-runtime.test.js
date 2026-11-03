@@ -754,6 +754,41 @@ describe('apns runtime store durability', () => {
     }
   });
 
+  it('preserves a wrong-version tokens file before a later write overwrites it', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { dir, filePath } = await makeTempStore();
+      const wrongVersion = JSON.stringify({ version: 2, tokensBySession: {} });
+      await fsReal.writeFile(filePath, wrongVersion, 'utf8');
+      const runtime = await makeRealRuntime(filePath);
+
+      await runtime.addOrUpdateApnsToken('session-1', 'tokenA');
+
+      const preserved = (await fsReal.readdir(dir)).filter((name) => name.includes('.corrupt-'));
+      expect(preserved).toHaveLength(1);
+      expect(await fsReal.readFile(pathReal.join(dir, preserved[0]), 'utf8')).toBe(wrongVersion);
+      const stored = JSON.parse(await fsReal.readFile(filePath, 'utf8'));
+      expect(stored.version).toBe(1);
+      expect(Object.values(stored.tokensBySession).flat().map((entry) => entry.deviceToken)).toEqual(['tokenA']);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not preserve an empty tokens file; a later write just replaces it', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const { dir, filePath } = await makeTempStore();
+    await fsReal.writeFile(filePath, '', 'utf8');
+    const runtime = await makeRealRuntime(filePath);
+
+    await runtime.addOrUpdateApnsToken('session-1', 'tokenA');
+
+    expect((await fsReal.readdir(dir)).filter((name) => name.includes('.corrupt-'))).toHaveLength(0);
+    const stored = JSON.parse(await fsReal.readFile(filePath, 'utf8'));
+    expect(Object.values(stored.tokensBySession).flat().map((entry) => entry.deviceToken)).toEqual(['tokenA']);
+  });
+
   it('keeps the persist queue usable after a preservation failure', async () => {
     process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
