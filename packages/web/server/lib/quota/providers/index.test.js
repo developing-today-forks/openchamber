@@ -5,18 +5,19 @@ import path from 'node:path';
 
 const authState = vi.hoisted(() => ({ projected: {}, rows: [], readError: null, rowsError: null }));
 
-vi.mock('../../opencode/auth.js', () => ({
-  readOpenCodeCredentials: async () => {
+// Dependency seam: the registry's credential reads are injected per call.
+const authDeps = {
+  readAuth: async () => {
     if (authState.readError) throw authState.readError;
     return authState.projected;
   },
-  listStoredCredentials: async (integrationID) => {
+  listCredentials: async (integrationID) => {
     if (authState.rowsError) throw authState.rowsError;
     return integrationID
       ? authState.rows.filter((row) => row.integrationID === integrationID)
       : authState.rows;
   },
-}));
+};
 
 // The registry reads disabled_providers and provider instances through the
 // real config-layer reader. Point its global config directory at a path that
@@ -121,16 +122,16 @@ describe('quota provider registry', () => {
   });
 
   it('can list configured providers without missing provider exports', async () => {
-    await expect(listConfiguredQuotaProviders()).resolves.toBeInstanceOf(Array);
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.toBeInstanceOf(Array);
   });
 
   it('coalesces concurrent refreshes by provider ID', async () => {
-    const first = fetchQuotaForProvider('unsupported-test-provider');
-    const second = fetchQuotaForProvider('unsupported-test-provider');
+    const first = fetchQuotaForProvider('unsupported-test-provider', authDeps);
+    const second = fetchQuotaForProvider('unsupported-test-provider', authDeps);
 
     expect(first).toBe(second);
     await first;
-    expect(fetchQuotaForProvider('unsupported-test-provider')).not.toBe(first);
+    expect(fetchQuotaForProvider('unsupported-test-provider', authDeps)).not.toBe(first);
   });
 
   it('releases the coalescing entry once a timed-out provider settles', async () => {
@@ -141,7 +142,7 @@ describe('quota provider registry', () => {
       options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
     })));
 
-    const timedOut = await fetchQuotaForProvider('github-copilot');
+    const timedOut = await fetchQuotaForProvider('github-copilot', authDeps);
     expect(timedOut.ok).toBe(false);
     expect(timedOut.error).toBe('Request timed out');
 
@@ -152,7 +153,7 @@ describe('quota provider registry', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const fresh = await fetchQuotaForProvider('github-copilot');
+    const fresh = await fetchQuotaForProvider('github-copilot', authDeps);
     expect(fresh.ok).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -161,7 +162,7 @@ describe('quota provider registry', () => {
 describe('shared upstream auth failure (#894)', () => {
   it('marks a single-provider result whose credential read OpenCode rejected', async () => {
     authState.readError = new Error('Authentication required');
-    const result = await fetchQuotaForProvider('openrouter');
+    const result = await fetchQuotaForProvider('openrouter', authDeps);
     expect(result.ok).toBe(false);
     expect(result.error).not.toBe('Authentication required');
     expect(result.error).toContain('OpenCode upstream authentication failed');
@@ -170,7 +171,7 @@ describe('shared upstream auth failure (#894)', () => {
 
   it('answers one marked row when the credential-store read itself is rejected', async () => {
     authState.rowsError = new Error('Authentication required');
-    const results = await fetchQuotaForProviderInstances('codex');
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].ok).toBe(false);
     expect(results[0].error).toContain('OpenCode upstream authentication failed');
@@ -179,7 +180,7 @@ describe('shared upstream auth failure (#894)', () => {
 
   it('names the shared path when the configured-provider listing cannot read credentials', async () => {
     authState.readError = new Error('Authentication required');
-    await expect(listConfiguredQuotaProviders()).rejects.toThrow('OpenCode upstream authentication failed');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
   it('names the shared path when an instance credential read in the listing is rejected', async () => {
@@ -189,7 +190,7 @@ describe('shared upstream auth failure (#894)', () => {
       },
     });
     authState.rowsError = new Error('Authentication required');
-    await expect(listConfiguredQuotaProviders()).rejects.toThrow('OpenCode upstream authentication failed');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
   it('rethrows a non-auth instance credential read failure in the listing unchanged', async () => {
@@ -199,12 +200,12 @@ describe('shared upstream auth failure (#894)', () => {
       },
     });
     authState.rowsError = new Error('credential store exploded');
-    await expect(listConfiguredQuotaProviders()).rejects.toThrow('credential store exploded');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('credential store exploded');
   });
 
   it('leaves a provider-specific failure untouched', async () => {
     authState.readError = new Error('Request failed');
-    const result = await fetchQuotaForProvider('openrouter');
+    const result = await fetchQuotaForProvider('openrouter', authDeps);
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Request failed');
     expect(result.errorKind).toBeUndefined();
@@ -222,7 +223,7 @@ describe('disabled providers', () => {
   });
 
   it('leaves disabled providers out of the listing by default', async () => {
-    const configured = await listConfiguredQuotaProviders();
+    const configured = await listConfiguredQuotaProviders({}, authDeps);
     expect(configured).toContain('codex');
     expect(configured).not.toContain('openrouter');
     expect(configured).not.toContain('github-copilot');
@@ -231,18 +232,18 @@ describe('disabled providers', () => {
   });
 
   it('includes disabled providers when asked', async () => {
-    const configured = await listConfiguredQuotaProviders({ includeDisabled: true });
+    const configured = await listConfiguredQuotaProviders({ includeDisabled: true }, authDeps);
     expect(configured).toContain('openrouter');
     expect(configured).toContain('github-copilot');
     expect(configured).toContain('github-copilot-addon');
   });
 
   it('still fetches a disabled provider named explicitly', async () => {
-    const result = await fetchQuotaForProvider('openrouter');
+    const result = await fetchQuotaForProvider('openrouter', authDeps);
     expect(result.providerId).toBe('openrouter');
     expect(result.error).not.toBe('Unsupported provider');
 
-    const [instanceResult] = await fetchQuotaForProviderInstances('openrouter');
+    const [instanceResult] = await fetchQuotaForProviderInstances('openrouter', authDeps);
     expect(instanceResult.providerId).toBe('openrouter');
   });
 });
@@ -250,12 +251,12 @@ describe('disabled providers', () => {
 describe('meta provider listing', () => {
   it('lists meta once the meta credential is present', async () => {
     authState.projected = { meta: { type: 'api', key: 'LLM|test-minted-key' } };
-    await expect(listConfiguredQuotaProviders()).resolves.toContain('meta');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.toContain('meta');
   });
 
   it('leaves meta out without a credential', async () => {
     authState.projected = {};
-    await expect(listConfiguredQuotaProviders()).resolves.not.toContain('meta');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.not.toContain('meta');
   });
 
   it('catalogues meta under its id with the meta alias', () => {
@@ -273,7 +274,7 @@ describe('per-credential quota', () => {
   });
 
   it('returns one labeled result per stored Codex credential', async () => {
-    const results = await fetchQuotaForProviderInstances('codex');
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
     expect(results).toHaveLength(2);
 
     const [legacy, sharing] = results;
@@ -293,7 +294,7 @@ describe('per-credential quota', () => {
 
   it('keeps the single-result shape when the store holds one credential', async () => {
     authState.rows = [legacyRow];
-    const results = await fetchQuotaForProviderInstances('codex');
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].ok).toBe(true);
     expect(results[0].credentialLabel).toBe('OAuth');
@@ -302,7 +303,7 @@ describe('per-credential quota', () => {
   it('falls back to the active-credential fetch when the store holds no rows', async () => {
     authState.rows = [];
     authState.projected = { openai: legacyRow.value };
-    const results = await fetchQuotaForProviderInstances('codex');
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].ok).toBe(true);
     expect(results[0].credentialId).toBeUndefined();
@@ -334,7 +335,7 @@ describe('per-credential quota — OpenCode Go workspaces', () => {
       // Not a Console sign-in (another server): unusable for Go, skipped.
       { id: 'cred_other', integrationID: 'opencode', label: 'Other', active: false, value: { type: 'oauth', access: 'x', refresh: 'rt', expires: 1, server: 'https://example.com/console', orgID: 'org_OTHER123' } },
     ];
-    const results = await fetchQuotaForProviderInstances('opencode-go');
+    const results = await fetchQuotaForProviderInstances('opencode-go', authDeps);
     expect(results).toHaveLength(2);
 
     const [first, second] = results;
@@ -356,7 +357,7 @@ describe('per-credential quota — OpenCode Go workspaces', () => {
       consoleRow('cred_ok', 'OK', true, 'org_FIRST123'),
       consoleRow('cred_broken', 'Broken', false, 'org_BROKEN12'),
     ];
-    const results = await fetchQuotaForProviderInstances('opencode-go');
+    const results = await fetchQuotaForProviderInstances('opencode-go', authDeps);
     expect(results).toHaveLength(2);
     expect(results[0].ok).toBe(true);
     expect(results[1].ok).toBe(false);
@@ -367,7 +368,7 @@ describe('per-credential quota — OpenCode Go workspaces', () => {
   it('falls back to the single combined row when the store holds no usable rows', async () => {
     authState.rows = [];
     authState.projected = { opencode: consoleRow('cred_active', 'Active', true, 'org_FIRST123').value };
-    const results = await fetchQuotaForProviderInstances('opencode-go');
+    const results = await fetchQuotaForProviderInstances('opencode-go', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].ok).toBe(true);
     expect(results[0].credentialId).toBeUndefined();
@@ -379,7 +380,7 @@ describe('per-credential quota — OpenCode Go workspaces', () => {
       { id: 'cred_key', integrationID: 'opencode-go', label: 'API Key', active: true, value: { type: 'api', key: 'go-key' } },
       consoleRow('cred_ws1', 'Workspace One', true, 'org_FIRST123'),
     ];
-    const results = await fetchQuotaForProviderInstances('opencode-go');
+    const results = await fetchQuotaForProviderInstances('opencode-go', authDeps);
     expect(results).toHaveLength(2);
 
     const [primary, keyRow] = results;
@@ -414,18 +415,18 @@ describe('provider instances', () => {
   });
 
   it('lists an instance that has a usable credential', async () => {
-    await expect(listConfiguredQuotaProviders()).resolves.toContain('openai.alternate');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.toContain('openai.alternate');
   });
 
   it('fetches an instance as its own labeled row', async () => {
-    const results = await fetchQuotaForProviderInstances('openai.alternate');
+    const results = await fetchQuotaForProviderInstances('openai.alternate', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].providerId).toBe('openai.alternate');
     expect(results[0].providerName).toBe('OpenAI Alternate (Student - popesdrew)');
     expect(results[0].accountLabel).toBe('popesdrew@gmail.com');
     expect(results[0].usage.windows.weekly.usedPercent).toBe(12);
 
-    const single = await fetchQuotaForProvider('openai.alternate');
+    const single = await fetchQuotaForProvider('openai.alternate', authDeps);
     expect(single.providerId).toBe('openai.alternate');
     expect(single.ok).toBe(true);
   });
@@ -437,13 +438,13 @@ describe('provider instances', () => {
         'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
       },
     });
-    await expect(listConfiguredQuotaProviders()).resolves.not.toContain('openai.alternate');
-    await expect(listConfiguredQuotaProviders({ includeDisabled: true })).resolves.toContain('openai.alternate');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.not.toContain('openai.alternate');
+    await expect(listConfiguredQuotaProviders({ includeDisabled: true }, authDeps)).resolves.toContain('openai.alternate');
   });
 
   it('does not list an instance with no credential', async () => {
     authState.rows = [];
-    await expect(listConfiguredQuotaProviders()).resolves.not.toContain('openai.alternate');
+    await expect(listConfiguredQuotaProviders({}, authDeps)).resolves.not.toContain('openai.alternate');
   });
 });
 
@@ -485,10 +486,10 @@ describe('prototype provider ids', () => {
   it.each(['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'])(
     'treats %s as an unsupported provider, like an unknown id',
     async (providerId) => {
-      const result = await fetchQuotaForProvider(providerId);
+      const result = await fetchQuotaForProvider(providerId, authDeps);
       expect(result).toMatchObject({ configured: false, error: 'Unsupported provider' });
 
-      const [instanceResult] = await fetchQuotaForProviderInstances(providerId);
+      const [instanceResult] = await fetchQuotaForProviderInstances(providerId, authDeps);
       expect(instanceResult).toMatchObject({ configured: false, error: 'Unsupported provider' });
     },
   );
