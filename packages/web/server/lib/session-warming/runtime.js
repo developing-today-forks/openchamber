@@ -3,10 +3,16 @@
  * alive while they sit idle, the way OpenCode's `warming` config does for every
  * session at once. See DOCUMENTATION.md.
  */
-import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFile,
+  preserveMalformedJsonFileSync,
+  readDurableJsonFileSync,
+  writeDurableJsonFile,
+} from '../shared/durable-json-store.js';
 import { readBoundedResponseJson } from '../shared/response-body.js';
 
 /** Idle time between keep-alive requests; OpenCode's warming default. */
@@ -120,6 +126,13 @@ export const createSessionWarmingRuntime = ({
     sessions: Array.from(sessions, ([sessionId, entry]) => ({ sessionId, warmUntil: entry.warmUntil })),
   });
 
+  // This store rides the shared durable-store primitive (design #976):
+  // the sync spellings match the synchronous start() read, the async
+  // spellings the write chain. The value judgement stays this store's
+  // own: the file is a JSON object (storedSchema judges its fields from
+  // there); anything else is as malformed as unparseable bytes. The
+  // parse error itself is never logged: Node's JSON.parse messages
+  // quote the file content.
   const persist = () => {
     const payload = JSON.stringify({
       enabled,
@@ -131,10 +144,24 @@ export const createSessionWarmingRuntime = ({
     });
     writeChain = writeChain
       .then(async () => {
-        await fs.promises.mkdir(dataDir, { recursive: true });
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
-        await fs.promises.writeFile(tmpPath, payload, 'utf8');
-        await fs.promises.rename(tmpPath, filePath);
+        // A save must not overwrite an unpreserved corrupt file: the
+        // preserve helper re-reads and re-judges the on-disk bytes, and
+        // any failure to read, judge, or preserve them refuses the
+        // save (the chain's catch below logs the refusal). A valid
+        // file, an absent file, and an empty file need no preservation
+        // and the save proceeds.
+        const preservation = await preserveMalformedJsonFile(filePath, { validateValue: isJsonObject });
+        if (preservation.outcome === 'failed') {
+          throw new Error(`the unreadable state file at ${filePath} could not be preserved`);
+        }
+        if (preservation.preserved) {
+          console.warn(`[session-warming] preserved the unreadable state file at ${preservation.preservedPath}`);
+        }
+        // The file mode is stated explicitly through the primitive:
+        // this store never restricted its file (a plain write under
+        // the process umask), so 0o666 keeps the effective mode it
+        // always had.
+        await writeDurableJsonFile(filePath, payload, { mode: 0o666 });
       })
       .catch((error) => console.warn('[session-warming] failed to save:', error?.message ?? error));
     return writeChain;
@@ -279,27 +306,45 @@ export const createSessionWarmingRuntime = ({
 
   /** Reads the saved state; synchronous, so no request or event can land before it. */
   const start = () => {
-    let raw;
-    try {
-      raw = fs.readFileSync(filePath, 'utf8');
-    } catch (error) {
-      if (error?.code !== 'ENOENT') console.warn('[session-warming] could not read the saved state:', error?.message ?? error);
-      return;
-    }
     let parsed;
-    try {
-      parsed = storedSchema.parse(JSON.parse(raw));
-    } catch (error) {
-      // Kept for the user rather than overwritten by the next save.
-      const backup = `${filePath}.corrupt-${now()}`;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let result;
       try {
-        fs.renameSync(filePath, backup);
-      } catch {
-        // The next save replaces it.
+        result = readDurableJsonFileSync(filePath, { validateValue: isJsonObject });
+      } catch (error) {
+        // A read failure other than absence (EACCES, EISDIR, ...) warns
+        // and starts empty, the behaviour this store always had; the
+        // primitive answers absence itself as 'missing'.
+        console.warn('[session-warming] could not read the saved state:', error?.message ?? error);
+        return;
       }
-      console.warn(`[session-warming] state file was unreadable and moved to ${backup}: ${error?.message ?? error}`);
+      // The primitive collapses an absent file and an existing empty
+      // file into 'missing': nothing was saved, nothing to preserve.
+      if (result.state === 'missing') return;
+      if (result.state === 'valid') {
+        try {
+          parsed = storedSchema.parse(result.value);
+        } catch {
+          // An object the schema itself rejects is as malformed as
+          // unparseable bytes: fall through to the preserve step.
+        }
+        if (parsed) break;
+      }
+      // Kept for the user rather than overwritten by the next save.
+      const preservation = preserveMalformedJsonFileSync(filePath, { validateValue: isJsonObject });
+      if (preservation.preserved) {
+        console.warn(`[session-warming] state file was unreadable and moved to ${preservation.preservedPath}`);
+        return;
+      }
+      // A valid replacement landed while the malformed bytes were
+      // being judged: read that file instead of answering from the
+      // stale one.
+      if (preservation.outcome === 'replaced') continue;
+      if (preservation.outcome === 'missing') return;
+      console.warn('[session-warming] state file was unreadable and could not be preserved; leaving it in place');
       return;
     }
+    if (!parsed) return;
     enabled = parsed.enabled;
     minutes = parsed.minutes;
     if (!enabled) return;
