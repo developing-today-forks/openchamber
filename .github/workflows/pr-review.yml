@@ -10,31 +10,29 @@ on:
 concurrency:
   # CI policy: .github/ci-policy.md (fleet design developing-today/code#1779
   # sec.4; Phase 1, developing-today/code#1780).
-  # PR paths cancel on supersede (Phase 1): pull_request_target runs share
-  # one group per PR and cancel-in-progress evaluates true only for that
-  # event, so a rapid synchronize cancels the stale review instead of
-  # leaving two reviews running side by side.
+  # This workflow runs on comment commands only (issue_comment,
+  # pull_request_review_comment, workflow_dispatch): there is deliberately
+  # no pull-request trigger, so no push-triggered path exists to supersede,
+  # throttle, or debounce.
   # The #84 trap is avoided by construction: queue: max is GONE. Pairing
-  # queue: max with a cancel expression that evaluates true for
-  # issues/pull_request_target events is the GitHub validation error that
-  # killed this workflow before; with the default queue behaviour a true
-  # cancel expression on pull_request_target is valid.
+  # queue: max with a cancel expression that evaluates true for comment
+  # events is the GitHub validation error that killed this workflow before;
+  # with the default queue behaviour a true cancel on comment runs is valid.
   # The #77 trap is avoided by the group, not the queue: comment-triggered
   # runs (issue_comment / pull_request_review_comment) are keyed by the
-  # individual comment id, so every review command gets its own group,
-  # never queues behind (or silently replaces) another command, and --
-  # with cancel evaluating false for comment events -- never cancels an
-  # active review.
-  group: pr-review-${{ github.event_name }}-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.event.comment.id }}
+  # individual comment id, so every review command gets its own group and
+  # never queues behind (or silently replaces) another command. Manual
+  # workflow_dispatch runs share one group, so a newer dispatch supersedes
+  # a stale one instead of running beside it.
+  group: pr-review-${{ github.event_name }}-${{ github.event.comment.id }}
   cancel-in-progress: true
 
 jobs:
-  # Every PR event gets a review. A comment command starts the agent on the
-  # repository's model key, so it runs only for people who can push here.
+  # A /oc-review comment command starts the agent on the repository's model
+  # key, and only for people who can push here (see the access check below).
   gate:
     timeout-minutes: 10
     if: |
-      github.event_name == 'pull_request_target' ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.login != 'openchamber-bot[bot]' && (github.event.comment.body == '/oc-review' || startsWith(github.event.comment.body, '/oc-review ') || github.event.comment.body == '@openchamber-bot review' || startsWith(github.event.comment.body, '@openchamber-bot review '))) ||
       (github.event_name == 'pull_request_review_comment' && github.event.comment.user.login != 'openchamber-bot[bot]' && (github.event.comment.body == '/oc-review' || startsWith(github.event.comment.body, '/oc-review ') || github.event.comment.body == '@openchamber-bot review' || startsWith(github.event.comment.body, '@openchamber-bot review ')))
     runs-on: ubuntu-latest
@@ -61,7 +59,7 @@ jobs:
 
       - name: Generate access-check token
         id: app-token
-        if: github.event_name != 'pull_request_target' && steps.review-app.outputs.configured == 'true'
+        if: steps.review-app.outputs.configured == 'true'
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.OC_REVIEW_APP_ID }}
@@ -72,17 +70,11 @@ jobs:
         id: access
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          EVENT_NAME: ${{ github.event_name }}
           COMMENTER: ${{ github.event.comment.user.login }}
           REVIEW_APP_CONFIGURED: ${{ steps.review-app.outputs.configured }}
         run: |
           if [ "$REVIEW_APP_CONFIGURED" != "true" ]; then
             echo "allowed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$EVENT_NAME" = "pull_request_target" ]; then
-            echo "allowed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -191,40 +183,8 @@ jobs:
 
           echo "safe=true" >> "$GITHUB_OUTPUT"
 
-      - name: Throttle push-burst reviews
-        id: throttle
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.pr.outputs.number }}
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-        run: |
-          # Manual commands always run; only push-triggered re-reviews are throttled,
-          # so a push burst cannot produce a review per push.
-          if [ "$EVENT_NAME" != "pull_request_target" ] || [ "$EVENT_ACTION" != "synchronize" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          last_review_at="$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
-            | jq -r '[.[] | select(.user.login == "openchamber-bot[bot]" and (.body | contains("<!-- oc-review-meta "))) | .created_at] | last // empty')"
-
-          if [ -z "$last_review_at" ]; then
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          age="$(( $(date +%s) - $(date -d "$last_review_at" +%s) ))"
-          if [ "$age" -lt 900 ]; then
-            echo "Last review was ${age}s ago; skipping push-triggered re-review (15m throttle)."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Mark review pending
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -239,7 +199,7 @@ jobs:
           gh pr edit "$PR_NUMBER" "${remove_args[@]}" --add-label "review:pending"
 
       - name: Resolve manual command
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && github.event_name != 'pull_request_target'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         id: command
         env:
           COMMENT_BODY: ${{ github.event.comment.body }}
@@ -268,7 +228,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Acknowledge manual review command
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && github.event_name != 'pull_request_target'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         id: manual-reaction
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -317,19 +277,15 @@ jobs:
 
           Automated review cannot clear changes to its own policy or trust boundary. A maintainer must review it directly."
 
-      - name: Debounce new commits
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
-        run: sleep 30
-
       - name: Install opencode
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         run: |
           version="$(node -p "require('./packages/electron/package.json').opencodeCli.version")"
           npm install -g "@opencode/cli@${version}"
           opencode --version
 
       - name: Collect pull request context
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -387,7 +343,7 @@ jobs:
           find "$context" -type f | head -n 200
 
       - name: Review pull request
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         id: review-run
         env:
           REVIEW_TIMEOUT: 30m
@@ -453,7 +409,7 @@ jobs:
 
       - name: Post review
         id: post-review
-        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -482,7 +438,7 @@ jobs:
 
       - name: Verify and enforce review verdict
         id: verdict
-        if: always() && steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true' && steps.throttle.outputs.skip != 'true'
+        if: always() && steps.pr.outputs.draft == 'false' && steps.safety.outputs.safe == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
@@ -613,7 +569,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Mark automation failure
-        if: always() && steps.pr.outputs.draft == 'false' && steps.verdict.outcome != 'success' && steps.safety.outputs.safe != 'false' && steps.throttle.outputs.skip != 'true'
+        if: always() && steps.pr.outputs.draft == 'false' && steps.verdict.outcome != 'success' && steps.safety.outputs.safe != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
