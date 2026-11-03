@@ -502,7 +502,10 @@ describe('scheduled-tasks runtime prompt dispatch', () => {
     expect(result.error).toContain('timed out');
     // The composed run signal reached the transport and aborted at the cap.
     expect(createSignal?.aborted).toBe(true);
-    expect(patches.at(-1)).toMatchObject({ lastStatus: 'error' });
+    // The run was stopped by its configured limit (the factory cap passed
+    // as maxRunDurationMs): #765 records limit-stopped runs as 'timeout',
+    // not 'error', so a capped run is distinguishable from a crash.
+    expect(patches.at(-1)).toMatchObject({ lastStatus: 'timeout' });
 
     // Give the losing run every chance to leak its prompt the way it used
     // to (the creator probe saw it land 800 ms after the timeout record).

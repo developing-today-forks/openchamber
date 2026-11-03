@@ -1047,7 +1047,7 @@ export const createScheduledTasksRuntime = (deps) => {
         const timeoutPromise = new Promise((_, reject) => {
           timeoutID = setTimeout(() => {
             const timeoutError = new Error(
-              `scheduled task run exceeded its configured limit of ${effectiveMaxRunMs} ms`,
+              `scheduled task run timed out: exceeded its configured limit of ${effectiveMaxRunMs} ms`,
             );
             timeoutError.code = 'SCHEDULED_TASK_RUN_TIMEOUT';
             runController.abort(timeoutError);
