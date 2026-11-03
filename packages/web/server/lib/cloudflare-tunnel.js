@@ -428,12 +428,12 @@ export async function startCloudflareQuickTunnel({ originUrl }) {
       clearTimeout(timeout);
       clearInterval(checkReady);
       cleanupTempDir();
+      // Any exit while startup is pending is a failed startup, even a
+      // clean one after a URL was printed: the tunnel dies with the
+      // process, so resolving would hand callers a controller for a
+      // process that is already gone (Codex review, PR #1492).
       if (signal) {
         reject(new Error(`Cloudflared exited with signal ${signal}`));
-      } else if (code !== 0) {
-        reject(new Error(`Cloudflared exited with code ${code}`));
-      } else if (publicUrl) {
-        resolve(null);
       } else {
         reject(new Error(`Cloudflared exited with code ${code}`));
       }
