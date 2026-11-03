@@ -474,6 +474,36 @@ describe('readConfigFile / writeConfig size cap (issue #1150)', () => {
     expect(readSpy.mock.calls.some(([target]) => target === file)).toBe(false);
   });
 
+  it('refuses a config that grows past the cap after the handle stat without buffering it whole (#1410)', () => {
+    const file = writeFixture('grown.json', `{"padding":"${'x'.repeat(MAX_CONFIG_FILE_BYTES)}"}`);
+    expect(fs.statSync(file).size).toBeGreaterThan(MAX_CONFIG_FILE_BYTES);
+
+    // The descriptor growth case: the handle stat answers the pre-growth
+    // size while the read meets the grown file.
+    const realFstatSync = fs.fstatSync;
+    const realReadSync = fs.readSync;
+    vi.spyOn(fs, 'fstatSync').mockImplementationOnce((fd) => {
+      const stats = realFstatSync(fd);
+      Object.defineProperty(stats, 'size', { value: 10 });
+      return stats;
+    });
+    let requested = 0;
+    vi.spyOn(fs, 'readSync').mockImplementation((fd, buffer, offset, length, position) => {
+      requested += length;
+      return realReadSync(fd, buffer, offset, length, position);
+    });
+
+    let thrown;
+    try {
+      readConfigFile(file);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown?.code).toBe('CONFIG_FILE_TOO_LARGE');
+    expect(requested).toBeGreaterThan(0);
+    expect(requested).toBeLessThanOrEqual(MAX_CONFIG_FILE_BYTES + 1);
+  });
+
   it('records the over-cap refusal as a layer error instead of a silent empty config', () => {
     const file = writeOversizedConfig('layer-too-big.jsonc');
     const layer = readConfigLayer(file);

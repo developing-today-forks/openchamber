@@ -350,6 +350,21 @@ const openBytes = (bytes) => vi.fn(async () => ({
   createReadStream: ({ start, end }) => Readable.from([bytes.subarray(start, end + 1)]),
 }));
 
+// A pre-read handle over fixed bytes for the fs/write identical-content
+// shortcut: stat judges the size, read answers from the same bytes.
+const openText = (text) => {
+  const bytes = Buffer.from(text, 'utf8');
+  return vi.fn(async () => ({
+    stat: async () => ({ isFile: () => true, size: bytes.length }),
+    read: async (buffer, offset, length, position) => {
+      const chunk = bytes.subarray(position, position + length);
+      chunk.copy(buffer, offset);
+      return { bytesRead: chunk.length, buffer };
+    },
+    close: vi.fn(async () => {}),
+  }));
+};
+
 const callRaw = async (handler, query) => {
   const response = createStreamingResponse();
   await handler({ query }, response.res);
@@ -530,7 +545,7 @@ describe('fs clone', () => {
 describe('fs write', () => {
   it('does not rewrite a file when content is unchanged', async () => {
     const fsPromises = {
-      readFile: vi.fn(async () => 'same'),
+      open: openText('same'),
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
     };
@@ -539,12 +554,13 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'same' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
   });
 
   it('writes a file when content changed', async () => {
     const fsPromises = {
-      readFile: vi.fn(async () => 'old'),
+      open: openText('old'),
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
@@ -569,7 +585,7 @@ describe('fs write', () => {
         if (targetPath === '/repo/link.txt') return '/repo/target.txt';
         return targetPath;
       }),
-      readFile: vi.fn(async () => 'old'),
+      open: openText('old'),
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
@@ -580,7 +596,7 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/link.txt', content: 'new' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/link.txt' });
-    expect(fsPromises.readFile).toHaveBeenCalledWith('/repo/target.txt', 'utf8');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/target.txt', 'r');
     const tmp = fsPromises.writeFile.mock.calls[0][0];
     expect(tmp).toMatch(/^\/repo\/target\.txt\.tmp-/);
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/target.txt');
@@ -610,9 +626,13 @@ describe('fs write', () => {
   });
 
   it('does not read a length-differing existing file whole before writing (#1127)', async () => {
+    const read = vi.fn(async () => ({ bytesRead: 0, buffer: Buffer.alloc(0) }));
     const fsPromises = {
-      stat: vi.fn(async () => ({ isFile: () => true, size: 5 * 1024 * 1024 })),
-      readFile: vi.fn(async () => 'old'),
+      open: vi.fn(async () => ({
+        stat: async () => ({ isFile: () => true, size: 5 * 1024 * 1024 }),
+        read,
+        close: vi.fn(async () => {}),
+      })),
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
@@ -623,8 +643,8 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
-    expect(fsPromises.stat).toHaveBeenCalledWith('/repo/file.txt');
-    expect(fsPromises.readFile).not.toHaveBeenCalled();
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
+    expect(read).not.toHaveBeenCalled();
     const tmp = fsPromises.writeFile.mock.calls[0][0];
     expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, 'new', 'utf8');
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
@@ -632,8 +652,7 @@ describe('fs write', () => {
 
   it('still short-circuits an identical small save without rewriting (#1127)', async () => {
     const fsPromises = {
-      stat: vi.fn(async () => ({ isFile: () => true, size: 4 })),
-      readFile: vi.fn(async () => 'same'),
+      open: openText('same'),
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
@@ -644,16 +663,16 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'same' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
-    expect(fsPromises.readFile).toHaveBeenCalledWith('/repo/file.txt', 'utf8');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
   it('writes an over-cap existing file via the atomic path without reading it whole (#1127)', async () => {
     const content = 'x'.repeat(16 * 1024 * 1024 + 1);
+    const open = vi.fn(async () => { throw new Error('must not open an over-cap compare'); });
     const fsPromises = {
-      stat: vi.fn(async () => ({ isFile: () => true, size: 16 * 1024 * 1024 + 1 })),
-      readFile: vi.fn(async () => 'different'),
+      open,
       mkdir: vi.fn(async () => undefined),
       writeFile: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
@@ -665,10 +684,66 @@ describe('fs write', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ success: true, path: '/repo/big.txt' });
-    expect(fsPromises.readFile).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
     const tmp = fsPromises.writeFile.mock.calls[0][0];
     expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, content, 'utf8');
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/big.txt');
+  });
+
+  it('falls through to the write when the file grows after the fstat without buffering it whole (#1410)', async () => {
+    const content = 'same';
+    const grown = Buffer.from('same, but grown after the size check', 'utf8');
+    let requested = 0;
+    const read = vi.fn(async (buffer, offset, length, position) => {
+      requested += length;
+      const chunk = grown.subarray(position, position + length);
+      chunk.copy(buffer, offset);
+      return { bytesRead: chunk.length, buffer };
+    });
+    const close = vi.fn(async () => {});
+    const fsPromises = {
+      open: vi.fn(async () => ({
+        stat: async () => ({ isFile: () => true, size: Buffer.byteLength(content, 'utf8') }),
+        read,
+        close,
+      })),
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content });
+
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    expect(fsPromises.writeFile).toHaveBeenCalled();
+    expect(requested).toBeLessThanOrEqual(Buffer.byteLength(content, 'utf8') + 1);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('falls through to the write for a non-regular existing file (#1410)', async () => {
+    const read = vi.fn(async () => ({ bytesRead: 0, buffer: Buffer.alloc(0) }));
+    const close = vi.fn(async () => {});
+    const fsPromises = {
+      open: vi.fn(async () => ({
+        stat: async () => ({ isFile: () => false, size: 4 }),
+        read,
+        close,
+      })),
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content: 'same' });
+
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    expect(read).not.toHaveBeenCalled();
+    expect(fsPromises.writeFile).toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 

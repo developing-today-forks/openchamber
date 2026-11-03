@@ -15,6 +15,7 @@ import {
 import { readSectionEntry, readMcpEntry } from './config-v2.js';
 import { resolveWorktreeDirectory } from './worktree-directory.js';
 import { writeFileAtomic } from './atomic-write.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 // ============== PATH CONSTANTS ==============
 
@@ -347,15 +348,35 @@ function isConfigFileTooLargeError(error) {
   return Boolean(error && error.code === CONFIG_FILE_TOO_LARGE);
 }
 
-function assertConfigFileWithinCap(filePath) {
-  const { size } = fs.statSync(filePath);
-  if (size > MAX_CONFIG_FILE_BYTES) {
+// Open once and judge from the handle (design #1254): a
+// stat-by-path-then-readFile-by-path gate lets a config grown or swapped
+// after the stat buffer whole past the cap. The shared bounded read fixes
+// the file identity at open, judges the size from the handle, and reads at
+// most one byte over the cap, so growth is refused, never buffered. Its
+// missing and non-regular answers are mapped back onto this module's
+// existing contract: a file that vanishes after the exists check throws the
+// ENOENT a stat would have thrown, and a non-regular file throws the EISDIR
+// a read would have thrown.
+function readCappedConfigFileSync(filePath) {
+  const result = readBoundedFileSync(filePath, MAX_CONFIG_FILE_BYTES);
+  if (result.ok) {
+    return result.buffer.toString('utf8');
+  }
+  if (result.reason === 'too-large') {
     const error = new Error(
       `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
     );
     error.code = CONFIG_FILE_TOO_LARGE;
     throw error;
   }
+  if (result.reason === 'missing') {
+    const error = new Error(`ENOENT: no such file or directory, open '${filePath}'`);
+    error.code = 'ENOENT';
+    throw error;
+  }
+  const error = new Error(`EISDIR: illegal operation on a directory, read '${filePath}'`);
+  error.code = 'EISDIR';
+  throw error;
 }
 
 function formatJsoncParseError(filePath, errors) {
@@ -397,8 +418,7 @@ function readConfigFile(filePath) {
     return {};
   }
   try {
-    assertConfigFileWithinCap(filePath);
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = readCappedConfigFileSync(filePath);
     const normalized = content.trim();
     if (!normalized) {
       return {};
@@ -682,8 +702,7 @@ function writeConfig(config, filePath = CONFIG_FILE) {
     const hadExistingFile = fs.existsSync(filePath);
     if (hadExistingFile) {
       // Defense in depth: never overwrite a file we cannot fully parse.
-      assertConfigFileWithinCap(filePath);
-      existingRaw = fs.readFileSync(filePath, 'utf8');
+      existingRaw = readCappedConfigFileSync(filePath);
       if (existingRaw.trim()) {
         existingParse = parseConfigResult(existingRaw.trim(), filePath);
       }

@@ -116,6 +116,54 @@ describe('VS Code parseMdFile size gate (#1157)', () => {
     });
   });
 
+  test('refuses a file that grows past the cap after the handle stat without buffering it whole (#1410)', () => {
+    withTempDir((dir) => {
+      const file = path.join(dir, 'grown.md');
+      fs.writeFileSync(file, 'a'.repeat(MD_FILE_MAX_BYTES + 1024), 'utf8');
+
+      // The descriptor growth case: the handle stat answers the pre-growth
+      // size while the read meets the grown file.
+      const originalFstatSync = fs.fstatSync;
+      const originalReadSync = fs.readSync;
+      let requested = 0;
+      fs.fstatSync = (fd) => {
+        const stats = originalFstatSync(fd);
+        Object.defineProperty(stats, 'size', { value: 16 });
+        return stats;
+      };
+      fs.readSync = (fd, buffer, offset, length, position) => {
+        requested += length;
+        return originalReadSync(fd, buffer, offset, length, position);
+      };
+
+      let thrown;
+      try {
+        parseMdFile(file);
+      } catch (error) {
+        thrown = error;
+      } finally {
+        fs.fstatSync = originalFstatSync;
+        fs.readSync = originalReadSync;
+      }
+
+      expect(thrown?.code).toBe('ERR_MD_FILE_TOO_LARGE');
+      expect(requested).toBeGreaterThan(0);
+      expect(requested).toBeLessThanOrEqual(MD_FILE_MAX_BYTES + 1);
+    });
+  });
+
+  test('refuses a non-regular file without blocking (#1410)', () => {
+    withTempDir((dir) => {
+      let thrown;
+      try {
+        parseMdFile(dir);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown?.message).toMatch(/not a regular file/);
+    });
+  });
+
   test('snippet discovery skips an over-cap file and keeps loading the rest', () => {
     withTempDir((dir) => {
       const snippetsDir = path.join(dir, '.opencode', 'snippets');
