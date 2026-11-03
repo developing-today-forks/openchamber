@@ -180,7 +180,7 @@ describe('runGuestFileOperation', () => {
         target,
       }),
       realpath: fs.realpath.bind(fs),
-      readFile: async () => {
+      open: async () => {
         throw new Error('should not read');
       },
     };
@@ -245,13 +245,39 @@ describe('runGuestFileOperation', () => {
     expect(capped.result.entries[0].name).toBe('f00000');
   });
 
+  test('refuses a file that grows past the cap after the stat (#1436)', async () => {
+    const { project, run } = await base();
+    await fs.writeFile(path.join(project, 'grown.txt'), 'small');
+    // The stat (both of them) reports the small size the file had when it
+    // was checked; the handle then yields cap + 1 bytes, as a file grown
+    // between the stat and the read would. The read itself must refuse.
+    const fsPromises = {
+      ...fs,
+      realpath: fs.realpath.bind(fs),
+      open: async () => ({
+        stat: async () => ({ isFile: () => true, isDirectory: () => false, size: 5 }),
+        read: async (buffer, offset, length, position) => {
+          const remaining = GUEST_FILE_CONTENT_MAX + 1 - position;
+          if (remaining <= 0) {
+            return { bytesRead: 0, buffer };
+          }
+          const bytesRead = Math.min(length, remaining);
+          buffer.fill(0x78, offset, offset + bytesRead);
+          return { bytesRead, buffer };
+        },
+        close: async () => {},
+      }),
+    };
+    expect(await run({ op: 'read', path: 'grown.txt', fsPromises })).toMatchObject({ ok: false, code: 'FILE_TOO_LARGE' });
+  });
+
   test('maps an OS permission error to DENIED', async () => {
     const { project, run } = await base();
     await fs.writeFile(path.join(project, 'README.md'), '# hi');
     const fsPromises = {
       ...fs,
       realpath: fs.realpath.bind(fs),
-      readFile: async () => {
+      open: async () => {
         const error = new Error('EACCES');
         error.code = 'EACCES';
         throw error;
