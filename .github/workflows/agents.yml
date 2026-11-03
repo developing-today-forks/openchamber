@@ -53,7 +53,8 @@ permissions:
 jobs:
   scheduled:
     uses: developing-today/code/.github/workflows/pm-scheduled.yml@main
-    timeout-minutes: 60
+    # No timeout-minutes here: GitHub rejects it on reusable-workflow caller
+    # jobs and the whole workflow dies at startup with zero jobs (#1399).
     permissions:
       id-token: write
       contents: read
