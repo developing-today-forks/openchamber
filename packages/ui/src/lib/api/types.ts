@@ -2251,6 +2251,8 @@ export type LinearIssueComment = {
 export type LinearIssue = LinearIssueSummary & {
   description?: string | null;
   comments?: LinearIssueComment[];
+  /** In Linear's order; the first page only, `commentsMore` says there are others. */
+  commentsMore?: boolean;
   /** In Linear's order; the first page only, `subIssuesMore` says there are others. */
   subIssues?: LinearIssueSummary[];
   subIssuesMore?: boolean;
@@ -2297,6 +2299,8 @@ export type LinearIssueLiveSummary = {
 export type LinearIssueStatesResult = {
   connected: boolean;
   states?: LinearWorkflowState[];
+  /** True when the team holds more workflow states than the one page fetched. */
+  statesMore?: boolean;
 };
 
 export type LinearIssueUpdateInput = {

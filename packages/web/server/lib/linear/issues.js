@@ -104,6 +104,21 @@ const SUB_ISSUES_FIELDS = `
     pageInfo { hasNextPage }
   }
 `;
+// One comments page per issue read; Linear has no comment count, so the
+// pageInfo below is the only truncation signal. Keep this fragment shared:
+// GET_QUERY and ISSUE_UPDATE must request the same comments shape.
+const COMMENTS_PAGE = 50;
+const COMMENTS_FIELDS = `
+  comments(first: ${COMMENTS_PAGE}) {
+    nodes {
+      id
+      body
+      createdAt
+      user { name displayName avatarUrl }
+    }
+    pageInfo { hasNextPage }
+  }
+`;
 const LIST_QUERY = `
   query ListLinearIssues($first: Int!, $after: String, $filter: IssueFilter) {
     issues(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
@@ -126,14 +141,7 @@ const GET_QUERY = `
       ${ISSUE_SUMMARY_FIELDS}
       ${SUB_ISSUES_FIELDS}
       description
-      comments(first: 50) {
-        nodes {
-          id
-          body
-          createdAt
-          user { name displayName avatarUrl }
-        }
-      }
+      ${COMMENTS_FIELDS}
     }
   }
 `;
@@ -145,11 +153,15 @@ const COMMENT_CREATE = `
     }
   }
 `;
+// A team holds a handful of workflow states; one page of 50 covers every
+// real team, and statesMore says when it did not.
+const STATES_PAGE = 50;
 const STATES_QUERY = `
   query TeamWorkflowStates($id: String!) {
     team(id: $id) {
-      states(first: 50) {
+      states(first: ${STATES_PAGE}) {
         nodes { id name type position }
+        pageInfo { hasNextPage }
       }
     }
   }
@@ -162,14 +174,7 @@ const ISSUE_UPDATE = `
         ${ISSUE_SUMMARY_FIELDS}
         ${SUB_ISSUES_FIELDS}
         description
-        comments(first: 50) {
-          nodes {
-            id
-            body
-            createdAt
-            user { name displayName avatarUrl }
-          }
-        }
+        ${COMMENTS_FIELDS}
       }
     }
   }
@@ -374,6 +379,7 @@ function readIssue(node) {
     ...summary,
     description: isString(node.description) ? node.description : null,
     comments,
+    commentsMore: readPageInfo(node.comments).hasMore,
     subIssues: readSubIssues(node.subIssues),
     subIssuesMore: readPageInfo(node.subIssues).hasMore,
   };
@@ -575,7 +581,7 @@ export async function listLinearIssueStates(teamId) {
       .map(readWorkflowState)
       .filter(Boolean)
       .sort(compareWorkflowStates);
-    return { connected: true, states };
+    return { connected: true, states, statesMore: readPageInfo(connection).hasMore };
   });
 }
 

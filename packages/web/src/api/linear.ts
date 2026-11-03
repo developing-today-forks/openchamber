@@ -49,6 +49,7 @@ type LinearJson = {
   hasMore?: boolean;
   issue?: LinearIssue | null;
   states?: LinearWorkflowState[];
+  statesMore?: boolean;
   defaultProjectPath?: string | null;
   teams?: LinearTeamMapping[];
   posted?: boolean;
@@ -283,6 +284,7 @@ function parseIssue(payload: LinearIssue | null | undefined): LinearIssue | null
     ...summary,
     description: readRawString(description),
     comments,
+    commentsMore: payload?.commentsMore === true,
     subIssues,
     subIssuesMore: payload?.subIssuesMore === true,
   };
@@ -329,7 +331,7 @@ function toIssueStates(payload: LinearJson | null): LinearIssueStatesResult | nu
   const states = Array.isArray(payload.states)
     ? payload.states.map(parseWorkflowState).filter((state): state is LinearWorkflowState => state != null)
     : [];
-  return { connected: true, states };
+  return { connected: true, states, statesMore: payload?.statesMore === true };
 }
 
 function toIssueUpdate(payload: LinearJson | null): LinearIssueUpdateResult | null {
