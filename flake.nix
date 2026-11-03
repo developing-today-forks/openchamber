@@ -31,6 +31,7 @@
       self,
       nixpkgs,
       opencode,
+      ...
     }:
     let
       inherit (nixpkgs) lib;
