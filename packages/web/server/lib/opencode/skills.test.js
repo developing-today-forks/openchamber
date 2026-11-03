@@ -242,6 +242,39 @@ describe('skills', () => {
     expect(sources.md.fields).toEqual(['description', 'instructions']);
   });
 
+  it('exposes supporting files and their truncation flag on skill sources (#1365)', async () => {
+    const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-skills-'));
+    const skillDir = path.join(tempRoot, 'files-skill');
+    const skillPath = path.join(skillDir, 'SKILL.md');
+
+    try {
+      await fsPromises.mkdir(path.join(skillDir, 'references'), { recursive: true });
+      await fsPromises.writeFile(
+        skillPath,
+        ['---', 'name: files-skill', 'description: Has files', '---', '', 'Body.', ''].join('\n'),
+        'utf8',
+      );
+      await fsPromises.writeFile(path.join(skillDir, 'references', 'guide.md'), '# Guide\n', 'utf8');
+
+      const sources = await getSkillSources('files-skill', tempRoot, {
+        name: 'files-skill',
+        path: skillPath,
+        scope: 'user',
+        source: 'agents',
+        description: 'Has files',
+      });
+
+      expect(sources.md.supportingFiles).toEqual([{
+        name: 'guide.md',
+        path: path.join('references', 'guide.md'),
+        fullPath: path.join(skillDir, 'references', 'guide.md'),
+      }]);
+      expect(sources.md.supportingFilesTruncated).toBe(false);
+    } finally {
+      await fsPromises.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('clears file metadata when a discovered skill path is unreadable', async () => {
     const missingPath = path.join(os.tmpdir(), 'openchamber-skills-test-missing-file', 'SKILL.md');
     const sources = await getSkillSources(

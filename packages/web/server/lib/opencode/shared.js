@@ -1094,22 +1094,47 @@ function resolveSkillSearchDirectories(workingDirectory) {
   return directories;
 }
 
+// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+// node_modules, generated docs); one detail request must not walk all of it.
+// Keep these in sync with SKILL_SUPPORTING_FILES_MAX_* in
+// packages/vscode/src/opencodeConfig.ts.
+const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
+const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
+
 async function listSkillSupportingFiles(skillDir) {
   if (!(await pathExists(skillDir))) {
-    return [];
+    return { files: [], truncated: false };
   }
 
   const files = [];
+  let visitedDirectories = 0;
+  let truncated = false;
 
+  // Returns false once a limit is hit, so every caller unwinds and the walk
+  // stops instead of merely stopping collection. Files and directories seen
+  // before the limit are kept, in the original traversal order; a tree that
+  // ends exactly at a limit is complete, not truncated.
   async function walkDir(dir, relativePath = '') {
+    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
+      truncated = true;
+      return false;
+    }
+    visitedDirectories += 1;
+
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
 
       if (entry.isDirectory()) {
-        await walkDir(fullPath, relPath);
+        if (!(await walkDir(fullPath, relPath))) {
+          return false;
+        }
       } else if (entry.name !== 'SKILL.md') {
+        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
+          truncated = true;
+          return false;
+        }
         files.push({
           name: entry.name,
           path: relPath,
@@ -1117,10 +1142,11 @@ async function listSkillSupportingFiles(skillDir) {
         });
       }
     }
+    return true;
   }
 
   await walkDir(skillDir);
-  return files;
+  return { files, truncated };
 }
 
 function assertPathWithinSkillDir(skillDir, relativePath) {
@@ -1265,6 +1291,8 @@ export {
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
   SKILL_SUPPORTING_FILE_MAX_BYTES,
+  SKILL_SUPPORTING_FILES_MAX_DIRECTORIES,
+  SKILL_SUPPORTING_FILES_MAX_FILES,
   SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
   readSkillSupportingFile,
   writeSkillSupportingFile,

@@ -860,6 +860,7 @@ export const settingsDict = {
   "settings.skills.page.actions.createSkill": "Створити навичку",
   "settings.skills.page.actions.createFile": "Створити файл",
   "settings.skills.page.supportingFiles.empty": "Допоміжних файлів немає. Натисніть «Додати файл», щоб додати довідкові матеріали.",
+  'settings.skills.page.supportingFiles.truncated': 'Цей список неповний: папка скіла занадто велика, щоб показати її повністю.',
   "settings.skills.page.loading.details": "Завантаження деталей навичок...",
   "settings.skills.page.loading.fileContent": "Завантаження вмісту файлу...",
   "settings.skills.page.empty.title": "Виберіть навичку на бічній панелі",

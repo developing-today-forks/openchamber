@@ -892,6 +892,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'إنشاء مهارة',
   'settings.skills.page.actions.createFile': 'إنشاء ملف',
   'settings.skills.page.supportingFiles.empty': "لا توجد ملفات مساندة. استخدم \"إضافة ملف\" لتضمين مواد مرجعية.",
+  'settings.skills.page.supportingFiles.truncated': 'هذه القائمة غير مكتملة: مجلد المهارة كبير جدًا بحيث لا يمكن إدراجه بالكامل.',
   'settings.skills.page.loading.details': 'جارٍ تحميل تفاصيل المهارة…',
   'settings.skills.page.loading.fileContent': 'جارٍ تحميل محتوى الملف…',
   'settings.skills.page.empty.title': 'اختر مهارة من الشريط الجانبي',

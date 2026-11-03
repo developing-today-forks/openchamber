@@ -857,6 +857,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': '建立 skill',
   'settings.skills.page.actions.createFile': '建立檔案',
   'settings.skills.page.supportingFiles.empty': '暫無支援檔案。使用「新增檔案」包含參考資料。',
+  'settings.skills.page.supportingFiles.truncated': '此清單不完整：技能資料夾太大，無法完整列出。',
   'settings.skills.page.loading.details': '正在載入 skill 詳情...',
   'settings.skills.page.loading.fileContent': '正在載入檔案內容...',
   'settings.skills.page.empty.title': '從側邊欄選擇一個 skill',

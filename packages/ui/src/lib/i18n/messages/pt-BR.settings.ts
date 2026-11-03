@@ -860,6 +860,7 @@ export const settingsDict = {
   "settings.skills.page.actions.createSkill": "Criar habilidade",
   "settings.skills.page.actions.createFile": "Criar arquivo",
   "settings.skills.page.supportingFiles.empty": "Não há arquivos de apoio. Use \"Adicionar arquivo\" para incluir materiais de referência.",
+  'settings.skills.page.supportingFiles.truncated': 'Esta lista está incompleta: a pasta da skill é grande demais para ser listada por completo.',
   "settings.skills.page.loading.details": "Carregando detalhes da habilidade...",
   "settings.skills.page.loading.fileContent": "Carregando conteúdo do arquivo...",
   "settings.skills.page.empty.title": "Selecione uma habilidade do painel lateral",

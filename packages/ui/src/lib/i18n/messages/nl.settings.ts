@@ -893,6 +893,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'Skill aanmaken',
   'settings.skills.page.actions.createFile': 'Bestand aanmaken',
   'settings.skills.page.supportingFiles.empty': 'Geen ondersteunende bestanden. Gebruik "Bestand toevoegen" om referentiemateriaal mee te nemen.',
+  'settings.skills.page.supportingFiles.truncated': 'Deze lijst is onvolledig: de skillmap is te groot om volledig weer te geven.',
   'settings.skills.page.loading.details': 'Skilldetails laden...',
   'settings.skills.page.loading.fileContent': 'Bestandsinhoud laden...',
   'settings.skills.page.empty.title': 'Kies een skill in de zijbalk',
