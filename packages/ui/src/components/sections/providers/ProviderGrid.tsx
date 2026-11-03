@@ -304,7 +304,7 @@ export const ProviderGrid: React.FC<ProviderGridProps> = ({ providers, integrati
         // A provider whose binding reason is policy/allowlist stays off even
         // if it is also on the toggleable list, so it renders read-only.
         const toggleable = (disabledProviders ?? []).filter((providerId) => !readOnlyOffIds.includes(providerId));
-        if (!onEnableProvider || (toggleable.length === 0 && readOnlyOffIds.length === 0)) return null;
+        if (toggleable.length === 0 && readOnlyOffIds.length === 0) return null;
         return (
           <SettingsSection title={t('settings.providers.disabled.title')} info={t('settings.providers.disabled.info')}>
             <div className="space-y-1">
@@ -312,9 +312,11 @@ export const ProviderGrid: React.FC<ProviderGridProps> = ({ providers, integrati
                 <div key={providerId} className="flex items-center gap-2 py-1">
                   <ProviderLogo providerId={providerId} className="size-4 shrink-0 opacity-60" />
                   <span className="min-w-0 flex-1 truncate typography-ui-label text-muted-foreground">{providerId}</span>
-                  <Button size="xs" variant="outline" className="!font-normal" onClick={() => onEnableProvider(providerId)}>
-                    {t('settings.providers.disabled.enable')}
-                  </Button>
+                  {onEnableProvider ? (
+                    <Button size="xs" variant="outline" className="!font-normal" onClick={() => onEnableProvider(providerId)}>
+                      {t('settings.providers.disabled.enable')}
+                    </Button>
+                  ) : null}
                 </div>
               ))}
               {readOnlyOffIds.map((providerId) => (

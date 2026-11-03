@@ -165,6 +165,17 @@ export const ProvidersPage: React.FC = () => {
   const handleProviderDisabled = React.useCallback(async (providerId: string, disabled: boolean) => {
     try {
       setDisabledProviders(await setProviderDisabledRequest(providerId, disabled));
+      // The toggle answer carries only the toggleable list, and the local
+      // recompute cannot know a provider was also allowlist/policy-off
+      // behind a 'disabled' reason. Re-read the effective off state so such
+      // a provider stays visibly off after being enabled here; a failed
+      // re-read keeps the recomputed state and never fails the toggle.
+      try {
+        const reloaded = await loadDisabledProviders();
+        if (reloaded) setDisabledProviders(reloaded);
+      } catch (error) {
+        console.warn('[providers] could not re-read disabled providers after toggle:', error);
+      }
       setOffReasons(peekProviderOffState()?.offReasons ?? null);
       if (disabled) setSelectedProvider('');
       toast.success(disabled
