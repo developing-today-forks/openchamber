@@ -136,7 +136,7 @@ export const createUiPasskeys = ({
   const authenticationChallenges = new Map();
 
   // The shared sync durable-store helpers keep the strict object check,
-  // collision-proof corrupt-file preservation, and atomic write together.
+  // collision-proof preservation of unreadable files, and atomic write together.
   const readStoredValue = (replacements = 0) => {
     const result = readDurableJsonFileSync(storeFile, { fs: storeFs, validateValue: isJsonObject });
     if (result.state === 'valid') {

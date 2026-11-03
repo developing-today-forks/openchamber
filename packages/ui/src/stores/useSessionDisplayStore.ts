@@ -33,10 +33,22 @@ export type SessionRowElements = {
   showProjectIcon: boolean;
   showGoal: boolean;
   showTime: boolean;
+  /** The pin glyph on a pinned row. */
+  showPinnedMarker: boolean;
+  /** Jev's "looks done" check next to the time. */
+  showDoneHint: boolean;
+  /** The directory action indicator on rows whose session has a directory. */
+  showDirectoryIndicator: boolean;
 };
 
 /** Which row lines the Tree zones take, and which optional elements rows show. */
-export type SessionRowDisplay = { zoneLines: SessionRowLines } & SessionRowElements;
+/** Line counts per row kind: the Tree zones, the List rows, Chats rows, and the Tree's project rows. */
+export type SessionRowDisplay = {
+  zoneLines: SessionRowLines;
+  listLines: SessionRowLines;
+  chatsLines: SessionRowLines;
+  projectLines: SessionRowLines;
+} & SessionRowElements;
 
 export const DEFAULT_SESSION_ROW_ELEMENTS: SessionRowElements = Object.freeze({
   showBranch: true,
@@ -45,10 +57,18 @@ export const DEFAULT_SESSION_ROW_ELEMENTS: SessionRowElements = Object.freeze({
   showProjectIcon: true,
   showGoal: true,
   showTime: true,
+  showPinnedMarker: true,
+  showDoneHint: true,
+  showDirectoryIndicator: true,
 });
 
 const DEFAULT_SESSION_ROW_DISPLAY: SessionRowDisplay = Object.freeze({
   zoneLines: 'one',
+  // List rows carry two lines today (the folded layout option defaulted off),
+  // Chats and project rows one, so the defaults reproduce today's rows.
+  listLines: 'two',
+  chatsLines: 'one',
+  projectLines: 'one',
   ...DEFAULT_SESSION_ROW_ELEMENTS,
 });
 
@@ -60,20 +80,32 @@ const DEFAULT_SESSION_ROW_DISPLAY: SessionRowDisplay = Object.freeze({
  */
 export const sessionRowDisplaySchema = z.object({
   zoneLines: z.enum(['one', 'two']).optional().catch(undefined),
+  listLines: z.enum(['one', 'two']).optional().catch(undefined),
+  chatsLines: z.enum(['one', 'two']).optional().catch(undefined),
+  projectLines: z.enum(['one', 'two']).optional().catch(undefined),
   showBranch: z.boolean().optional().catch(undefined),
   showPrBadge: z.boolean().optional().catch(undefined),
   showProviderLogo: z.boolean().optional().catch(undefined),
   showProjectIcon: z.boolean().optional().catch(undefined),
   showGoal: z.boolean().optional().catch(undefined),
   showTime: z.boolean().optional().catch(undefined),
+  showPinnedMarker: z.boolean().optional().catch(undefined),
+  showDoneHint: z.boolean().optional().catch(undefined),
+  showDirectoryIndicator: z.boolean().optional().catch(undefined),
 }).transform((stored): SessionRowDisplay => ({
   zoneLines: stored.zoneLines ?? DEFAULT_SESSION_ROW_DISPLAY.zoneLines,
+  listLines: stored.listLines ?? DEFAULT_SESSION_ROW_DISPLAY.listLines,
+  chatsLines: stored.chatsLines ?? DEFAULT_SESSION_ROW_DISPLAY.chatsLines,
+  projectLines: stored.projectLines ?? DEFAULT_SESSION_ROW_DISPLAY.projectLines,
   showBranch: stored.showBranch ?? DEFAULT_SESSION_ROW_DISPLAY.showBranch,
   showPrBadge: stored.showPrBadge ?? DEFAULT_SESSION_ROW_DISPLAY.showPrBadge,
   showProviderLogo: stored.showProviderLogo ?? DEFAULT_SESSION_ROW_DISPLAY.showProviderLogo,
   showProjectIcon: stored.showProjectIcon ?? DEFAULT_SESSION_ROW_DISPLAY.showProjectIcon,
   showGoal: stored.showGoal ?? DEFAULT_SESSION_ROW_DISPLAY.showGoal,
   showTime: stored.showTime ?? DEFAULT_SESSION_ROW_DISPLAY.showTime,
+  showPinnedMarker: stored.showPinnedMarker ?? DEFAULT_SESSION_ROW_DISPLAY.showPinnedMarker,
+  showDoneHint: stored.showDoneHint ?? DEFAULT_SESSION_ROW_DISPLAY.showDoneHint,
+  showDirectoryIndicator: stored.showDirectoryIndicator ?? DEFAULT_SESSION_ROW_DISPLAY.showDirectoryIndicator,
 }));
 
 type SessionDisplayStore = {
@@ -94,7 +126,7 @@ type SessionDisplayStore = {
   showWorkSection: boolean;
   /** The Pinned block above In work; off by default. Hidden, pinned sessions stay in their projects. */
   showPinnedSection: boolean;
-  /** Pinned and In work rows in the Tree view: one line by default, two with branch, PR and model when set. */
+  /** How many lines each sidebar row kind takes, and which optional elements rows show. */
   sessionRowDisplay: SessionRowDisplay;
   setSessionRowDisplay: (patch: Partial<SessionRowDisplay>) => void;
   setSessionRowElement: <K extends keyof SessionRowElements>(key: K, value: SessionRowElements[K]) => void;
@@ -126,6 +158,7 @@ export const migrateSessionDisplayState = (
     stickyZoneHeaders?: boolean;
     showRecentSection?: boolean;
     detailedZoneRows?: boolean;
+    sidebarLayout?: { timelineCompactRows?: unknown };
   };
   if (version < 2) {
     state.projectSortOrder = 'manual';
@@ -171,6 +204,19 @@ export const migrateSessionDisplayState = (
       ...(zoneLines === undefined ? null : { zoneLines }),
     };
   }
+  if (version < 13) {
+    // v13 folds the List view's one-line layout option (the sidebar layout's
+    // timelineCompactRows) into the row display as listLines, and adds the
+    // Chats and Tree project line counts at their defaults. A row display
+    // saved by a newer version keeps its own listLines.
+    const compactRows = state.sidebarLayout?.timelineCompactRows;
+    const listLines: SessionRowLines | undefined = compactRows === true ? 'one' : compactRows === false ? 'two' : undefined;
+    state.sessionRowDisplay = {
+      ...DEFAULT_SESSION_ROW_DISPLAY,
+      ...state.sessionRowDisplay,
+      ...(listLines === undefined || state.sessionRowDisplay?.listLines !== undefined ? null : { listLines }),
+    };
+  }
   return state;
 };
 
@@ -213,7 +259,7 @@ export const useSessionDisplayStore = create<SessionDisplayStore>()(
     }),
     {
       name: 'session-display-mode',
-      version: 12,
+      version: 13,
       // v1→v2 adds projectSortOrder using the canonical manual ordering.
       // v2→v3 replaces the previously shipped recent default with manual.
       // v3→v4 removes displayMode (single sidebar row layout).
@@ -225,6 +271,8 @@ export const useSessionDisplayStore = create<SessionDisplayStore>()(
       // v9→v10 drops showRecentSection (Recent is gone).
       // v10→v11 adds sidebarLayout (default on hydration when missing).
       // v11→v12 folds detailedZoneRows into sessionRowDisplay.zoneLines.
+      // v12→v13 folds sidebarLayout.timelineCompactRows into
+      // sessionRowDisplay.listLines and adds chatsLines/projectLines.
       migrate: migrateSessionDisplayState,
       // Hydration parses the sidebar layout and the row display whatever the
       // stored version: a missing one keeps the default, a stored one (also

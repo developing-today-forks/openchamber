@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../opencode/auth.js', () => ({
-  readOpenCodeCredentials: async () => ({ 'zhipuai-coding-plan': { key: 'test-token' } }),
-}));
+const readAuth = async () => ({ 'zhipuai-coding-plan': { key: 'test-token' } });
 
 import { fetchQuota } from './zhipuai-coding-plan.js';
 
@@ -32,7 +30,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -67,7 +65,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows['5h']).toMatchObject({
@@ -88,7 +86,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows['5h'].usedPercent).toBe(45);
@@ -108,7 +106,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
     const windows = result.usage.windows;
 
     expect(result.ok).toBe(true);
@@ -128,7 +126,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       },
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(true);
     expect(result.usage.windows['5h'].usedPercent).toBe(100);
@@ -142,7 +140,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       success: false,
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);
@@ -156,7 +154,7 @@ describe('Zhipu AI Coding Plan quota provider', () => {
       success: false,
     })));
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.error).toBe('API error: 1001');
@@ -168,7 +166,7 @@ describe('Zhipu AI Coding Plan request deadline', () => {
     const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await fetchQuota();
+    const result = await fetchQuota({ readAuth });
 
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);

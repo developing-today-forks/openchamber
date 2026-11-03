@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { copyDirectoryNoSymlinks, installSkillsFromRepository } from './install.js';
+import { copyDirectoryNoSymlinks, installSkillsFromRepository, SKILL_COPY_MAX_ENTRIES, SKILL_COPY_MAX_TOTAL_BYTES } from './install.js';
 
 const WIN = process.platform === 'win32';
 
@@ -91,6 +91,62 @@ describe('copyDirectoryNoSymlinks containment', () => {
       .rejects.toThrow('Invalid source path traversal detected');
 
     expect(fs.existsSync(path.join(dst, 'SKILL.md'))).toBe(false);
+  });
+});
+
+describe('copyDirectoryNoSymlinks size caps', () => {
+  const setupClone = () => {
+    const clone = makeTemp('oc-clone-');
+    const src = path.join(clone, 'skills', 'big');
+    fs.mkdirSync(src, { recursive: true });
+    return { clone, src, dst: path.join(makeTemp('oc-dst-'), 'big') };
+  };
+
+  it('aborts when the tree has more entries than the cap, directories included', async () => {
+    const { clone, src, dst } = setupClone();
+    // Empty directories count: a tree of them is the same unbounded copy as a
+    // tree of files, and this is the shape the 20,000-directory probe took.
+    for (let index = 0; index < SKILL_COPY_MAX_ENTRIES + 1; index += 1) {
+      fs.mkdirSync(path.join(src, `d${index}`));
+    }
+
+    await expect(copyDirectoryNoSymlinks(src, dst, clone))
+      .rejects.toThrow(`more than ${SKILL_COPY_MAX_ENTRIES} entries`);
+  });
+
+  it('aborts on a file above the per-file limit', async () => {
+    const { clone, src, dst } = setupClone();
+    writeSkill(src, 'big');
+    fs.writeFileSync(path.join(src, 'huge.bin'), Buffer.alloc(1024 * 1024 + 1));
+
+    await expect(copyDirectoryNoSymlinks(src, dst, clone))
+      .rejects.toThrow('exceeds the 1048576 byte limit');
+  });
+
+  it('aborts when the tree passes the total-byte cap', async () => {
+    const { clone, src, dst } = setupClone();
+    writeSkill(src, 'big');
+    // Each file is under the per-file limit, so only the running total stops it.
+    const chunk = Buffer.alloc(1024 * 1024);
+    const files = Math.ceil(SKILL_COPY_MAX_TOTAL_BYTES / chunk.length) + 1;
+    for (let index = 0; index < files; index += 1) {
+      fs.writeFileSync(path.join(src, `chunk-${index}.bin`), chunk);
+    }
+
+    await expect(copyDirectoryNoSymlinks(src, dst, clone))
+      .rejects.toThrow(`more than ${SKILL_COPY_MAX_TOTAL_BYTES} bytes`);
+  });
+
+  it('copies a tree at the caps completely', async () => {
+    const { clone, src, dst } = setupClone();
+    writeSkill(src, 'big');
+    fs.mkdirSync(path.join(src, 'assets'));
+    fs.writeFileSync(path.join(src, 'assets', 'small.txt'), 'ok');
+
+    await copyDirectoryNoSymlinks(src, dst, clone);
+
+    expect(fs.readFileSync(path.join(dst, 'SKILL.md'), 'utf8')).toContain('name: big');
+    expect(fs.readFileSync(path.join(dst, 'assets', 'small.txt'), 'utf8')).toBe('ok');
   });
 });
 

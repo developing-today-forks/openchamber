@@ -308,7 +308,16 @@ const upstreamAuthFailureResult = (providerId, providerName) => ({
 });
 
 const surfaceSharedUpstreamAuthFailure = (result) => {
-  if (!result || result.ok || !isOpenCodeUpstreamAuthError(result.error)) return result;
+  if (!result || result.ok) return result;
+  // A provider whose credential wrapper replaces the shared store-read error
+  // with its own text (xAI, #1131) marks the result with credentialReadFailure
+  // instead of surfacing the upstream message; classify from the marker and
+  // drop it - it is an internal signal and never leaves this module.
+  if (result.credentialReadFailure === true) {
+    const { credentialReadFailure, ...rest } = result;
+    return { ...rest, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
+  }
+  if (!isOpenCodeUpstreamAuthError(result.error)) return result;
   return { ...result, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
 };
 
@@ -393,10 +402,10 @@ const isCredentialUsable = (provider, row, authKey = row.integrationID) => {
  * out unless `includeDisabled` is set. Fetching one by name always works:
  * the filter governs the listing, never an explicit ask.
  */
-export const listConfiguredQuotaProviders = async ({ includeDisabled = false } = {}) => {
+export const listConfiguredQuotaProviders = async ({ includeDisabled = false } = {}, { readAuth = readOpenCodeCredentials, listCredentials = listStoredCredentials } = {}) => {
   let auth;
   try {
-    auth = await readOpenCodeCredentials();
+    auth = await readAuth();
   } catch (error) {
     if (isOpenCodeUpstreamAuthError(error)) throw new Error(OPENCODE_UPSTREAM_AUTH_ERROR);
     throw error;
@@ -424,7 +433,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false } =
     if (!resolved?.provider.fetchQuotaForCredential) continue;
     let rows;
     try {
-      rows = await listStoredCredentials(instanceId);
+      rows = await listCredentials(instanceId);
     } catch (error) {
       if (isOpenCodeUpstreamAuthError(error)) throw new Error(OPENCODE_UPSTREAM_AUTH_ERROR);
       throw error;
@@ -473,10 +482,10 @@ export const listQuotaProviderCatalogue = () => {
  * whose store holds no usable row, answer the single active-credential
  * result, so callers see the same shape either way.
  */
-const fetchPerCredential = async (provider, { resultProviderId, resultProviderName, integrationIds, authKey }) => {
+const fetchPerCredential = async (provider, { resultProviderId, resultProviderName, integrationIds, authKey }, { listCredentials = listStoredCredentials } = {}) => {
   const rows = [];
   for (const integrationID of integrationIds) {
-    rows.push(...await listStoredCredentials(integrationID));
+    rows.push(...await listCredentials(integrationID));
   }
   // An instance row is judged under its base provider's integration id: the
   // provider's isConfigured knows 'openai', not 'openai.alternate'.
@@ -508,7 +517,7 @@ const unsupportedResult = (providerId) => buildResult({
 });
 
 /** Per-credential results for a configured instance id, or null when the id is not one. */
-const fetchInstanceResults = async (providerId) => {
+const fetchInstanceResults = async (providerId, deps = {}) => {
   const facts = readQuotaConfigFacts();
   const resolved = resolveInstanceProvider(facts, providerId);
   if (!resolved?.provider.fetchQuotaForCredential) return null;
@@ -517,7 +526,7 @@ const fetchInstanceResults = async (providerId) => {
     resultProviderName: resolved.instance.name ?? undefined,
     integrationIds: [providerId],
     authKey: resolved.instance.base
-  });
+  }, deps);
   if (results) return results;
   return [buildResult({
     providerId,
@@ -533,23 +542,23 @@ const fetchInstanceResults = async (providerId) => {
 // as if they were registered providers.
 const getRegistryProvider = (providerId) => (Object.hasOwn(registry, providerId) ? registry[providerId] : undefined);
 
-export const fetchQuotaForProviderInstances = async (providerId) => {
+export const fetchQuotaForProviderInstances = async (providerId, deps = {}) => {
   const provider = getRegistryProvider(providerId);
 
   try {
     if (!provider) {
-      return (await fetchInstanceResults(providerId)) ?? [unsupportedResult(providerId)];
+      return (await fetchInstanceResults(providerId, deps)) ?? [unsupportedResult(providerId)];
     }
 
     if (!provider.fetchQuotaForCredential) {
-      return [await fetchQuotaForProvider(providerId)];
+      return [await fetchQuotaForProvider(providerId, deps)];
     }
 
     const results = await fetchPerCredential(provider, {
       resultProviderId: providerId,
       integrationIds: provider.credentialAliases ?? [providerId]
-    });
-    return results ?? [await fetchQuotaForProvider(providerId)];
+    }, deps);
+    return results ?? [await fetchQuotaForProvider(providerId, deps)];
   } catch (error) {
     // The credential-store read itself failed: that is the shared upstream
     // path, not this provider, so answer one marked shared-failure row
@@ -561,7 +570,8 @@ export const fetchQuotaForProviderInstances = async (providerId) => {
   }
 };
 
-const fetchQuotaForProviderUncoalesced = async (providerId) => {
+const fetchQuotaForProviderUncoalesced = async (providerId, deps = {}) => {
+  const { readAuth = readOpenCodeCredentials } = deps;
   const provider = getRegistryProvider(providerId);
 
   if (!provider) {
@@ -569,7 +579,7 @@ const fetchQuotaForProviderUncoalesced = async (providerId) => {
     // the one-result shape this function promises.
     let instanceResults;
     try {
-      instanceResults = await fetchInstanceResults(providerId);
+      instanceResults = await fetchInstanceResults(providerId, deps);
     } catch (error) {
       if (isOpenCodeUpstreamAuthError(error)) return upstreamAuthFailureResult(providerId, providerId);
       throw error;
@@ -581,7 +591,7 @@ const fetchQuotaForProviderUncoalesced = async (providerId) => {
   }
 
   try {
-    return surfaceSharedUpstreamAuthFailure(await provider.fetchQuota());
+    return surfaceSharedUpstreamAuthFailure(await provider.fetchQuota({ readAuth, readCredentials: readAuth }));
   } catch (error) {
     return surfaceSharedUpstreamAuthFailure(buildResult({
       providerId: provider.providerId,
@@ -594,11 +604,11 @@ const fetchQuotaForProviderUncoalesced = async (providerId) => {
   }
 };
 
-export const fetchQuotaForProvider = (providerId) => {
+export const fetchQuotaForProvider = (providerId, deps = {}) => {
   const existing = pendingFetches.get(providerId);
   if (existing) return existing;
 
-  const pending = fetchQuotaForProviderUncoalesced(providerId).finally(() => {
+  const pending = fetchQuotaForProviderUncoalesced(providerId, deps).finally(() => {
     if (pendingFetches.get(providerId) === pending) pendingFetches.delete(providerId);
   });
   pendingFetches.set(providerId, pending);

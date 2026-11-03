@@ -1829,6 +1829,14 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     void updateDesktopSettings({ sidebarShowChatsSection: next });
   };
 
+  const handleToggleCompactListRows = () => {
+    // The List line count lives in the row display, shared with the desktop
+    // sidebar; the phone's menu flips the same value.
+    const listLines = listRowLines === 'one' ? 'two' : 'one';
+    setSessionRowDisplay({ listLines });
+    void updateDesktopSettings({ sidebarSessionRowDisplay: { ...useSessionDisplayStore.getState().sessionRowDisplay, listLines } });
+  };
+
   const handleToggleDetailedZoneRows = () => {
     // The phone keeps its own rows; the toggle only follows the Tree zone
     // line count, like the old Detailed rows switch did.
@@ -1987,7 +1995,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const timeListActive = timelineActive && listSessionGrouping === 'time';
   const chatsInListProjects = timelineActive && !timeListActive && sidebarLayout.timelineChats === 'group';
   const combinedListActive = timelineActive && !timeListActive && !sidebarLayout.timelineProjectGroups;
-  const compactTimelineRows = timelineActive && sidebarLayout.timelineCompactRows;
+  const listRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.listLines);
+  const compactTimelineRows = timelineActive && listRowLines === 'one';
 
   // Pinned and In work use the timeline's rows (two lines with the project's
   // icon in List, one line in Tree unless two-line zone rows are on), so their
@@ -2613,7 +2622,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             <DropdownMenuLabel>{t('sessions.sidebar.header.layout.listChats')}</DropdownMenuLabel>
             {LIST_CHATS_OPTIONS.map(([placement, labelKey]) => renderMenuChoice(placement, labelKey, sidebarLayout.timelineChats === placement, () => saveSidebarLayout({ timelineChats: placement })))}
             {renderMenuChoice('projectGroups', 'sessions.sidebar.header.layout.projectGroups', sidebarLayout.timelineProjectGroups, () => saveSidebarLayout({ timelineProjectGroups: !sidebarLayout.timelineProjectGroups }))}
-            {renderMenuChoice('compactRows', 'sessions.sidebar.header.layout.compactRows', sidebarLayout.timelineCompactRows, () => saveSidebarLayout({ timelineCompactRows: !sidebarLayout.timelineCompactRows }))}
+            {renderMenuChoice('compactRows', 'sessions.sidebar.header.layout.compactRows', listRowLines === 'one', handleToggleCompactListRows)}
           </>
         ) : null}
         <DropdownMenuSeparator />

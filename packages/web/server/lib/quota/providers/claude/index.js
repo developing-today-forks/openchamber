@@ -66,10 +66,10 @@ const cachedResultFor = (fingerprint, planLabel) => {
 const failure = (error, { configured = true } = {}) =>
   buildResult({ providerId, providerName, ok: false, configured, error });
 
-export const isConfigured = (auth) => Boolean(findClaudeCredential(auth));
+export const isConfigured = (auth, { findCredential = findClaudeCredential } = {}) => Boolean(findCredential(auth));
 
-const fetchQuotaUncoalesced = async () => {
-  const credential = await loadClaudeCredential();
+const fetchQuotaUncoalesced = async (loadCredential) => {
+  const credential = await loadCredential();
   if (!credential) {
     return failure('Not configured', { configured: false });
   }
@@ -139,10 +139,11 @@ const fetchQuotaUncoalesced = async () => {
   });
 };
 
-export const fetchQuota = () => {
+export const fetchQuota = ({ loadCredential, readAuth } = {}) => {
   if (pendingFetch) return pendingFetch;
 
-  const request = fetchQuotaUncoalesced();
+  const load = loadCredential ?? (readAuth ? () => loadClaudeCredential({ readAuth }) : loadClaudeCredential);
+  const request = fetchQuotaUncoalesced(load);
   const pending = request.finally(() => {
     if (pendingFetch === pending) pendingFetch = null;
   });

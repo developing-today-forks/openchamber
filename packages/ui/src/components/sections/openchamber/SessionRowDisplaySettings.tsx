@@ -18,10 +18,10 @@ import {
 } from '@/stores/useSessionDisplayStore';
 
 /**
- * Appearance → Sidebar rows: which lines the Tree zone rows take, and which
- * optional elements session rows show. Live status and permission/question
- * badges always show, so they are not here. The List view's one-line layout
- * stays in the sidebar display menu.
+ * Appearance → Sidebar rows: how many lines each row kind takes (Tree zones,
+ * List, Chats, Tree projects), and which optional elements session rows
+ * show. Live status and permission/question badges always show, so they are
+ * not here.
  */
 export const SessionRowDisplaySettings: React.FC = () => {
   const { t } = useI18n();
@@ -33,10 +33,31 @@ export const SessionRowDisplaySettings: React.FC = () => {
     void updateDesktopSettings({ sidebarSessionRowDisplay: next });
   }, []);
 
-  const handleZoneLines = React.useCallback((zoneLines: SessionRowDisplay['zoneLines']) => {
-    setSessionRowDisplay({ zoneLines });
-    writeDisplay({ ...useSessionDisplayStore.getState().sessionRowDisplay, zoneLines });
+  const handleLines = React.useCallback((key: 'zoneLines' | 'listLines' | 'chatsLines' | 'projectLines', lines: SessionRowDisplay['zoneLines']) => {
+    setSessionRowDisplay({ [key]: lines });
+    writeDisplay({ ...useSessionDisplayStore.getState().sessionRowDisplay, [key]: lines });
   }, [setSessionRowDisplay, writeDisplay]);
+
+  const linesRow = (
+    key: 'zoneLines' | 'listLines' | 'chatsLines' | 'projectLines',
+    labelKey: 'settings.openchamber.visual.field.zoneLines' | 'settings.openchamber.visual.field.listLines' | 'settings.openchamber.visual.field.chatsLines' | 'settings.openchamber.visual.field.projectLines',
+    settingsItem: string,
+  ) => (
+    <SettingsFieldRow
+      label={t(labelKey)}
+      settingsItem={settingsItem}
+    >
+      <SettingsChipGroup
+        value={sessionRowDisplay[key]}
+        options={[
+          { value: 'one', label: t('settings.openchamber.visual.option.zoneLinesOne') },
+          { value: 'two', label: t('settings.openchamber.visual.option.zoneLinesTwo') },
+        ]}
+        onChange={(lines) => handleLines(key, lines)}
+        aria-label={t(labelKey)}
+      />
+    </SettingsFieldRow>
+  );
 
   const handleElement = React.useCallback(<K extends keyof SessionRowElements>(key: K, value: boolean) => {
     setSessionRowElement(key, value);
@@ -45,7 +66,7 @@ export const SessionRowDisplaySettings: React.FC = () => {
 
   const elementRow = (
     key: keyof SessionRowElements,
-    labelKey: 'settings.openchamber.visual.field.rowBranch' | 'settings.openchamber.visual.field.rowPrBadge' | 'settings.openchamber.visual.field.rowProviderLogo' | 'settings.openchamber.visual.field.rowProjectIcon' | 'settings.openchamber.visual.field.rowGoal' | 'settings.openchamber.visual.field.rowTime',
+    labelKey: 'settings.openchamber.visual.field.rowBranch' | 'settings.openchamber.visual.field.rowPrBadge' | 'settings.openchamber.visual.field.rowProviderLogo' | 'settings.openchamber.visual.field.rowProjectIcon' | 'settings.openchamber.visual.field.rowGoal' | 'settings.openchamber.visual.field.rowTime' | 'settings.openchamber.visual.field.rowPinnedMarker' | 'settings.openchamber.visual.field.rowDoneHint' | 'settings.openchamber.visual.field.rowDirectoryIndicator',
     settingsItem: string,
   ) => (
     <SettingsCheckboxRow
@@ -65,20 +86,10 @@ export const SessionRowDisplaySettings: React.FC = () => {
       contentClassName={SETTINGS_OPTION_STACK_CLASS}
     >
       <SessionRowDisplayPreview display={sessionRowDisplay} />
-      <SettingsFieldRow
-        label={t('settings.openchamber.visual.field.zoneLines')}
-        settingsItem="appearance.sidebar-rows-lines"
-      >
-        <SettingsChipGroup
-          value={sessionRowDisplay.zoneLines}
-          options={[
-            { value: 'one', label: t('settings.openchamber.visual.option.zoneLinesOne') },
-            { value: 'two', label: t('settings.openchamber.visual.option.zoneLinesTwo') },
-          ]}
-          onChange={handleZoneLines}
-          aria-label={t('settings.openchamber.visual.field.zoneLines')}
-        />
-      </SettingsFieldRow>
+      {linesRow('zoneLines', 'settings.openchamber.visual.field.zoneLines', 'appearance.sidebar-rows-lines')}
+      {linesRow('listLines', 'settings.openchamber.visual.field.listLines', 'appearance.sidebar-rows-list-lines')}
+      {linesRow('chatsLines', 'settings.openchamber.visual.field.chatsLines', 'appearance.sidebar-rows-chats-lines')}
+      {linesRow('projectLines', 'settings.openchamber.visual.field.projectLines', 'appearance.sidebar-rows-project-lines')}
       <SettingsControlGroup title={t('settings.openchamber.visual.group.rowElements')}>
         {elementRow('showBranch', 'settings.openchamber.visual.field.rowBranch', 'appearance.sidebar-rows-branch')}
         {elementRow('showPrBadge', 'settings.openchamber.visual.field.rowPrBadge', 'appearance.sidebar-rows-pr-badge')}
@@ -86,6 +97,9 @@ export const SessionRowDisplaySettings: React.FC = () => {
         {elementRow('showProjectIcon', 'settings.openchamber.visual.field.rowProjectIcon', 'appearance.sidebar-rows-project-icon')}
         {elementRow('showGoal', 'settings.openchamber.visual.field.rowGoal', 'appearance.sidebar-rows-goal')}
         {elementRow('showTime', 'settings.openchamber.visual.field.rowTime', 'appearance.sidebar-rows-time')}
+        {elementRow('showPinnedMarker', 'settings.openchamber.visual.field.rowPinnedMarker', 'appearance.sidebar-rows-pin-marker')}
+        {elementRow('showDoneHint', 'settings.openchamber.visual.field.rowDoneHint', 'appearance.sidebar-rows-done-hint')}
+        {elementRow('showDirectoryIndicator', 'settings.openchamber.visual.field.rowDirectoryIndicator', 'appearance.sidebar-rows-directory')}
       </SettingsControlGroup>
     </SettingsSection>
   );

@@ -104,7 +104,7 @@ export type SidebarLayout = {
   timelineChats: TimelineChatsPlacement;
   /** List view: sessions under one header per project; off, one combined list. */
   timelineProjectGroups: boolean;
-  /** List view: one line per session. */
+  /** Folded into `sessionRowDisplay.listLines` (display store v13); kept so stored layouts still parse. */
   timelineCompactRows: boolean;
   /** List view with Chats as a group: its place among the projects. */
   chatsGroupIndex: number;
