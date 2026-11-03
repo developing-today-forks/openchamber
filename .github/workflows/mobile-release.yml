@@ -85,6 +85,9 @@ jobs:
       actions: read
       contents: read
     uses: ./.github/workflows/require-main-gate.yml
+    # No timeout-minutes here: GitHub rejects it on reusable-workflow jobs
+    # and the whole workflow dies at startup with zero jobs (#1398, added
+    # by #1396). The called workflow sets its own job timeouts.
     with:
       release_sha: ${{ github.sha }}
 

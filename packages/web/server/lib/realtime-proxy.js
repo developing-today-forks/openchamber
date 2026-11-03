@@ -4,8 +4,11 @@ const PROXY_SSE_PATH = '/api/openchamber/realtime-proxy/sse';
 const PROXY_WS_PATH = '/api/openchamber/realtime-proxy/ws';
 /** A handshake that has not completed by now is not going to (dev-tunnel precedent). */
 const HANDSHAKE_TIMEOUT_MS = 15_000;
-/** Bytes one client may queue while its upstream is still connecting (dev-tunnel's pre-open cap). */
-const MAX_PENDING_BYTES = 256 * 1024;
+/** Bytes one client may queue while its upstream is still connecting. The cap
+ * holds at least one largest legitimate client frame (the 1 MiB maxPayload
+ * below): a smaller cap dropped a single at-cap frame with 1013 "queue is
+ * full" whenever it raced the upstream handshake (#1394). */
+const MAX_PENDING_BYTES = 1024 * 1024;
 /** A peer further behind than this after connect is closed as too slow (event-stream precedent). */
 const MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 /**
@@ -277,8 +280,11 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
 
     // Forwarding ignores how far behind the receiving peer is falling;
     // past the bound the pair is closed instead of buffering without limit.
-    const closeIfPeerTooSlow = (peer) => {
-      if (peer.bufferedAmount <= maxBufferedBytes) return;
+    // The amount is read before the send: after a send it still holds the
+    // frame just queued plus its header bytes, so a single at-cap frame
+    // would always trip a bound equal to the frame cap (#1394).
+    const closeIfPeerTooSlow = (peer, bufferedAmountBeforeSend) => {
+      if (bufferedAmountBeforeSend <= maxBufferedBytes) return;
       closePair(1013, 'Realtime proxy peer is too slow');
     };
 
@@ -300,8 +306,9 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
         return;
       }
       if (upstream.readyState === WebSocket.OPEN) {
+        const bufferedAmountBeforeSend = upstream.bufferedAmount;
         upstream.send(data, { binary: isBinary });
-        closeIfPeerTooSlow(upstream);
+        closeIfPeerTooSlow(upstream, bufferedAmountBeforeSend);
         return;
       }
       if (upstream.readyState === WebSocket.CONNECTING) {
@@ -332,8 +339,9 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
         return;
       }
       if (client.readyState === WebSocket.OPEN) {
+        const bufferedAmountBeforeSend = client.bufferedAmount;
         client.send(data, { binary: isBinary });
-        closeIfPeerTooSlow(client);
+        closeIfPeerTooSlow(client, bufferedAmountBeforeSend);
       }
     });
     upstream.on('close', (code, reason) => {
@@ -351,6 +359,20 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
       }
       if (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING) {
         client.close(1011, 'Realtime proxy upstream error');
+      }
+    });
+    client.on('error', (error) => {
+      // Where the ws layer DOES enforce the client maxPayload (Node), the
+      // refusal surfaces here as a RangeError instead of a 'message' event;
+      // the pair still closes with the same 1009 (#1394, client-direction
+      // counterpart of the upstream handler above). Without this handler
+      // the RangeError escapes as an uncaught exception.
+      if (error instanceof RangeError && /max payload/i.test(error.message)) {
+        closePair(1009, 'Realtime proxy frame too large');
+        return;
+      }
+      if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) {
+        try { upstream.close(); } catch { /* already closing */ }
       }
     });
     client.on('close', () => {
