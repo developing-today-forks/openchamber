@@ -31,9 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Check out this repo (needed for the vendored local action)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Queue a cross-repo smoke task in developing-today/opencode
         id: queue
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue  # vendored (openchamber#805): the whole-repo action download fails in runner setup
         with:
           repo: developing-today/opencode
           title: "SMOKE TEST: cross-repo dispatch from openchamber — safe to close"
