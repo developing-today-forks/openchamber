@@ -110,8 +110,8 @@ export const isConfigured = (auth) => {
   return Boolean(entry?.access || entry?.token);
 };
 
-export const fetchQuota = async () => {
-  const auth = await readOpenCodeCredentials();
+export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   const accessToken = entry?.access ?? entry?.token;
 
@@ -176,8 +176,8 @@ export const fetchQuota = async () => {
 export const providerIdAddon = 'github-copilot-addon';
 export const providerNameAddon = 'GitHub Copilot Add-on';
 
-export const fetchQuotaAddon = async () => {
-  const auth = await readOpenCodeCredentials();
+export const fetchQuotaAddon = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   const accessToken = entry?.access ?? entry?.token;
 

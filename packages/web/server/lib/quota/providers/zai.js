@@ -110,8 +110,8 @@ export const isConfigured = (auth) => {
 const ZAI_GIFT_RESET_USE_URL = 'https://api.z.ai/api/biz/customer-package-reset/use';
 export const giftResetTypes = ['FIVE_HOUR', 'WEEK'];
 
-export const useZaiGiftReset = async ({ recordId, resetType }) => {
-  const auth = await readOpenCodeCredentials();
+export const useZaiGiftReset = async ({ recordId, resetType, readAuth = readOpenCodeCredentials }) => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   const apiKey = entry?.key ?? entry?.token;
 
@@ -144,8 +144,8 @@ export const useZaiGiftReset = async ({ recordId, resetType }) => {
   return true;
 };
 
-export const fetchQuota = async () => {
-  const auth = await readOpenCodeCredentials();
+export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   const apiKey = entry?.key ?? entry?.token;
 

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { z } from "zod";
 import { listModelVariantIds, modelVariantNames } from "@/lib/modelVariants";
 import { AUTO_MODEL_ID, AUTO_PROVIDER_ID, isAutoModel } from '@/lib/routing/autoModel';
 import { selectAutoReady, useRoutingStore } from '@/stores/useRoutingStore';
@@ -226,7 +227,21 @@ const sanitizePersistedSelectedProviderId = (providerId: string | undefined): st
     providerId === ADD_PROVIDER_SENTINEL ? "" : (providerId ?? "")
 );
 
-const normalizeOptionalString = (value: unknown): string | undefined => {
+/**
+ * One field of a config-shaped document (settings, synced OpenCode config, a
+ * models.dev payload): values are JSON-shaped, and each normalizer/guard
+ * below narrows the field it owns.
+ */
+type ConfigFieldValue =
+    | string
+    | number
+    | boolean
+    | null
+    | undefined
+    | ConfigFieldValue[]
+    | { [key: string]: ConfigFieldValue };
+
+const normalizeOptionalString = (value: ConfigFieldValue): string | undefined => {
     if (typeof value !== "string") {
         return undefined;
     }
@@ -563,7 +578,7 @@ const resolveGitGenerationModelSelection = ({
     return null;
 };
 
-interface ModelsDevModelEntry {
+type ModelsDevModelEntry = {
     id?: string;
     name?: string;
     tool_call?: boolean;
@@ -590,24 +605,26 @@ interface ModelsDevModelEntry {
     last_updated?: string;
 }
 
-interface ModelsDevProviderEntry {
+type ModelsDevProviderEntry = {
     id?: string;
     models?: Record<string, ModelsDevModelEntry | undefined>;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+const storeRecordSchema = z.record(z.string(), z.unknown());
+
+const isRecord = (value: ConfigFieldValue): value is Record<string, ConfigFieldValue> =>
     typeof value === "object" && value !== null;
 
-const isStringArray = (value: unknown): value is string[] =>
+const isStringArray = (value: ConfigFieldValue): value is string[] =>
     Array.isArray(value) && value.every((item) => typeof item === "string");
 
-const isModelsDevModelEntry = (value: unknown): value is ModelsDevModelEntry => {
+const isModelsDevModelEntry = (value: ConfigFieldValue): value is ModelsDevModelEntry => {
     if (!isRecord(value)) {
         return false;
     }
-    const candidate = value as ModelsDevModelEntry;
-    if (candidate.modalities) {
-        const { input, output } = candidate.modalities;
+    const modalities = value.modalities;
+    if (isRecord(modalities)) {
+        const { input, output } = modalities;
         if (input && !isStringArray(input)) {
             return false;
         }
@@ -618,12 +635,11 @@ const isModelsDevModelEntry = (value: unknown): value is ModelsDevModelEntry => 
     return true;
 };
 
-const isModelsDevProviderEntry = (value: unknown): value is ModelsDevProviderEntry => {
+const isModelsDevProviderEntry = (value: ConfigFieldValue): value is ModelsDevProviderEntry => {
     if (!isRecord(value)) {
         return false;
     }
-    const candidate = value as ModelsDevProviderEntry;
-    return candidate.models === undefined || isRecord(candidate.models);
+    return value.models === undefined || isRecord(value.models);
 };
 
 const buildModelMetadataKey = (providerId: string, modelId: string) => {
@@ -670,7 +686,7 @@ const deriveModelMetadata = (providerId: string, model: ProviderModel): ModelMet
     };
 };
 
-const transformModelsDevResponse = (payload: unknown): Map<string, ModelMetadata> => {
+const transformModelsDevResponse = (payload: ConfigFieldValue): Map<string, ModelMetadata> => {
     const metadataMap = new Map<string, ModelMetadata>();
 
     if (!isRecord(payload)) {
@@ -683,7 +699,7 @@ const transformModelsDevResponse = (payload: unknown): Map<string, ModelMetadata
         }
 
         const providerId = typeof providerValue.id === 'string' && providerValue.id.length > 0 ? providerValue.id : providerKey;
-        const models = providerValue.models;
+        const models = isRecord(providerValue) ? providerValue.models : undefined;
         if (!models || !isRecord(models)) {
             continue;
         }
@@ -771,7 +787,7 @@ export const fetchModelsDevMetadata = async (): Promise<Map<string, ModelMetadat
             }
 
             const data: unknown = JSON.parse(await readBoundedResponseText(response, MODELS_DEV_CATALOG_MAX_BYTES));
-            return transformModelsDevResponse(data);
+            return transformModelsDevResponse(data as ConfigFieldValue);
         } catch (error: unknown) {
             if ((error as Error)?.name === 'AbortError') {
                 console.warn(`Model metadata request aborted (${source})`);
@@ -2193,7 +2209,7 @@ export const useConfigStore = create<ConfigStore>()(
                     set((state) => {
                         const nextState: Partial<ConfigStore> = {};
                         let scopedChanged = false;
-                        const nextDirectoryScoped: Record<string, DirectoryScopedConfig> = {
+                        const nextDirectoryScoped = {
                             ...state.directoryScoped,
                         };
 
@@ -2275,7 +2291,7 @@ export const useConfigStore = create<ConfigStore>()(
                     const existingSnapshot = get().directoryScoped[directoryKey];
                     const previousProviders = existingSnapshot?.providers ?? (get().activeDirectoryKey === directoryKey ? get().providers : []);
                     const previousDefaults = existingSnapshot?.defaultProviders ?? (get().activeDirectoryKey === directoryKey ? get().defaultProviders : {});
-                    let lastError: unknown = null;
+                    let lastError = null;
 
                     for (let attempt = 0; attempt < 3; attempt++) {
                         try {
@@ -2916,7 +2932,7 @@ export const useConfigStore = create<ConfigStore>()(
                     markStartupTrace('loadAgents:start', { directoryKey, source, requestedDirectory, effectiveDirectory });
                     const existingSnapshot = get().directoryScoped[directoryKey];
                     const previousAgents = existingSnapshot?.agents ?? (get().activeDirectoryKey === directoryKey ? get().agents : []);
-                    let lastError: unknown = null;
+                    let lastError = null;
 
                     for (let attempt = 0; attempt < 3; attempt++) {
                         try {
@@ -4196,7 +4212,7 @@ export const useConfigStore = create<ConfigStore>()(
                     markStartupTrace('checkConnection:start');
                     const maxAttempts = 5;
                     let attempt = 0;
-                    let lastError: unknown = null;
+                    let lastError = null;
                     let lastProbe: OpencodeHealthProbe = 'unreachable';
 
                     while (attempt < maxAttempts) {
@@ -4451,12 +4467,12 @@ export const useConfigStore = create<ConfigStore>()(
                     const persisted = persistedState as Partial<ConfigStore> | undefined;
                     if (!persisted || persisted.configRuntimeKey !== getRuntimeKey()) return currentState;
 
-                    const storedScopes = isRecord(persisted.directoryScoped) && !Array.isArray(persisted.directoryScoped)
+                    const storedScopes = storeRecordSchema.safeParse(persisted.directoryScoped).success && !Array.isArray(persisted.directoryScoped)
                         ? persisted.directoryScoped
                         : currentState.directoryScoped;
                     const directoryScoped = { ...storedScopes };
                     for (const [directory, snapshot] of Object.entries(directoryScoped)) {
-                        if (!isRecord(snapshot)) {
+                        if (!storeRecordSchema.safeParse(snapshot).success) {
                             delete directoryScoped[directory];
                         } else if (snapshot.providers === undefined) {
                             // Version 1 persists selections without catalogs; give the
