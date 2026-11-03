@@ -307,15 +307,34 @@ const isCredentialSourceRejection = (error) => {
  * failure's origin is recorded; consumers classify by that marker instead of
  * by the error text, which a provider's own API can reuse word for word.
  */
+// Mark a credential-path rejection with its provenance, or pass it
+// through untouched when it is already marked or is not an auth rejection.
+const markCredentialSourceRejection = (error) => {
+  if (isOpenCodeUpstreamAuthRejection(error) || !isCredentialSourceRejection(error)) return error;
+  return new OpenCodeUpstreamAuthError(
+    error instanceof Error ? error.message : undefined,
+    { cause: error },
+  );
+};
+
 const listCredentialEntries = async (current) => {
   try {
     return await current.list();
   } catch (error) {
-    if (isOpenCodeUpstreamAuthRejection(error) || !isCredentialSourceRejection(error)) throw error;
-    throw new OpenCodeUpstreamAuthError(
-      error instanceof Error ? error.message : undefined,
-      { cause: error },
-    );
+    throw markCredentialSourceRejection(error);
+  }
+};
+
+// The environment-key read goes to the same server through the same
+// credential boundary (integration.list), so its rejections carry the
+// same provenance: readWithEnvironment races it against the stored read,
+// and an unmarked error here would win the race and lose the marker
+// (Codex review, PR #1483).
+const readEnvironmentKeys = async (current) => {
+  try {
+    return current.listEnvironmentKeys ? await current.listEnvironmentKeys() : {};
+  } catch (error) {
+    throw markCredentialSourceRejection(error);
   }
 };
 
@@ -324,7 +343,7 @@ const readStored = async (current) => projectCredentialEntries(await listCredent
 const readWithEnvironment = async (current) => {
   const [stored, environmentKeys] = await Promise.all([
     readStored(current),
-    current.listEnvironmentKeys ? current.listEnvironmentKeys() : {},
+    readEnvironmentKeys(current),
   ]);
   const result = {};
   for (const [integrationID, key] of Object.entries(environmentKeys)) result[integrationID] = { type: 'api', key };

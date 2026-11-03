@@ -409,6 +409,20 @@ describe('shared upstream-auth provenance (#1129)', () => {
     expect(isOpenCodeUpstreamAuthRejection(error)).toBe(false);
   });
 
+  it('marks an auth rejection from the environment-key read when it arrives first', async () => {
+    configureOpenCodeCredentials({
+      list: async () => [],
+      listEnvironmentKeys: async () => {
+        throw Object.assign(new Error('Authentication required'), { status: 401 });
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(OpenCodeUpstreamAuthError);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(true);
+    expect(error.message).toBe('Authentication required');
+  });
+
   it('marks the credential-row read the same way', async () => {
     configureOpenCodeCredentials({
       list: async () => {
