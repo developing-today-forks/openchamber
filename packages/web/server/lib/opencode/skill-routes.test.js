@@ -546,6 +546,30 @@ describe('skill-routes directory soft fallback', () => {
     expect(fs.existsSync(path.join(skillDir, 'flat.md'))).toBe(false);
   });
 
+  it('refuses an over-cap supporting-file write and leaves the file unchanged (#1444)', () => {
+    projectRoot = createTempProject();
+    const skillDir = path.join(projectRoot, '.agents', 'skills', 'write-capped-skill');
+    fs.mkdirSync(path.join(skillDir, 'references'), { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: write-capped-skill\ndescription: Has capped files\n---\nBody\n',
+    );
+    const target = path.join(skillDir, 'references', 'doc.md');
+    fs.writeFileSync(target, 'original');
+
+    // Direct calls: cap-sized bodies exceed the test app's default JSON
+    // parser limit, so the route cannot carry them; the cap lives in
+    // writeSkillSupportingFile, which the PUT route delegates to (and the
+    // route maps its code to 413, mirrored from the GET handler).
+    expect(() => writeSkillSupportingFile(skillDir, path.join('references', 'doc.md'), 'b'.repeat(SKILL_SUPPORTING_FILE_MAX_BYTES + 1)))
+      .toThrow(expect.objectContaining({ code: SKILL_SUPPORTING_FILE_TOO_LARGE_CODE }));
+    expect(fs.readFileSync(target, 'utf8')).toBe('original');
+
+    const atCap = 'a'.repeat(SKILL_SUPPORTING_FILE_MAX_BYTES);
+    writeSkillSupportingFile(skillDir, path.join('references', 'doc.md'), atCap);
+    expect(readSkillSupportingFile(skillDir, path.join('references', 'doc.md'))).toBe(atCap);
+  });
+
   it('bounds the read if a supporting file grows after its descriptor is checked', () => {
     projectRoot = createTempProject();
     const skillDir = path.join(projectRoot, '.agents', 'skills', 'growing-skill');

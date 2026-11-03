@@ -211,6 +211,11 @@ function writeMdFile(filePath, frontmatter, body, { flag = 'w' } = {}) {
     );
     const yamlStr = yaml.stringify(cleanedFrontmatter);
     const content = `---\n${yamlStr}---\n\n${body}`;
+    // The write side of the parse cap (#1444): refuse a serialized result
+    // parseMdFile would refuse, so a save cannot strand the file.
+    if (Buffer.byteLength(content, 'utf8') > MD_FILE_MAX_BYTES) {
+      throw mdFileTooLargeError(filePath);
+    }
     if (flag === 'wx') {
       fs.writeFileSync(filePath, content, { encoding: 'utf8', flag });
     } else {
@@ -221,6 +226,7 @@ function writeMdFile(filePath, frontmatter, body, { flag = 'w' } = {}) {
     console.log(`Successfully wrote markdown file: ${filePath}`);
   } catch (error) {
     if (error?.code === 'EEXIST') throw error;
+    if (error?.code === 'ERR_MD_FILE_TOO_LARGE') throw error;
     console.error(`Failed to write markdown file ${filePath}:`, error);
     throw new Error('Failed to write agent markdown file');
   }
@@ -1226,6 +1232,14 @@ function readSkillSupportingFile(skillDir, relativePath) {
 
 function writeSkillSupportingFile(skillDir, relativePath, content) {
   const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
+  // The write side of the read gate above (#1444): refuse content the
+  // capped reader would refuse, so a save cannot strand the file.
+  if (typeof content === 'string' && Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+    throw Object.assign(
+      new Error(`Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`),
+      { code: SKILL_SUPPORTING_FILE_TOO_LARGE_CODE },
+    );
+  }
   const dir = path.dirname(fullPath);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(fullPath, content, 'utf8');

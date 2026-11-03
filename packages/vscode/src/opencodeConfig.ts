@@ -1551,8 +1551,14 @@ export const writePluginDirFile = (
   if (!opts.overwrite && fs.existsSync(filePath)) {
     throw codedError(`Plugin file "${fileName}" already exists`, 'FILE_EXISTS');
   }
+  // The write side of the read gate above (#1444): refuse content the
+  // capped reader would refuse, so a save cannot strand the file.
+  const content = typeof file.content === 'string' ? file.content : '';
+  if (Buffer.byteLength(content, 'utf8') > MAX_PLUGIN_FILE_BYTES) {
+    throw codedError(`Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`, 'PLUGIN_FILE_TOO_LARGE');
+  }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, typeof file.content === 'string' ? file.content : '', 'utf8');
+  fs.writeFileSync(filePath, content, 'utf8');
 };
 
 export const deletePluginDirFile = (id: string, workingDirectory?: string): void => {
@@ -2116,6 +2122,14 @@ const writeMdFile = (filePath: string, frontmatter: Record<string, unknown>, bod
   );
   const yamlStr = yaml.stringify(cleanedFrontmatter);
   const content = `${`---\n${yamlStr}---\n\n${body ?? ''}`.trimEnd()}\n`;
+  // The write side of the parse cap (#1444): refuse a serialized result
+  // parseMdFile would refuse, so a save cannot strand the file.
+  if (Buffer.byteLength(content, 'utf8') > MD_FILE_MAX_BYTES) {
+    throw codedError(
+      `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${filePath}`,
+      'ERR_MD_FILE_TOO_LARGE',
+    );
+  }
   writeFileAtomic(filePath, content);
 };
 
@@ -3527,6 +3541,14 @@ export const readSkillSupportingFile = (skillDir: string, relativePath: string):
 };
 
 export const writeSkillSupportingFile = (skillDir: string, relativePath: string, content: string): void => {
+  // The write side of the read gate above (#1444): refuse content the
+  // capped reader would refuse, so a save cannot strand the file.
+  if (Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+    throw codedError(
+      `Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`,
+      SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
+    );
+  }
   const fullPath = path.join(skillDir, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, 'utf8');

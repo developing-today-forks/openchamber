@@ -154,6 +154,15 @@ describe('VS Code entity modules speak OpenCode 2 shapes', () => {
     assert.deepEqual(readMd(created), { frontmatter: { description: 'Fresh' }, body: 'Do the thing.' });
   });
 
+  test('refuses an agent whose serialized markdown exceeds the parse cap (#1444)', async () => {
+    const { createAgent, MD_FILE_MAX_BYTES } = await loadConfig();
+    assert.throws(
+      () => createAgent('huge', { description: 'Huge', system: 'x'.repeat(MD_FILE_MAX_BYTES + 1) }, projectDir, 'project'),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === 'ERR_MD_FILE_TOO_LARGE',
+    );
+    assert.equal(fs.existsSync(path.join(projectDir, '.opencode', 'agents', 'huge.md')), false);
+  });
+
   test('moves a v1 JSON agent entry into the agents section of the same file', async () => {
     const { updateAgent } = await loadConfig();
     const configPath = write('opencode.json', JSON.stringify({

@@ -818,6 +818,9 @@ export const registerSkillRoutes = (app, dependencies) => {
         message: `File ${filePath} saved successfully`,
       });
     } catch (error) {
+      if (error && typeof error === 'object' && error.code === 'skill_supporting_file_too_large') {
+        return res.status(413).json({ error: 'File too large to write' });
+      }
       if (error && typeof error === 'object' && (error.code === 'EACCES' || error.code === 'EPERM')) {
         return res.status(403).json({ error: 'Access to file denied' });
       }

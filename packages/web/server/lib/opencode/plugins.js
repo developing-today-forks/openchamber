@@ -456,8 +456,14 @@ function writePluginDirFile(file, workingDirectory, opts = {}) {
   if (!opts.overwrite && fs.existsSync(absolutePath)) {
     throw codedError(`Plugin file "${fileName}" already exists`, 'FILE_EXISTS');
   }
+  // The write side of the read gate above (#1444): refuse content the
+  // capped reader would refuse, so a save cannot strand the file.
+  const content = file?.content ?? '';
+  if (typeof content === 'string' && Buffer.byteLength(content, 'utf8') > MAX_PLUGIN_FILE_BYTES) {
+    throw codedError(`Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`, 'PLUGIN_FILE_TOO_LARGE');
+  }
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(absolutePath, file?.content ?? '', 'utf8');
+  fs.writeFileSync(absolutePath, content, 'utf8');
 }
 
 function deletePluginDirFile(id, workingDirectory) {
