@@ -338,6 +338,31 @@ describe('session warming runtime', () => {
     expect(fs.readdirSync(dataDir).some((name) => name.startsWith('session-warming.json.corrupt-'))).toBe(true);
   });
 
+  it('starts empty without preserving an empty state file', () => {
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.join(dataDir, 'session-warming.json'), '');
+    const { runtime } = makeRuntime({ dataDir });
+    runtime.start();
+    expect(runtime.snapshot()).toMatchObject({ enabled: false, sessions: [] });
+    expect(fs.readdirSync(dataDir)).toEqual(['session-warming.json']);
+  });
+
+  it('preserves a state file corrupted after start instead of overwriting it on save', async () => {
+    const dataDir = makeDataDir();
+    const file = path.join(dataDir, 'session-warming.json');
+    fs.writeFileSync(file, JSON.stringify({ enabled: false, minutes: 60, sessions: {} }));
+    const { runtime } = makeRuntime({ dataDir });
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    runtime.start();
+    fs.writeFileSync(file, '{corrupted later');
+    runtime.setEnabled(true);
+    await runtime.stop();
+    const preserved = fs.readdirSync(dataDir).find((name) => name.startsWith('session-warming.json.corrupt-'));
+    expect(preserved).toBeTruthy();
+    expect(fs.readFileSync(path.join(dataDir, preserved), 'utf8')).toBe('{corrupted later');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ enabled: true });
+  });
+
   it('bounds the activity map at 500 entries with oldest-first eviction and preserves warmed sessions', async () => {
     const { runtime, fetchImpl } = makeRuntime();
     runtime.setEnabled(true);
