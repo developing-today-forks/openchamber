@@ -40,6 +40,7 @@ import { OpenCode } from '@opencode/client';
 import { z } from 'zod';
 
 import { asNonEmptyString } from '../shared/guards.js';
+import { OpenCodeUpstreamAuthError, isOpenCodeUpstreamAuthRejection } from './credential-auth-error.js';
 
 // Wired once per runtime: `server/index.js` on the web server, the extension
 // entry point in VS Code. Until then every read throws.
@@ -285,7 +286,40 @@ export const projectCredentialRows = (entries) => entries.map((entry) => ({
   value: projectCredentialValue(entry.value),
 }));
 
-const readStored = async (current) => projectCredentialEntries(await current.list());
+const UPSTREAM_AUTH_REJECTION_STATUS = 401;
+const UPSTREAM_AUTH_REJECTION_BODY = 'authentication required';
+
+/**
+ * The OpenCode client fails a rejected credential read with a 401 whose body
+ * is the bare string `Authentication required`.
+ */
+const isCredentialSourceRejection = (error) => {
+  const status = error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.cause?.status;
+  if (Number.isInteger(status)) return status === UPSTREAM_AUTH_REJECTION_STATUS;
+  return error instanceof Error
+    && String(error.message ?? '').trim().toLowerCase() === UPSTREAM_AUTH_REJECTION_BODY;
+};
+
+/**
+ * The credential list as the source answers it, with a rejected read marked
+ * as coming from the shared credential path (#1129). This is the only place
+ * the peer is known to be the running OpenCode, so this is where the
+ * failure's origin is recorded; consumers classify by that marker instead of
+ * by the error text, which a provider's own API can reuse word for word.
+ */
+const listCredentialEntries = async (current) => {
+  try {
+    return await current.list();
+  } catch (error) {
+    if (isOpenCodeUpstreamAuthRejection(error) || !isCredentialSourceRejection(error)) throw error;
+    throw new OpenCodeUpstreamAuthError(
+      error instanceof Error ? error.message : undefined,
+      { cause: error },
+    );
+  }
+};
+
+const readStored = async (current) => projectCredentialEntries(await listCredentialEntries(current));
 
 const readWithEnvironment = async (current) => {
   const [stored, environmentKeys] = await Promise.all([
@@ -323,7 +357,7 @@ const sharedCredentialRowsRead = coalesce();
 const projectLogin = ({ methodID, access, expires, metadata }) => ({ methodID, access, expires, metadata: metadata ?? {} });
 const readLogins = async (current) => {
   const result = {};
-  for (const entry of await current.list()) {
+  for (const entry of await listCredentialEntries(current)) {
     if (entry.active && entry.value.type === 'oauth') result[entry.integrationID] = projectLogin(entry.value);
   }
   return result;
@@ -387,7 +421,7 @@ export async function getProviderAuth(providerId) {
   return Object.hasOwn(credentials, providerId) ? credentials[providerId] || null : null;
 }
 
-const readAllCredentialRows = async (current) => projectCredentialRows(await current.list());
+const readAllCredentialRows = async (current) => projectCredentialRows(await listCredentialEntries(current));
 
 /**
  * Every credential row OpenCode stores, in store order, or only the rows of
