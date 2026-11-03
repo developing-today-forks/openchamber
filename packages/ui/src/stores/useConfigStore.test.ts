@@ -28,10 +28,34 @@ let probeHealthImpl: (() => Promise<'healthy' | 'unhealthy' | 'unreachable'>) | 
 let probeHealthOptions: Array<{ waitMs?: number } | undefined> = [];
 let loadSettingsImpl: (() => Promise<DesktopSettings | null>) | null = null;
 let runtimeFetchImpl: ((url: string) => Promise<Response>) | null = null;
-let projectsState: {
+type TestProjectsState = {
   activeProjectId: string | null;
   projects: Array<{ id: string; path: string; label: string; defaultAgent?: string }>;
-} = {
+};
+
+/** A value the JSON storage mock round-trips: the persisted state shape. */
+type StoredJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | StoredJsonValue[]
+  | { [key: string]: StoredJsonValue };
+
+/** One synced OpenCode config document as the sync refs hand it over: JSON fields the store narrows itself. */
+type TestSyncConfigValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | TestSyncConfigValue[]
+  | { [key: string]: TestSyncConfigValue };
+
+type TestSyncConfig = Record<string, TestSyncConfigValue>;
+
+let projectsState: TestProjectsState = {
   activeProjectId: 'project',
   projects: [
     { id: 'project', path: DIRECTORY, label: 'Project' },
@@ -109,7 +133,7 @@ const testAgent = (name: string, options?: Partial<TestAgent>): Agent => ({
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
+  let reject!: (cause: unknown) => void;
   const promise = new Promise<T>((res, rej) => {
     resolve = res;
     reject = rej;
@@ -128,7 +152,7 @@ mock.module('@/stores/utils/safeStorage', () => ({
         const value = testStorage.getItem(name);
         return value === null ? null : JSON.parse(value);
       },
-      setItem: (name: string, value: unknown) => {
+      setItem: (name: string, value: StoredJsonValue) => {
         testStorage.setItem(name, JSON.stringify(value));
       },
       removeItem: (name: string) => {
@@ -148,7 +172,7 @@ let directoryAvailability: 'available' | 'missing' | 'unknown' = 'available';
 
 mock.module('@/lib/opencode/client', () => ({
   OpencodeApiError: Error,
-  normalizeOpencodeError: (operation: string, error: unknown) => new Error(`${operation}: ${String(error)}`),
+  normalizeOpencodeError: (operation: string, cause: unknown) => new Error(`${operation}: ${String(cause)}`),
   opencodeClient: {
     setDirectory: mock(() => undefined),
     getDirectory: mock(() => DIRECTORY),
@@ -159,7 +183,7 @@ mock.module('@/lib/opencode/client', () => ({
       probeHealthOptions.push(options);
       return probeHealthImpl ? probeHealthImpl() : checkHealthImpl().then((healthy) => (healthy ? 'healthy' : 'unhealthy'));
     },
-    withDirectory: mock(async (directory: string | null, callback: () => Promise<unknown>) => {
+    withDirectory: mock(async <T,>(directory: string | null, callback: () => Promise<T>): Promise<T> => {
       withDirectoryCalls.push(directory);
       const previous = currentFetchDirectory;
       currentFetchDirectory = directory;
@@ -223,7 +247,7 @@ mock.module('@/lib/persistence', () => ({
 
 mock.module('@/lib/startupTrace', () => ({
   markStartupTrace: mock(() => undefined),
-  measureStartupTrace: mock(async (_name: string, callback: () => Promise<unknown>) => callback()),
+  measureStartupTrace: mock(async <T,>(_name: string, callback: () => Promise<T>): Promise<T> => callback()),
 }));
 
 mock.module('@/lib/configSync', () => ({
@@ -2825,7 +2849,7 @@ describe('useConfigStore provider persistence', () => {
 
   test('in-flight loadAgents does not restore pre-await sync config defaults after a clearing event', async () => {
     const pendingAgents = deferred<TestAgent[]>();
-    const syncConfigs = new Map<string, Record<string, unknown>>([
+    const syncConfigs = new Map<string, TestSyncConfig>([
       [DIRECTORY, { default_agent: 'review', model: 'openai/gpt-5.5' }],
     ]);
     setSyncRefs(
