@@ -419,9 +419,17 @@ describe('OpenRouter quota provider (VS Code parity)', () => {
     const configurableFs = fs as {
       existsSync: (filePath: fs.PathLike) => boolean;
       readFileSync: (filePath: fs.PathOrFileDescriptor, options?: BufferEncoding) => string;
+      openSync: (filePath: fs.PathLike, flags?: string | number) => number;
+      fstatSync: (fd: number) => { isFile: () => boolean; size: number };
+      readSync: (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) => number;
+      closeSync: (fd: number) => void;
     };
     const realExists = configurableFs.existsSync;
     const realRead = configurableFs.readFileSync;
+    const realOpen = configurableFs.openSync;
+    const realFstat = configurableFs.fstatSync;
+    const realReadSync = configurableFs.readSync;
+    const realClose = configurableFs.closeSync;
     // The config loader gates on existsSync before reading. Without this stub
     // a machine that has no global opencode.json (a clean CI runner) never
     // reaches the stubbed read, so the provider falls back to its default
@@ -433,11 +441,46 @@ describe('OpenRouter quota provider (VS Code parity)', () => {
     configurableFs.readFileSync = (filePath: fs.PathOrFileDescriptor, options?: BufferEncoding): string => (
       String(filePath).includes('opencode.json') ? configJson : realRead(filePath, options)
     );
+    // The loader reads config files through the capped reader
+    // (openSync/fstatSync/readSync/closeSync in opencodeConfig.ts), not
+    // readFileSync, so the stubbed content must be served there too -
+    // otherwise the read hits the real global config (or ENOENT where none
+    // exists) and the configured baseURL never reaches the provider.
+    const stubbedFiles = new Map<number, { content: Buffer; offset: number }>();
+    let nextStubbedFd = 10_000;
+    configurableFs.openSync = (filePath: fs.PathLike, flags?: string | number): number => {
+      if (!String(filePath).includes('opencode.json')) return realOpen(filePath, flags);
+      const fd = nextStubbedFd;
+      nextStubbedFd += 1;
+      stubbedFiles.set(fd, { content: Buffer.from(configJson, 'utf8'), offset: 0 });
+      return fd;
+    };
+    configurableFs.fstatSync = (fd: number) => {
+      const stubbed = stubbedFiles.get(fd);
+      return stubbed ? { isFile: () => true, size: stubbed.content.length } : realFstat(fd);
+    };
+    configurableFs.readSync = (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null): number => {
+      const stubbed = stubbedFiles.get(fd);
+      if (!stubbed) return realReadSync(fd, buffer, offset, length, position);
+      const start = position ?? stubbed.offset;
+      // SAFETY: the capped reader passes the Buffer it allocated for this
+      // read; the cast only restores that concrete type for Buffer.copy.
+      const bytesRead = stubbed.content.copy(buffer as Buffer, offset, start, start + length);
+      stubbed.offset = start + bytesRead;
+      return bytesRead;
+    };
+    configurableFs.closeSync = (fd: number): void => {
+      if (!stubbedFiles.delete(fd)) realClose(fd);
+    };
     try {
       await run();
     } finally {
       configurableFs.readFileSync = realRead;
       configurableFs.existsSync = realExists;
+      configurableFs.openSync = realOpen;
+      configurableFs.fstatSync = realFstat;
+      configurableFs.readSync = realReadSync;
+      configurableFs.closeSync = realClose;
     }
   };
 
