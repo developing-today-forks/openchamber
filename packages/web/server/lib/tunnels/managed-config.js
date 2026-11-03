@@ -157,9 +157,14 @@ export const createManagedTunnelConfigRuntime = (deps) => {
         if (latest.state === 'valid') {
           return latest.config;
         }
-        throw new Error(
-          `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
-        );
+        if (outcome !== 'missing' || latest.state !== 'missing') {
+          throw new Error(
+            `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
+          );
+        }
+        // Vanished or emptied before preservation could reread it: there
+        // is nothing left to protect, so fall through to the legacy
+        // migration below instead of refusing.
       }
       // Preserved aside: fall through to the legacy migration, which
       // writes a fresh managed file from the legacy one if it exists.
@@ -241,6 +246,14 @@ export const createManagedTunnelConfigRuntime = (deps) => {
       if (latest.state === 'valid') {
         return latest.config;
       }
+      if (latest.state === 'missing' && outcome === 'missing') {
+        // Vanished or emptied before preservation could reread it: take
+        // the same legacy migration the missing-file read above takes. A
+        // 'failed' preservation must not take this path: valid bytes may
+        // sit under the preserve name, and a read degrades to empty
+        // rather than resurrecting the legacy file over them.
+        return migrateLockedOrEmpty();
+      }
       return emptyConfig();
     });
   };
@@ -272,14 +285,18 @@ export const createManagedTunnelConfigRuntime = (deps) => {
       return emptyConfig();
     }
     // Changed since validation: proceed from the current state if it is
-    // readable now; a vanished file has nothing left to lose; only a
-    // still-unreadable file refuses.
+    // readable now. A file that vanished or emptied before preservation
+    // could reread it ('missing') has nothing left to protect, so the
+    // update takes the same legacy migration the missing-file read
+    // takes. Any other outcome refuses: on 'failed' the displaced valid
+    // bytes may sit under the preserve name, and writing from an empty
+    // base would silently drop them.
     const latest = await readStoreFile();
     if (latest.state === 'valid') {
       return latest.config;
     }
-    if (latest.state === 'missing') {
-      return emptyConfig();
+    if (latest.state === 'missing' && outcome === 'missing') {
+      return migrateManagedRemoteTunnelConfigFromLegacyFileLocked();
     }
     throw new Error(
       `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
