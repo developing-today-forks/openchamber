@@ -121,6 +121,24 @@ ${onTunnelStart}
     expect(outcome.value.getPublicUrl()).toBe('https://happy.trycloudflare.com');
   });
 
+  it('rejects when cloudflared prints a URL and then exits nonzero before readiness', async () => {
+    installFakeCloudflared('echo "https://doomed.trycloudflare.com"\nexit 1');
+
+    const outcome = await settleWithin(startCloudflareQuickTunnel({ originUrl: 'http://localhost:3000' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toBe('Cloudflared exited with code 1');
+  });
+
+  it('rejects when cloudflared prints a URL and then dies by signal before readiness', async () => {
+    installFakeCloudflared('echo "https://signalled.trycloudflare.com"\nkill -TERM $$');
+
+    const outcome = await settleWithin(startCloudflareQuickTunnel({ originUrl: 'http://localhost:3000' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('SIGTERM');
+  });
+
   it('keeps the resolved handle stable when cloudflared exits afterward', async () => {
     installFakeCloudflared('echo "https://steady.trycloudflare.com"\nexec sleep 0.3');
 

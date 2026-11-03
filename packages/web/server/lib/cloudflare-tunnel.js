@@ -428,10 +428,12 @@ export async function startCloudflareQuickTunnel({ originUrl }) {
       clearTimeout(timeout);
       clearInterval(checkReady);
       cleanupTempDir();
-      if (publicUrl) {
-        resolve(null);
-      } else if (signal) {
+      if (signal) {
         reject(new Error(`Cloudflared exited with signal ${signal}`));
+      } else if (code !== 0) {
+        reject(new Error(`Cloudflared exited with code ${code}`));
+      } else if (publicUrl) {
+        resolve(null);
       } else {
         reject(new Error(`Cloudflared exited with code ${code}`));
       }
