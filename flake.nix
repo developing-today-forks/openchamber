@@ -88,6 +88,46 @@
       homeManagerModules.mcpx = opencode.homeManagerModules.mcpx;
       darwinModules.mcpx = opencode.darwinModules.mcpx;
 
+      # The fork's own service modules pass through the same way,
+      # so the whole stack's outputs are reachable from this one
+      # flake.
+      nixosModules.opencode = opencode.nixosModules.opencode;
+      homeManagerModules.opencode = opencode.homeManagerModules.opencode;
+      darwinModules.opencode = opencode.darwinModules.opencode;
+
+      # This flake's own service modules (openchamber#1440): the
+      # top of the cascade. Each imports the opencode module (which
+      # itself imports the mcpx module), so a consumer importing
+      # only *.openchamber gets every layer's option set, and the
+      # module's own config enables the layers below by default.
+      nixosModules.openchamber =
+        { lib, pkgs, ... }:
+        {
+          imports = [
+            opencode.nixosModules.opencode
+            ./nix/modules/nixos.nix
+          ];
+          services.openchamber.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.openchamber;
+        };
+      homeManagerModules.openchamber =
+        { lib, pkgs, ... }:
+        {
+          imports = [
+            opencode.homeManagerModules.opencode
+            ./nix/modules/home-manager.nix
+          ];
+          services.openchamber.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.openchamber;
+        };
+      darwinModules.openchamber =
+        { lib, pkgs, ... }:
+        {
+          imports = [
+            opencode.darwinModules.opencode
+            ./nix/modules/darwin.nix
+          ];
+          services.openchamber.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.openchamber;
+        };
+
       # `nix run .#update-hashes` re-bakes the current system's
       # node_modules hash in nix/hashes.json (see nix/update-hashes.sh).
       apps = forAllSystems (system: {
