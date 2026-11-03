@@ -245,12 +245,15 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
   const supportsSingleProjectMode = !topology.isVSCode && !isCapacitorApp();
   const singleProjectMode = supportsSingleProjectMode && projectDisplayMode === 'single';
   const timelineMode = view.sidebarViewMode === 'timeline' && !topology.isVSCode;
+  const listRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.listLines);
   const timelineLayout = React.useMemo(() => ({
     chats: sidebarLayout.timelineChats,
     projectGroups: sidebarLayout.timelineProjectGroups,
-    compactRows: sidebarLayout.timelineCompactRows,
+    // The List line count lives in the row display since display store v13;
+    // the layout's old compact-rows flag is folded into it on migration.
+    compactRows: listRowLines === 'one',
     chatsGroupIndex: sidebarLayout.chatsGroupIndex,
-  }), [sidebarLayout.chatsGroupIndex, sidebarLayout.timelineChats, sidebarLayout.timelineCompactRows, sidebarLayout.timelineProjectGroups]);
+  }), [sidebarLayout.chatsGroupIndex, sidebarLayout.timelineChats, listRowLines, sidebarLayout.timelineProjectGroups]);
   const listSessionGrouping = useSessionDisplayStore((state) => state.listSessionGrouping);
   const timeListMode = timelineMode && listSessionGrouping === 'time';
   const runIndex = React.useMemo(() => buildMultiRunIndex(
@@ -475,6 +478,8 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
   const showWorkSection = useSessionDisplayStore((state) => state.showWorkSection);
   const showPinnedSection = useSessionDisplayStore((state) => state.showPinnedSection);
   const zoneRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.zoneLines);
+  const chatsRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.chatsLines);
+  const projectRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.projectLines);
   // The zones in Tree, on one line: the rows the row model renders as
   // 'mixed-compact', which open to their subsessions.
   const zoneRowsExpand = !timelineMode && zoneRowLines !== 'two';
@@ -985,6 +990,8 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     sectionOrder: sidebarLayout.sectionOrder,
     timelineLayout,
     zoneRowLines,
+    chatsRowLines,
+    projectRowLines,
     foldersMap,
     groupSearchDataByGroup,
     normalizedQuery: view.normalizedSessionSearchQuery,
@@ -1005,7 +1012,7 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     hideDirectoryControls: view.hideDirectoryControls,
     sessionBatchSize: singleProjectMode && !view.useGroupedSections ? 20 : undefined,
     runIndex,
-  }), [runIndex, chatGroup, showChatsSection, projectView.collapsedActivities, timelineItems, timelineMode, listSessionGrouping, pinnedItems, workItems, attentionItems, zoneSessionIds, sidebarLayout.sectionOrder, timelineLayout, zoneRowLines, collapsedFolderIds, collection.pinnedSessionIds, expandedParents, folderAuthorityByOwner, foldersMap, groupSearchDataByGroup, groupStatusByKey, orderedSectionsForRender, projectSections, projectView.collapsedGroups, projectView.collapsedProjects, selectedSingleProjectId, sessionOrderIndex, singleProjectMode, view.activeProjectId, view.hasSessionSearchQuery, view.hideDirectoryControls, view.normalizedSessionSearchQuery, view.showOnlyMainWorkspace, view.useGroupedSections, visibleCountByContainer]);
+  }), [runIndex, chatGroup, showChatsSection, projectView.collapsedActivities, timelineItems, timelineMode, listSessionGrouping, pinnedItems, workItems, attentionItems, zoneSessionIds, sidebarLayout.sectionOrder, timelineLayout, zoneRowLines, chatsRowLines, projectRowLines, collapsedFolderIds, collection.pinnedSessionIds, expandedParents, folderAuthorityByOwner, foldersMap, groupSearchDataByGroup, groupStatusByKey, orderedSectionsForRender, projectSections, projectView.collapsedGroups, projectView.collapsedProjects, selectedSingleProjectId, sessionOrderIndex, singleProjectMode, view.activeProjectId, view.hasSessionSearchQuery, view.hideDirectoryControls, view.normalizedSessionSearchQuery, view.showOnlyMainWorkspace, view.useGroupedSections, visibleCountByContainer]);
   React.useEffect(() => {
     onSearchMatchCountChange(sidebarRowModel.searchMatchCount);
   }, [onSearchMatchCountChange, sidebarRowModel.searchMatchCount]);

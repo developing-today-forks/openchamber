@@ -74,8 +74,10 @@ elapsed counters retain their existing precedence and behavior. A session
 row's title carries its state too: semibold at full strength while a finished
 turn is unseen or a permission or question waits on the user, full strength
 while it runs, muted otherwise; the active row keeps the selection colors. The display
-store is at version 12 (v10 dropped the Recent toggle, v12 folded the
-Detailed rows toggle into `sessionRowDisplay`): missing preferences inherit
+store is at version 13 (v10 dropped the Recent toggle, v12 folded the
+Detailed rows toggle into `sessionRowDisplay`, v13 folded the List view's
+one-line layout option into it as `listLines` and added the Chats and Tree
+project line counts): missing preferences inherit
 the default during hydration, while an explicitly saved choice survives
 reload. Version 11 adds `sidebarLayout`; a missing one takes the default, a
 stored one keeps what this version understands field by field, and anything
@@ -356,7 +358,8 @@ branch; sorted by time, the list's three-line `'timeline-by-time'` rows. In Tree
 row, the PR or issue as a coloured mark without its number (its tooltip lists
 the links), the branch, project and model in the whole-row tooltip. The
 row display (`sessionRowDisplay`, `sidebarSessionRowDisplay`, per surface,
-one-line Tree zones and every element shown by default) lives in Settings →
+one-line Tree zones, Chats and project rows, two-line List rows and every
+element shown by default) lives in Settings →
 Appearance → Sidebar rows, with a live preview row and a display-menu
 shortcut; the display menu's Detailed rows toggle is its Tree zone line
 preset, offered in Tree only. Hidden elements leave their slots: the

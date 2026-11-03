@@ -58,7 +58,8 @@ export const SIDEBAR_ACTIVITY_KEYS: readonly SessionSidebarActivityKey[] = [
 // for the zones; 'mixed-flat' is the List view's one-line zone row, flat with
 // the project's icon before the title; 'timeline-chat' is a one-line List row
 // under a header (Chats, and projects with one line per session), 'tree-chat'
-// the Chats row in Tree.
+// the Chats row in Tree (its body opens a second line when Chats rows take
+// two lines, keeping the tree slot and this context).
 export type SessionSidebarRenderContext = 'project' | 'timeline' | 'timeline-mixed' | 'timeline-by-time' | 'mixed-compact' | 'mixed-flat' | 'timeline-chat' | 'tree-chat';
 
 /**
@@ -198,6 +199,10 @@ export type SessionSidebarRowModelArgs = {
   timelineLayout?: { chats: TimelineChatsPlacement; projectGroups: boolean; compactRows: boolean; chatsGroupIndex: number };
   /** Pinned and In work rows in the Tree view: two lines with branch, PR and model when set, one otherwise. */
   zoneRowLines?: SessionRowLines;
+  /** Chats rows: two lines when set, one otherwise; Tree Chats keep their tree slot either way. */
+  chatsRowLines?: SessionRowLines;
+  /** Session rows inside Tree projects: two lines when set, one otherwise; the rows keep the tree either way. */
+  projectRowLines?: SessionRowLines;
   foldersMap: SessionFoldersMap;
   groupSearchDataByGroup: WeakMap<SessionGroup, GroupSearchData>;
   normalizedQuery: string;
@@ -509,7 +514,7 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
       push({
         kind: 'session',
         key: rowKey,
-        estimateSize: estimateSessionRow(options.renderContext),
+        estimateSize: estimateFor(options.renderContext),
         node: current.node,
         blockingBadgeSessionScopes: current.depth === baseDepth
           ? options.getBlockingBadgeSessionScopes?.(current.node.session.id) ?? options.blockingBadgeSessionScopes
@@ -815,6 +820,15 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
   };
 
   const timelineLayout = args.timelineLayout ?? DEFAULT_TIMELINE_LAYOUT;
+  const chatsRowLines = args.chatsRowLines ?? 'one';
+  const projectRowLines = args.projectRowLines ?? 'one';
+  // Two-line Chats rows in Tree keep their 'tree-chat' context (and its tree
+  // slot), and two-line project rows keep 'project': only their size changes.
+  const estimateFor = (context: SessionSidebarRenderContext): number => (
+    (context === 'tree-chat' && chatsRowLines === 'two') || (context === 'project' && projectRowLines === 'two')
+      ? TIMELINE_SESSION_ESTIMATE
+      : estimateSessionRow(context)
+  );
   // The List view sorted by time replaces the project headers with one list
   // of every project's sessions, and Chats keep a section of their own there.
   const timeList = timelineMode && args.listGrouping === 'time';
@@ -838,11 +852,12 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     const collapsed = appendActivityHeader('chats');
     markSectionStart(sectionKey, rowIndex, sectionDragId('chats'));
     if (collapsed) return;
-    // Chats are one-line rows in both views, on a short page that pinned
-    // chats do not spend; Tree gives them its state slot.
+    // Chats sit on a short page that pinned chats do not spend. One line by
+    // default in both views; two lines take the List's two-line row in List
+    // and open the second line of the Tree row, which keeps its state slot.
     appendGroup(args.chatGroup, 'activity:chats', null, true, {
       initial: CHATS_INITIAL_LIMIT, increment: CHATS_INCREMENT, pinnedAlwaysVisible: true,
-      renderContext: timelineMode ? 'timeline-chat' : 'tree-chat',
+      renderContext: timelineMode ? (chatsRowLines === 'two' ? 'timeline' : 'timeline-chat') : 'tree-chat',
     });
   };
 
