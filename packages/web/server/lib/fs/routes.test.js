@@ -2230,6 +2230,7 @@ describe('fs stat directory error handling', () => {
       await copyFile(new URL('../shared/guards.js', import.meta.url), path.join(directory, 'shared/guards.js'));
       await copyFile(new URL('../shared/atomic-rename.js', import.meta.url), path.join(directory, 'shared/atomic-rename.js'));
       await copyFile(new URL('../shared/parse-int.js', import.meta.url), path.join(directory, 'shared/parse-int.js'));
+      await copyFile(new URL('../shared/traversal-budget.js', import.meta.url), path.join(directory, 'shared/traversal-budget.js'));
       expect(() => execFileSync('node', [
         '--input-type=module',
         '--eval',
