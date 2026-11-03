@@ -650,31 +650,59 @@ const isConfigReadError = (error: unknown): error is Error & { code: string } =>
 const isConfigFileTooLargeError = (error: unknown): error is Error & { code: string } =>
   Boolean(error && typeof error === 'object' && 'code' in error && error.code === CONFIG_FILE_TOO_LARGE);
 
-const readConfigFileContent = (filePath: string): string => {
-  // The stat is only a pre-read size gate. When it cannot answer (the file
-  // vanished after the exists check, or the filesystem view is partial), the
-  // read itself is the authority: fall through and gate on the bytes read
-  // instead of failing a config that existsSync just confirmed.
-  let statSize: number | null = null;
+type CappedFileErrors = {
+  tooLarge: (filePath: string) => Error;
+  notRegular: (filePath: string) => Error;
+};
+
+// Open once and judge from the handle (design #1254, phase 3): a
+// stat-by-path-then-read-by-path gate lets a file grown or swapped after the
+// stat buffer whole past the cap. The open fixes the file identity, the
+// fstat judges the size, and the read itself takes at most maxBytes + 1, so
+// growth past the cap is refused, never buffered. A missing file throws the
+// ENOENT the old stat would have thrown, so existsSync-guarded callers keep
+// their behaviour.
+const readCappedFileSync = (filePath: string, maxBytes: number, errors: CappedFileErrors): string => {
+  // O_NONBLOCK (POSIX only): open() must not block on a FIFO with no writer
+  // before fstatSync can reject it as non-regular. Regular files ignore it.
+  const openFlags = process.platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+  const fd = fs.openSync(filePath, openFlags);
   try {
-    statSize = fs.statSync(filePath).size;
-  } catch {
-    statSize = null;
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile()) {
+      throw errors.notRegular(filePath);
+    }
+    if (stats.size > maxBytes) {
+      throw errors.tooLarge(filePath);
+    }
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const bytesRead = fs.readSync(fd, buffer, total, buffer.length - total, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > maxBytes) {
+      throw errors.tooLarge(filePath);
+    }
+    return buffer.toString('utf8', 0, total);
+  } finally {
+    fs.closeSync(fd);
   }
-  if (statSize !== null && statSize > MAX_CONFIG_FILE_BYTES) {
-    throw codedError(
-      `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
+};
+
+const readConfigFileContent = (filePath: string): string => {
+  // The read itself is the authority: when the file vanishes after the
+  // exists check, openSync throws the ENOENT the old stat would have
+  // thrown, and a file that grows past the cap mid-read is refused from
+  // the bounded buffer instead of being buffered whole.
+  return readCappedFileSync(filePath, MAX_CONFIG_FILE_BYTES, {
+    tooLarge: (target) => codedError(
+      `OpenCode configuration at ${target} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
       CONFIG_FILE_TOO_LARGE,
-    );
-  }
-  const content = fs.readFileSync(filePath, 'utf8');
-  if (statSize === null && Buffer.byteLength(content, 'utf8') > MAX_CONFIG_FILE_BYTES) {
-    throw codedError(
-      `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
-      CONFIG_FILE_TOO_LARGE,
-    );
-  }
-  return content;
+    ),
+    notRegular: (target) => codedError(`EISDIR: illegal operation on a directory, read '${target}'`, 'EISDIR'),
+  });
 };
 
 // Comment-only / whitespace-only files parse to undefined with nothing but
@@ -865,11 +893,20 @@ const findWorktreeRoot = (startDir?: string): string | null => {
   }
 };
 
+// At most this many directories one walk visits per root, the root itself
+// included. Past the cap the walk stops opening new directories and returns
+// the SKILL.md paths found so far. The web twin in shared.js uses the same
+// value; the skills tests pin the two together.
+export const SKILL_WALK_MAX_DIRS = 5000;
+
 const walkSkillMdFiles = (rootDir?: string | null): string[] => {
   if (!rootDir || !fs.existsSync(rootDir)) return [];
 
   const results: string[] = [];
+  let visitedDirs = 0;
   const walkDir = (dir: string) => {
+    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return;
+    visitedDirs += 1;
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -1492,13 +1529,14 @@ export const MAX_PLUGIN_FILE_BYTES = 1024 * 1024;
 export const readPluginDirFile = (id: string, workingDirectory?: string): { fileName: string; scope: PluginScope; content: string } | null => {
   const target = getPluginFileTarget(id, workingDirectory);
   if (!fs.existsSync(target.filePath)) return null;
-  if (fs.statSync(target.filePath).size > MAX_PLUGIN_FILE_BYTES) {
-    throw codedError(`Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`, 'PLUGIN_FILE_TOO_LARGE');
-  }
+  const content = readCappedFileSync(target.filePath, MAX_PLUGIN_FILE_BYTES, {
+    tooLarge: () => codedError(`Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`, 'PLUGIN_FILE_TOO_LARGE'),
+    notRegular: (filePath) => codedError(`EISDIR: illegal operation on a directory, read '${filePath}'`, 'EISDIR'),
+  });
   return {
     fileName: target.fileName,
     scope: target.scope,
-    content: fs.readFileSync(target.filePath, 'utf8'),
+    content,
   };
 };
 
@@ -2044,21 +2082,19 @@ export const getAgentPermissions = (agentName: string, workingDirectory?: string
 // Agent, command, skill and snippet markdown files are hand-maintained;
 // nothing bounds their on-disk size, so never buffer one whole past this cap
 // (same 4 MiB precedent as MD_FILE_MAX_BYTES in the web parser,
-// packages/web/server/lib/opencode/shared.js). Judged from stat before any
-// read: a file over the cap is refused with a coded error, never truncated.
-// Discovery walks that call this parser already skip a file whose parse
-// throws; single-entity reads surface the error to the caller.
+// packages/web/server/lib/opencode/shared.js). The file is opened once and
+// judged from the handle: a file over the cap is refused with a coded error,
+// never truncated, and a non-regular file is refused without blocking.
 export const MD_FILE_MAX_BYTES = 4 * 1024 * 1024;
 
 export const parseMdFile = (filePath: string): { frontmatter: Record<string, unknown>; body: string } => {
-  const stats = fs.statSync(filePath);
-  if (stats.size > MD_FILE_MAX_BYTES) {
-    throw codedError(
-      `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${filePath}`,
+  const content = readCappedFileSync(filePath, MD_FILE_MAX_BYTES, {
+    tooLarge: (target) => codedError(
+      `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${target}`,
       'ERR_MD_FILE_TOO_LARGE',
-    );
-  }
-  const content = fs.readFileSync(filePath, 'utf8');
+    ),
+    notRegular: (target) => new Error(`Markdown file is not a regular file: ${target}`),
+  });
   // The closing fence may end the file: an agent with no system prompt has
   // nothing after it.
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
@@ -2979,6 +3015,7 @@ export type SkillConfigSources = {
     scope?: SkillScope | null;
     source?: SkillSource | null;
     supportingFiles: SupportingFile[];
+    supportingFilesTruncated?: boolean;
     name?: string;
     description?: string;
     instructions?: string;
@@ -3138,20 +3175,50 @@ const getSkillScope = (skillName: string, workingDirectory?: string): {
   return { scope: null, path: null, source: null };
 };
 
-const listSupportingFiles = (skillDir: string): SupportingFile[] => {
-  if (!fs.existsSync(skillDir)) return [];
-  
+type SkillSupportingFilesListing = {
+  files: SupportingFile[];
+  truncated: boolean;
+};
+
+// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+// node_modules, generated docs); one detail request must not walk all of it,
+// least of all synchronously on the extension host. Keep these in sync with
+// SKILL_SUPPORTING_FILES_MAX_* in packages/web/server/lib/opencode/shared.js.
+const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
+const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
+
+const listSupportingFiles = (skillDir: string): SkillSupportingFilesListing => {
+  if (!fs.existsSync(skillDir)) return { files: [], truncated: false };
+
   const files: SupportingFile[] = [];
-  
-  const walkDir = (dir: string, relativePath: string = '') => {
+  let visitedDirectories = 0;
+  let truncated = false;
+
+  // Returns false once a limit is hit, so every caller unwinds and the walk
+  // stops instead of merely stopping collection. Files and directories seen
+  // before the limit are kept, in the original traversal order; a tree that
+  // ends exactly at a limit is complete, not truncated.
+  const walkDir = (dir: string, relativePath: string = ''): boolean => {
+    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
+      truncated = true;
+      return false;
+    }
+    visitedDirectories += 1;
+
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
-      
+
       if (entry.isDirectory()) {
-        walkDir(fullPath, relPath);
+        if (!walkDir(fullPath, relPath)) {
+          return false;
+        }
       } else if (entry.name !== 'SKILL.md') {
+        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
+          truncated = true;
+          return false;
+        }
         files.push({
           name: entry.name,
           path: relPath,
@@ -3159,10 +3226,11 @@ const listSupportingFiles = (skillDir: string): SupportingFile[] => {
         });
       }
     }
+    return true;
   };
-  
+
   walkDir(skillDir);
-  return files;
+  return { files, truncated };
 };
 
 export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
@@ -3370,6 +3438,7 @@ export const getSkillSources = (
   const mdExists = isBuiltInDiscovered || !!mdPath;
   let mdFields: string[] = isBuiltInDiscovered ? ['description', 'instructions'] : [];
   let supportingFiles: SupportingFile[] = [];
+  let supportingFilesTruncated = false;
   let mdDescription = typeof matchedDiscovered?.description === 'string' ? matchedDiscovered.description : '';
   let mdInstructions = isBuiltInDiscovered && typeof matchedDiscovered?.content === 'string' ? matchedDiscovered.content : '';
   let mdDisableModelInvocation = false;
@@ -3382,7 +3451,9 @@ export const getSkillSources = (
     if (body) mdFields.push('instructions');
     mdInstructions = body || '';
     if (mdDir) {
-      supportingFiles = listSupportingFiles(mdDir);
+      const listing = listSupportingFiles(mdDir);
+      supportingFiles = listing.files;
+      supportingFilesTruncated = listing.truncated;
     }
   }
   
@@ -3395,6 +3466,7 @@ export const getSkillSources = (
       scope: mdScope,
       source: mdSource,
       supportingFiles,
+      supportingFilesTruncated,
       name: matchedDiscovered?.name || skillName,
       description: mdDescription,
       instructions: mdInstructions,

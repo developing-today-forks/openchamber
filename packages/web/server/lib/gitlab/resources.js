@@ -314,9 +314,15 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     try {
       const jobs = details
         // A fork merge request runs its pipeline in the source project.
-        ? await client.Jobs.all(Number.isInteger(pipeline.project_id) ? pipeline.project_id : targetProjectId, {
-          pipelineId: pipeline.id, maxPages: 1, perPage: 100,
-        })
+        // Every page under the collection cap, and an explicit error past
+        // it (readCollection): a page-1-only read silently dropped the
+        // jobs of pipelines with more than 100 of them (#1405).
+        ? await readCollection(
+          (pageOptions) => client.Jobs.all(Number.isInteger(pipeline.project_id) ? pipeline.project_id : targetProjectId, {
+            pipelineId: pipeline.id, ...pageOptions,
+          }),
+          'GitLab pipeline has more jobs than OpenChamber reads',
+        )
         : [];
       if (details && (!Array.isArray(jobs) || jobs.some((job) => !isPlainObject(job)
         || !Number.isInteger(job.id) || !isString(job.name) || !job.name.trim()
@@ -624,10 +630,13 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       return { state: issue.state };
     },
 
-    /** One page of the project's labels, for the board's picker. */
+    /** The project's labels, for the board's picker: every page up to the collection bound. */
     async listLabels(directory, selector, remote) {
       const target = await constrainedProject(directory, selector, remote);
-      const raw = await client.ProjectLabels.all(target.project.id, { perPage: 100, maxPages: 1 });
+      const raw = await readCollection(
+        (page) => client.ProjectLabels.all(target.project.id, page),
+        'GitLab project has more labels than OpenChamber reads',
+      );
       if (!Array.isArray(raw)) throw new Error('GitLab returned an invalid label list');
       return raw.flatMap((label) => {
         if (!isPlainObject(label) || !isString(label.name) || !label.name) return [];
@@ -646,10 +655,13 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       return download(`projects/${target.project.id}/uploads/${secret}/${encodeURIComponent(filename)}`, { range, signal });
     },
 
-    /** One page of the project's active members, inherited ones too: who can be asked to review. */
+    /** The project's active members, inherited ones too: who can be asked to review, every page up to the collection bound. */
     async listReviewerCandidates(directory, selector, remote) {
       const target = await constrainedProject(directory, selector, remote);
-      const raw = await client.ProjectMembers.all(target.project.id, { includeInherited: true, perPage: 100, maxPages: 1 });
+      const raw = await readCollection(
+        (page) => client.ProjectMembers.all(target.project.id, { includeInherited: true, ...page }),
+        'GitLab project has more members than OpenChamber reads',
+      );
       if (!Array.isArray(raw)) throw new Error('GitLab returned an invalid member list');
       return raw.flatMap((member) => {
         const user = member?.state === 'active' ? mapGitLabUser(member, identity) : null;

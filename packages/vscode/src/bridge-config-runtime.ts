@@ -195,13 +195,38 @@ export async function handleConfigBridgeMessage(
     }
 
     case 'api:behavior/agents-md:get': {
+      // Open once and judge from the handle (design #1254, phase 3): a
+      // stat-by-path-then-read-by-path gate lets a file grown after the stat
+      // buffer whole past the cap. Growth past the cap answers the same
+      // over-limit refusal; a missing file still answers exists: false.
+      const overLimit = () => ({ id, type, success: false, error: `Content exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
       try {
-        const { size } = await fs.promises.stat(AGENTS_MD_PATH);
-        if (size > MAX_BEHAVIOR_PROMPT_SIZE) {
-          return { id, type, success: false, error: `Content exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` };
+        // O_NONBLOCK (POSIX only): open() must not block on a FIFO with no
+        // writer before the handle stat can reject it as non-regular.
+        const openFlags = process.platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+        const handle = await fs.promises.open(AGENTS_MD_PATH, openFlags);
+        try {
+          const stat = await handle.stat();
+          if (!stat.isFile()) {
+            throw new Error(`AGENTS.md is not a regular file: ${AGENTS_MD_PATH}`);
+          }
+          if (stat.size > MAX_BEHAVIOR_PROMPT_SIZE) {
+            return overLimit();
+          }
+          const buffer = Buffer.alloc(MAX_BEHAVIOR_PROMPT_SIZE + 1);
+          let total = 0;
+          while (total < buffer.length) {
+            const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+            if (bytesRead === 0) break;
+            total += bytesRead;
+          }
+          if (total > MAX_BEHAVIOR_PROMPT_SIZE) {
+            return overLimit();
+          }
+          return { id, type, success: true, data: { content: buffer.toString('utf8', 0, total), exists: true, path: AGENTS_MD_PATH } };
+        } finally {
+          await handle.close();
         }
-        const content = await fs.promises.readFile(AGENTS_MD_PATH, 'utf8');
-        return { id, type, success: true, data: { content, exists: true, path: AGENTS_MD_PATH } };
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
           return { id, type, success: true, data: { content: '', exists: false, path: AGENTS_MD_PATH } };

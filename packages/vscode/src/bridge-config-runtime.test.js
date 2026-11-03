@@ -275,6 +275,60 @@ describe('VS Code config bridge plugin parity', () => {
     expect(fs.readFileSync(pluginPath, 'utf8')).toBe(content);
   });
 
+  test('refuses a plugin file that grows past the cap after the handle stat without buffering it whole (#1410)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-grown-'));
+    tempRoots.push(root);
+    const ctx = createCtx(root);
+    const fileName = 'grown-plugin.ts';
+    const pluginPath = path.join(root, '.opencode', 'plugins', fileName);
+    fs.mkdirSync(path.dirname(pluginPath), { recursive: true });
+    fs.writeFileSync(pluginPath, 'x'.repeat(MAX_PLUGIN_FILE_BYTES + 1024), 'utf8');
+
+    const listed = await handleConfigBridgeMessage({
+      id: 'list-grown-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'list', directory: root },
+    }, ctx, deps);
+    const file = listed?.data?.files?.find((candidate) => candidate.fileName === fileName);
+
+    // The descriptor growth case: the handle stat answers the pre-growth
+    // size while the read meets the grown file.
+    const originalFstatSync = fs.fstatSync;
+    const originalReadSync = fs.readSync;
+    let requested = 0;
+    fs.fstatSync = (fd) => {
+      const stats = originalFstatSync(fd);
+      Object.defineProperty(stats, 'size', { value: 16 });
+      return stats;
+    };
+    fs.readSync = (fd, buffer, offset, length, position) => {
+      requested += length;
+      return originalReadSync(fd, buffer, offset, length, position);
+    };
+
+    let read;
+    try {
+      read = await handleConfigBridgeMessage({
+        id: 'read-grown-file',
+        type: 'api:config/plugins',
+        payload: { method: 'GET', target: 'file', directory: root, pluginId: file?.id },
+      }, ctx, deps);
+    } finally {
+      fs.fstatSync = originalFstatSync;
+      fs.readSync = originalReadSync;
+    }
+
+    expect(read).toMatchObject({
+      id: 'read-grown-file',
+      type: 'api:config/plugins',
+      success: false,
+      error: `Plugin file exceeds maximum size of ${MAX_PLUGIN_FILE_BYTES} bytes`,
+      code: 'PLUGIN_FILE_TOO_LARGE',
+    });
+    expect(requested).toBeGreaterThan(0);
+    expect(requested).toBeLessThanOrEqual(MAX_PLUGIN_FILE_BYTES + 1);
+  });
+
   test('reads and updates plugin files exactly at the size limit', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-at-limit-'));
     tempRoots.push(root);
@@ -514,6 +568,43 @@ describe('VS Code config bridge behavior AGENTS.md size gate', () => {
     expect(result.success).toBe(true);
     expect(result.data.exists).toBe(true);
     expect(result.data.content).toBe('x'.repeat(CAP));
+  });
+
+  test('get refuses an AGENTS.md that grows past the cap after the handle stat (#1410)', async () => {
+    writeAgentsMd(CAP + 1024);
+    const ctx = createCtx(scratchConfigRoot);
+
+    // The descriptor growth case: the handle stat answers the pre-growth
+    // size while the read meets the grown file.
+    const originalOpen = fs.promises.open;
+    let requested = 0;
+    fs.promises.open = async (...args) => {
+      const handle = await originalOpen(...args);
+      const originalStat = handle.stat.bind(handle);
+      handle.stat = async () => {
+        const stats = await originalStat();
+        Object.defineProperty(stats, 'size', { value: 16 });
+        return stats;
+      };
+      const originalRead = handle.read.bind(handle);
+      handle.read = async (buffer, offset, length, position) => {
+        requested += length;
+        return originalRead(buffer, offset, length, position);
+      };
+      return handle;
+    };
+
+    let result;
+    try {
+      result = await handleConfigBridgeMessage({ id: 'get-grown', type: 'api:behavior/agents-md:get' }, ctx, deps);
+    } finally {
+      fs.promises.open = originalOpen;
+    }
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(`maximum size of ${CAP} bytes`);
+    expect(result.data).toBeUndefined();
+    expect(requested).toBeGreaterThan(0);
+    expect(requested).toBeLessThanOrEqual(CAP + 1);
   });
 
   test('save refuses multibyte content whose UTF-8 bytes exceed the cap', async () => {

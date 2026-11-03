@@ -3,6 +3,7 @@ import { createSharedHealthProbe, parseHealthWaitMs, waitForOpenCodeHealth } fro
 import express from 'express';
 import { resolveNpmRegistryRequest } from './npm-registry-config.js';
 import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -661,20 +662,23 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
 
   app.get('/api/behavior/agents-md', async (_req, res) => {
     try {
-      let stat;
-      try {
-        stat = await fs.promises.stat(AGENTS_MD_PATH);
-      } catch {
-        return res.json({ content: '', exists: false, path: AGENTS_MD_PATH });
+      // Open once and judge from the handle (design #1254): the file is
+      // user-managed, so a stat-by-path-then-read-by-path gate lets a file
+      // grown after the stat buffer whole past the cap. Growth is refused
+      // from the bounded read with the same 413; a missing file still
+      // answers exists: false, and a non-regular file throws the way a
+      // read would have.
+      const result = await readBoundedFile(AGENTS_MD_PATH, MAX_BEHAVIOR_PROMPT_SIZE);
+      if (!result.ok) {
+        if (result.reason === 'missing') {
+          return res.json({ content: '', exists: false, path: AGENTS_MD_PATH });
+        }
+        if (result.reason === 'too-large') {
+          return res.status(413).json({ error: `AGENTS.md exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
+        }
+        throw new Error(`AGENTS.md is not a regular file: ${AGENTS_MD_PATH}`);
       }
-      // The file is user-managed, so it can be far larger than anything the
-      // PUT below would ever write; refuse it from its size alone instead
-      // of buffering it whole into the server.
-      if (stat.size > MAX_BEHAVIOR_PROMPT_SIZE) {
-        return res.status(413).json({ error: `AGENTS.md exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
-      }
-      const content = await fs.promises.readFile(AGENTS_MD_PATH, 'utf8');
-      return res.json({ content, exists: true, path: AGENTS_MD_PATH });
+      return res.json({ content: result.buffer.toString('utf8'), exists: true, path: AGENTS_MD_PATH });
     } catch (error) {
       console.error('Failed to read AGENTS.md:', error);
       return res.status(500).json({ error: 'Failed to read AGENTS.md' });
@@ -695,11 +699,19 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
         const expected = req.body.expectedContent;
         let current = null;
         try {
-          const stat = await fs.promises.stat(AGENTS_MD_PATH);
-          if (stat.size > MAX_BEHAVIOR_PROMPT_SIZE) {
-            return res.status(413).json({ error: `AGENTS.md exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
+          const result = await readBoundedFile(AGENTS_MD_PATH, MAX_BEHAVIOR_PROMPT_SIZE);
+          if (!result.ok) {
+            if (result.reason === 'too-large') {
+              return res.status(413).json({ error: `AGENTS.md exceeds maximum size of ${MAX_BEHAVIOR_PROMPT_SIZE} bytes` });
+            }
+            // A missing file compares as null, the same no-file value the
+            // editor sends; a non-regular file throws the way a read would.
+            if (result.reason !== 'missing') {
+              throw new Error(`AGENTS.md is not a regular file: ${AGENTS_MD_PATH}`);
+            }
+          } else {
+            current = result.buffer.toString('utf8');
           }
-          current = await fs.promises.readFile(AGENTS_MD_PATH, 'utf8');
         } catch (error) {
           if (error?.code !== 'ENOENT') throw error;
         }

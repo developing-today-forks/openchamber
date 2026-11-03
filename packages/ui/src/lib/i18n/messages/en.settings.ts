@@ -892,6 +892,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'Create skill',
   'settings.skills.page.actions.createFile': 'Create file',
   'settings.skills.page.supportingFiles.empty': 'No supporting files. Use "Add File" to include reference materials.',
+  'settings.skills.page.supportingFiles.truncated': 'This list is incomplete: the skill folder is too large to list in full.',
   'settings.skills.page.loading.details': 'Loading skill details...',
   'settings.skills.page.loading.fileContent': 'Loading file content...',
   'settings.skills.page.empty.title': 'Select a skill from the sidebar',

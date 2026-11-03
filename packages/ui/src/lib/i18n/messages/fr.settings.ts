@@ -766,6 +766,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'Créer un skill',
   'settings.skills.page.actions.createFile': 'Créer un fichier',
   'settings.skills.page.supportingFiles.empty': 'Aucun fichier à l\'appui. Utilisez « Ajouter un fichier » pour inclure des documents de référence.',
+  'settings.skills.page.supportingFiles.truncated': 'Cette liste est incomplète : le dossier de la skill est trop volumineux pour être listé en entier.',
   'settings.skills.page.loading.details': 'Chargement des détails du skill...',
   'settings.skills.page.loading.fileContent': 'Chargement du contenu du fichier...',
   'settings.skills.page.empty.title': 'Sélectionnez un skill dans la barre latérale',

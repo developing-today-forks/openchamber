@@ -24,6 +24,17 @@ const GITHUB_BRANCH_MAX_COUNT = GITHUB_BRANCH_PAGE_SIZE * GITHUB_BRANCH_MAX_PAGE
 const GITHUB_PR_CONTEXT_PAGE_SIZE = 100;
 const GITHUB_PR_CONTEXT_MAX_PAGES = 20;
 const GITHUB_PR_CONTEXT_MAX_COUNT = GITHUB_PR_CONTEXT_PAGE_SIZE * GITHUB_PR_CONTEXT_MAX_PAGES;
+const GITHUB_CHECK_RUN_PAGE_SIZE = 100;
+const GITHUB_CHECK_RUN_MAX_PAGES = 20;
+const GITHUB_CHECK_RUN_MAX_COUNT = GITHUB_CHECK_RUN_PAGE_SIZE * GITHUB_CHECK_RUN_MAX_PAGES;
+const GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE = 100;
+const GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES = 20;
+const GITHUB_CHECK_RUN_ANNOTATION_MAX_COUNT = GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE * GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES;
+// Board-picker reads share the branches bound: named caps with one overflow
+// probe, so an over-cap collection fails loudly instead of reading short.
+const GITHUB_PICKER_PAGE_SIZE = 100;
+const GITHUB_PICKER_MAX_PAGES = 20;
+const GITHUB_PICKER_MAX_COUNT = GITHUB_PICKER_PAGE_SIZE * GITHUB_PICKER_MAX_PAGES;
 
 const githubAuthRoutePaths = (suffix) => [
   `/api/github${suffix}`,
@@ -138,6 +149,68 @@ async function readPullContextCollection(label, invalidMessage, fetchPage) {
         return items;
       }
       throw new Error(`GitHub ${label} list reached the ${GITHUB_PR_CONTEXT_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return items;
+}
+
+// Reads one { total_count, items } collection (check runs for a ref, jobs
+// for a workflow run) page by page under the same named-cap discipline as
+// readPullContextCollection (#1405): paginate to a short page, probe one
+// page past the cap, and error when the probe is non-empty, so a partial
+// list is never summarised as complete. total_count from the first page is
+// honoured two ways: reading stops as soon as it is covered, and a short
+// page that still leaves runs unread is an explicit error, not an ending.
+async function readTotalCountCollection(label, extract, fetchPage) {
+  const items = [];
+  let totalCount = null;
+  for (let page = 1; page <= GITHUB_CHECK_RUN_MAX_PAGES; page += 1) {
+    const data = (await fetchPage(page))?.data;
+    const payload = extract(data);
+    if (page === 1 && Number.isSafeInteger(data?.total_count) && data.total_count >= 0) {
+      totalCount = data.total_count;
+    }
+    items.push(...payload);
+    if (totalCount !== null && items.length >= totalCount) {
+      return items;
+    }
+    if (payload.length < GITHUB_CHECK_RUN_PAGE_SIZE) {
+      if (totalCount !== null && items.length < totalCount) {
+        throw new Error(`GitHub ${label} list ended after ${items.length} of ${totalCount} entries and may be incomplete`);
+      }
+      return items;
+    }
+    if (page === GITHUB_CHECK_RUN_MAX_PAGES) {
+      const probe = extract((await fetchPage(page + 1))?.data);
+      if (probe.length === 0 && (totalCount === null || items.length >= totalCount)) {
+        return items;
+      }
+      throw new Error(`GitHub ${label} list reached the ${GITHUB_CHECK_RUN_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return items;
+}
+
+// Reads one check run's annotations page by page under the same named-cap
+// discipline as readPullContextCollection (#1420): listAnnotations returns a
+// plain array with no total_count, so pagination follows short pages, probes
+// one page past the cap, and errors when the probe is non-empty. A page error
+// propagates to the caller instead of silently returning the pages read so
+// far as if they were the complete list.
+async function readCheckRunAnnotations(fetchPage) {
+  const items = [];
+  for (let page = 1; page <= GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES; page += 1) {
+    const payload = requireProviderArray((await fetchPage(page))?.data, 'GitHub returned an invalid check run annotation list');
+    items.push(...payload);
+    if (payload.length < GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE) {
+      return items;
+    }
+    if (page === GITHUB_CHECK_RUN_ANNOTATION_MAX_PAGES) {
+      const probe = requireProviderArray((await fetchPage(page + 1))?.data, 'GitHub returned an invalid check run annotation list');
+      if (probe.length === 0) {
+        return items;
+      }
+      throw new Error(`GitHub check run annotation list reached the ${GITHUB_CHECK_RUN_ANNOTATION_MAX_COUNT} safety limit and may be incomplete`);
     }
   }
   return items;
@@ -1842,13 +1915,17 @@ export function registerGitHubRoutes(app, options = {}) {
       const sha = prData.head?.sha;
       if (sha && !isHistorical) {
         try {
-          const runs = await octokit.rest.checks.listForRef({
-            owner: searchRepo.owner,
-            repo: searchRepo.repo,
-            ref: sha,
-            per_page: 100,
-          });
-          const checkRuns = dedupeCheckRuns(requireGitHubCheckRuns(runs?.data?.check_runs));
+          const checkRuns = dedupeCheckRuns(await readTotalCountCollection(
+            'check run',
+            (data) => requireGitHubCheckRuns(data?.check_runs),
+            (page) => octokit.rest.checks.listForRef({
+              owner: searchRepo.owner,
+              repo: searchRepo.repo,
+              ref: sha,
+              per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+              page,
+            }),
+          ));
           if (checkRuns.length > 0) {
             checks = summarizeCheckRuns(checkRuns);
           }
@@ -2370,9 +2447,30 @@ export function registerGitHubRoutes(app, options = {}) {
     }
   });
 
+  // Every page of a small provider collection under the named picker cap.
+  // A full final page triggers one bounded overflow probe: an empty probe
+  // means the collection ends exactly at the cap, anything else is an
+  // explicit over-cap error, never a silent short list.
+  const readCappedPages = async (readPage, invalidMessage, limitMessage) => {
+    const items = [];
+    for (let page = 1; page <= GITHUB_PICKER_MAX_PAGES; page += 1) {
+      const payload = requireProviderArray((await readPage(page))?.data, invalidMessage);
+      if (payload.length === 0) break;
+      items.push(...payload);
+      if (payload.length < GITHUB_PICKER_PAGE_SIZE) break;
+      if (page === GITHUB_PICKER_MAX_PAGES) {
+        const probe = requireProviderArray((await readPage(GITHUB_PICKER_MAX_PAGES + 1))?.data, invalidMessage);
+        if (probe.length === 0) break;
+        throw new Error(limitMessage);
+      }
+    }
+    return items;
+  };
+
   // The repository's labels and the people who can be asked to review in it,
   // for the board's pickers. The repository must be in the bound project's
-  // network, as for the detail above; one page of 100 is what the pickers show.
+  // network, as for the detail above; collections larger than the named cap
+  // fail with an explicit over-cap error instead of reading short.
   const readRepositoryChoices = (suffix, read) => app.get(canonicalGitHubRoutePath(suffix), async (req, res) => {
     const directory = readQueryString(req, 'directory');
     const owner = readQueryString(req, 'owner');
@@ -2407,16 +2505,24 @@ export function registerGitHubRoutes(app, options = {}) {
   });
 
   readRepositoryChoices('/references/labels', async (octokit, repo) => {
-    const response = await octokit.rest.issues.listLabelsForRepo({ owner: repo.owner, repo: repo.repo, per_page: 100 });
-    return requireProviderArray(response?.data, 'GitHub returned an invalid label list').flatMap((label) => {
+    const items = await readCappedPages(
+      (page) => octokit.rest.issues.listLabelsForRepo({ owner: repo.owner, repo: repo.repo, per_page: GITHUB_PICKER_PAGE_SIZE, page }),
+      'GitHub returned an invalid label list',
+      `GitHub label list reached the ${GITHUB_PICKER_MAX_COUNT}-label safety limit and may be incomplete`,
+    );
+    return items.flatMap((label) => {
       if (!isProviderString(label?.name) || !label.name) return [];
       return [isProviderString(label.color) && label.color ? { name: label.name, color: label.color } : { name: label.name }];
     });
   });
 
   readRepositoryChoices('/references/reviewers', async (octokit, repo) => {
-    const response = await octokit.rest.issues.listAssignees({ owner: repo.owner, repo: repo.repo, per_page: 100 });
-    return requireProviderArray(response?.data, 'GitHub returned an invalid user list').flatMap((user) => {
+    const items = await readCappedPages(
+      (page) => octokit.rest.issues.listAssignees({ owner: repo.owner, repo: repo.repo, per_page: GITHUB_PICKER_PAGE_SIZE, page }),
+      'GitHub returned an invalid user list',
+      `GitHub reviewer list reached the ${GITHUB_PICKER_MAX_COUNT}-reviewer safety limit and may be incomplete`,
+    );
+    return items.flatMap((user) => {
       if (!isProviderString(user?.login) || !user.login) return [];
       return [isProviderString(user.avatar_url) && user.avatar_url
         ? { id: user.login, login: user.login, avatarUrl: user.avatar_url }
@@ -3188,11 +3294,21 @@ export function registerGitHubRoutes(app, options = {}) {
       const sha = prData.head?.sha;
       if (sha) {
         try {
-          const runs = await octokit.rest.checks.listForRef({ owner: repo.owner, repo: repo.repo, ref: sha, per_page: 100 });
-          const checkRuns = dedupeCheckRuns(requireGitHubCheckRuns(runs?.data?.check_runs));
+          const checkRuns = dedupeCheckRuns(await readTotalCountCollection(
+            'check run',
+            (data) => requireGitHubCheckRuns(data?.check_runs),
+            (page) => octokit.rest.checks.listForRef({
+              owner: repo.owner,
+              repo: repo.repo,
+              ref: sha,
+              per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+              page,
+            }),
+          ));
           if (checkRuns.length > 0) {
             const parsedJobs = new Map();
             const parsedAnnotations = new Map();
+            const truncatedAnnotations = new Set();
             if (includeCheckDetails) {
               // Prefetch actions jobs per runId.
               const runIds = new Set();
@@ -3216,13 +3332,17 @@ export function registerGitHubRoutes(app, options = {}) {
 
               for (const runId of runIds) {
                 try {
-                  const jobsResp = await octokit.rest.actions.listJobsForWorkflowRun({
-                    owner: repo.owner,
-                    repo: repo.repo,
-                    run_id: runId,
-                    per_page: 100,
-                  });
-                  const jobs = requireGitHubWorkflowJobs(jobsResp?.data?.jobs);
+                  const jobs = await readTotalCountCollection(
+                    'workflow job',
+                    (data) => requireGitHubWorkflowJobs(data?.jobs),
+                    (page) => octokit.rest.actions.listJobsForWorkflowRun({
+                      owner: repo.owner,
+                      repo: repo.repo,
+                      run_id: runId,
+                      per_page: GITHUB_CHECK_RUN_PAGE_SIZE,
+                      page,
+                    }),
+                  );
                   parsedJobs.set(runId, jobs);
                 } catch {
                   parsedJobs.set(runId, []);
@@ -3245,28 +3365,24 @@ export function registerGitHubRoutes(app, options = {}) {
                   continue;
                 }
 
-                const annotations = [];
-                for (let page = 1; page <= 3; page += 1) {
-                  try {
-                    const annotationsResp = await octokit.rest.checks.listAnnotations({
-                      owner: repo.owner,
-                      repo: repo.repo,
-                      check_run_id: checkRunId,
-                      per_page: 50,
-                      page,
-                    });
-                    const chunk = Array.isArray(annotationsResp?.data) ? annotationsResp.data : [];
-                    annotations.push(...chunk);
-                    if (chunk.length < 50) {
-                      break;
-                    }
-                  } catch {
-                    break;
+                // Deliberate choice (#1420): an annotations read that fails
+                // or crosses the safety cap is caught per check run, so the
+                // checks summary still renders, but the partial list is
+                // never returned as complete — the run is flagged with
+                // annotationsTruncated instead.
+                try {
+                  const annotations = await readCheckRunAnnotations((page) => octokit.rest.checks.listAnnotations({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    check_run_id: checkRunId,
+                    per_page: GITHUB_CHECK_RUN_ANNOTATION_PAGE_SIZE,
+                    page,
+                  }));
+                  if (annotations.length > 0) {
+                    parsedAnnotations.set(checkRunId, annotations);
                   }
-                }
-
-                if (annotations.length > 0) {
-                  parsedAnnotations.set(checkRunId, annotations);
+                } catch {
+                  truncatedAnnotations.add(checkRunId);
                 }
               }
             }
@@ -3331,6 +3447,7 @@ export function registerGitHubRoutes(app, options = {}) {
                     }
                   : undefined,
                 ...(job ? { job } : {}),
+                ...(truncatedAnnotations.has(Number(run.id)) ? { annotationsTruncated: true } : {}),
                 ...(run.id && parsedAnnotations.has(run.id)
                   ? {
                       annotations: parsedAnnotations.get(run.id).map((a) => ({

@@ -246,7 +246,7 @@ describe('fetchReferenceDetail', () => {
     number: 9,
     state: 'OPEN',
     reviewDecision: 'CHANGES_REQUESTED',
-    headCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    headCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { totalCount: 2, nodes: [
       { __typename: 'CheckRun', databaseId: 1, name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
       { __typename: 'CheckRun', databaseId: 2, name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
     ] } } } }] },
@@ -263,8 +263,14 @@ describe('fetchReferenceDetail', () => {
       oid: 'abc1234', messageHeadline: 'fix: the thing', committedDate: '2026-10-01T08:00:00Z', url: 'https://github.com/acme/app/commit/abc1234',
       author: { name: 'Octo Cat', user: author },
     } }] },
-    reviews: { nodes: reviews },
-    reviewThreads: { nodes: threads },
+    reviews: { totalCount: reviews.length, nodes: reviews },
+    reviewThreads: {
+      totalCount: threads.length,
+      nodes: threads.map((thread) => ({
+        ...thread,
+        comments: { totalCount: thread.comments.nodes.length, ...thread.comments },
+      })),
+    },
   });
 
   it('reads an issue with its comments', async () => {
@@ -310,7 +316,16 @@ describe('fetchReferenceDetail', () => {
         url: 'https://github.com/acme/app/commit/abc1234',
       }],
       commitTotal: 1,
+      reviewTotal: 2,
+      threadTotal: 1,
     });
+  });
+
+  it('a PR whose contexts are truncated does not report a definitive checks state (#1418)', async () => {
+    const item = pull();
+    item.headCommit.nodes[0].commit.statusCheckRollup.contexts.totalCount = 150;
+    const detail = await fetchReferenceDetail({ octokit: graphqlReturning(item), owner: 'acme', repo: 'app', number: 9 });
+    expect(detail?.pull?.checks).toEqual(expect.objectContaining({ state: 'unknown', incomplete: true, contextsTotal: 150 }));
   });
 
   it('reads a review thread as its first comment with the replies under it', async () => {
@@ -324,6 +339,7 @@ describe('fetchReferenceDetail', () => {
     const opener = detail?.comments.find((comment) => comment.url === 'c1');
     expect(opener?.thread).toEqual({
       id: 'PRRT_two',
+      commentTotal: 2,
       resolved: true,
       // A resolved thread is reopened, so that is the permission that counts.
       canResolve: true,
@@ -331,6 +347,32 @@ describe('fetchReferenceDetail', () => {
       replies: [{ author: null, body: 'done', createdAt: '2026-10-01T10:00:00Z', url: 'c2', path: 'src/a.ts', line: 3, review: 'commented' }],
     });
     expect(detail?.comments.some((comment) => comment.url === 'c2')).toBe(false);
+  });
+
+  it('surfaces review, thread and thread-comment totals above the returned counts (#1419)', async () => {
+    const item = pull([
+      { author, body: 'latest', state: 'APPROVED', createdAt: '2026-10-01T11:00:00Z', url: 'r31' },
+    ], [{
+      id: 'PRRT_three', isResolved: false, viewerCanResolve: true, viewerCanUnresolve: false, viewerCanReply: true,
+      comments: { nodes: [
+        { author, body: 'opener', createdAt: '2026-10-01T09:00:00Z', url: 'c1', path: 'src/a.ts', line: 3, originalLine: 3 },
+        { author, body: 'reply', createdAt: '2026-10-01T10:00:00Z', url: 'c2', path: 'src/a.ts', line: 3, originalLine: 3 },
+      ] },
+    }]);
+    // The query caps what it returns (last 30 reviews, last 50 threads,
+    // first 50 comments per thread); the totals are what the host reports.
+    item.reviews.totalCount = 31;
+    item.reviewThreads.totalCount = 51;
+    item.reviewThreads.nodes[0].comments.totalCount = 75;
+
+    const detail = await fetchReferenceDetail({ octokit: graphqlReturning(item), owner: 'acme', repo: 'app', number: 9 });
+
+    expect(detail?.pull?.reviewTotal).toBe(31);
+    expect(detail?.pull?.threadTotal).toBe(51);
+    const opener = detail?.comments.find((comment) => comment.url === 'c1');
+    expect(opener?.thread?.commentTotal).toBe(75);
+    // The returned content itself is unchanged by the totals.
+    expect(detail?.comments.map((comment) => comment.url)).toContain('r31');
   });
 
   it('answers null for a missing number', async () => {

@@ -8,7 +8,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFileSync,
+  readDurableJsonFileSync,
+  writeDurableJsonFileSync,
+} from '../shared/durable-json-store.js';
 
 const ACTIONS = ['avoid', 'prefer', 'allow-over-budget'];
 
@@ -51,95 +56,74 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
   const overridesFile = path.join(dataDir, 'route-overrides.json');
   const feedbackFile = path.join(dataDir, 'route-feedback.jsonl');
 
-  // A torn or otherwise unparseable overrides file is user data, not an
-  // empty store: move its bytes aside before any later save can overwrite
-  // them, and name the preserved copy so the loss is recoverable.
-  // The parse error itself is never logged: Node's JSON.parse messages
-  // quote the file content, and override text is the user's own sentence.
-  const preserveCorruptFile = () => {
-    // The suffix must be collision-proof: a timestamp alone can repeat, and
-    // rename would silently replace an earlier preserved copy.
-    let preservedFile = null;
-    for (let attempt = 0; attempt < 10 && preservedFile === null; attempt += 1) {
-      const candidate = `${overridesFile}.corrupt-${now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-      if (!fs.existsSync(candidate)) preservedFile = candidate;
-    }
-    if (preservedFile === null) {
-      console.warn('Failed to read route overrides file: the file could not be parsed');
-      console.warn('Failed to preserve the unreadable route overrides file: every preserved-file name collided');
-      return false;
-    }
-    try {
-      renameSyncWithRetry((from, to) => fs.renameSync(from, to), overridesFile, preservedFile);
-      console.warn(`Failed to read route overrides file: preserved the unreadable file at ${preservedFile}`);
-      return true;
-    } catch {
-      console.warn('Failed to read route overrides file: the file could not be parsed');
-      console.warn(`Failed to preserve the unreadable route overrides file at ${preservedFile}`);
-      return false;
-    }
-  };
-
-  // 'none' when no corrupt file is in the way, 'preserved' when one was moved
-  // aside, 'failed' when one is present but could not be preserved — a save
-  // must not overwrite an unpreserved corrupt file.
-  const preserveCorruptFileIfPresent = () => {
-    let raw;
-    try {
-      raw = fs.readFileSync(overridesFile, 'utf8');
-    } catch (error) {
-      // Only a missing file is 'none'. Any other read failure (EACCES,
-      // EISDIR, ...) leaves an existing file whose bytes were neither
-      // parsed nor preserved: report 'failed' so the save refuses rather
-      // than renaming a new file over them.
-      return error?.code === 'ENOENT' ? 'none' : 'failed';
-    }
-    try {
-      JSON.parse(raw);
-      return 'none';
-    } catch {
-      return preserveCorruptFile() ? 'preserved' : 'failed';
-    }
-  };
+  // This store rides the shared durable-store primitive (design #976):
+  // the sync spellings match this store's synchronous read and save. The
+  // value judgement stays this store's own: the file is an object whose
+  // `overrides`, when present, is an array; anything else is as malformed
+  // as unparseable bytes. The parse error itself is never logged: Node's
+  // JSON.parse messages quote the file content, and override text is the
+  // user's own sentence.
+  const validateValue = (value) =>
+    isJsonObject(value) && (value.overrides === undefined || Array.isArray(value.overrides));
 
   const readAll = () => {
-    let raw;
-    try {
-      raw = fs.readFileSync(overridesFile, 'utf8');
-    } catch (error) {
-      if (error?.code !== 'ENOENT') {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let result;
+      try {
+        result = readDurableJsonFileSync(overridesFile, { validateValue });
+      } catch (error) {
+        // A read failure other than absence (EACCES, EISDIR, ...) warns
+        // and reads as empty, the behaviour this store always had; the
+        // primitive answers absence itself as 'missing'.
         console.warn('Failed to read route overrides file:', error);
+        return [];
       }
+      if (result.state === 'valid') {
+        const list = result.value.overrides;
+        return Array.isArray(list) ? list.map(parseOverride).filter(Boolean) : [];
+      }
+      // The primitive collapses an absent file and an existing empty file
+      // into 'missing'. An empty file holds no overrides, so there is
+      // nothing to preserve in either case.
+      if (result.state === 'missing') return [];
+      // A torn or otherwise unparseable overrides file is user data, not
+      // an empty store: move its bytes aside before any later save can
+      // overwrite them, and name the preserved copy so the loss is
+      // recoverable.
+      const preservation = preserveMalformedJsonFileSync(overridesFile, { validateValue });
+      if (preservation.preserved) {
+        console.warn(`Failed to read route overrides file: preserved the unreadable file at ${preservation.preservedPath}`);
+        return [];
+      }
+      // A valid replacement landed while the malformed bytes were being
+      // judged: read that file instead of answering from the stale one.
+      if (preservation.outcome === 'replaced') continue;
+      console.warn('Failed to read route overrides file: the file could not be parsed');
+      console.warn('Failed to preserve the unreadable route overrides file');
       return [];
     }
-    let list;
-    try {
-      list = JSON.parse(raw)?.overrides;
-    } catch {
-      preserveCorruptFile();
-      return [];
-    }
-    return Array.isArray(list) ? list.map(parseOverride).filter(Boolean) : [];
+    return [];
   };
 
   const save = (overrides) => {
     const live = overrides.filter((item) => item.until > now());
     fs.mkdirSync(dataDir, { recursive: true });
-    if (preserveCorruptFileIfPresent() === 'failed') {
+    // A save must not overwrite an unpreserved corrupt file: the preserve
+    // helper re-reads and re-judges the on-disk bytes, and any failure to
+    // read, judge, or preserve them refuses the save. A valid file, an
+    // absent file, and an empty file need no preservation and the save
+    // proceeds.
+    const preservation = preserveMalformedJsonFileSync(overridesFile, { validateValue });
+    if (preservation.outcome === 'failed') {
       throw new Error(`Refusing to overwrite the unreadable route overrides file at ${overridesFile}: it could not be preserved`);
     }
-    const temporaryFile = `${overridesFile}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    try {
-      fs.writeFileSync(temporaryFile, JSON.stringify({ version: 1, overrides: live }, null, 2));
-      renameSyncWithRetry((from, to) => fs.renameSync(from, to), temporaryFile, overridesFile);
-    } catch (error) {
-      try {
-        fs.unlinkSync(temporaryFile);
-      } catch {
-        // The temp file may never have been created; the write error stands.
-      }
-      throw error;
+    if (preservation.preserved) {
+      console.warn(`Failed to read route overrides file: preserved the unreadable file at ${preservation.preservedPath}`);
     }
+    // The file mode is stated explicitly through the primitive: this
+    // store never restricted its file (a plain write under the process
+    // umask), so 0o666 keeps the effective mode it always had.
+    writeDurableJsonFileSync(overridesFile, JSON.stringify({ version: 1, overrides: live }, null, 2), { mode: 0o666 });
     return live;
   };
 

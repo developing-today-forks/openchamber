@@ -359,8 +359,8 @@ describe('GET /api/source-control/github/references', () => {
       deletions: 2,
       changedFiles: 1,
       comments: { totalCount: 0, nodes: [] },
-      reviews: { nodes: [] },
-      reviewThreads: { nodes: [] },
+      reviews: { totalCount: 0, nodes: [] },
+      reviewThreads: { totalCount: 0, nodes: [] },
       commits: { totalCount: 0, nodes: [] },
     } } } }));
 
@@ -406,6 +406,78 @@ describe('GET /api/source-control/github/references', () => {
     expect(fetch.mock.calls.slice(calls).some(([url]) => String(url).includes('/labels'))).toBe(false);
   });
 
+  it('pages the board picker lists past the first 100', async () => {
+    const labelPages = [100, 100, 50].map((count, page) =>
+      Array.from({ length: count }, (_, index) => ({ name: `label-${page + 1}-${index}`, color: 'd73a4a' })));
+    const reviewerPages = [100, 30].map((count, page) =>
+      Array.from({ length: count }, (_, index) => ({ login: `user-${page + 1}-${index}` })));
+    const fetch = vi.fn(async (url) => {
+      const endpoint = new URL(url);
+      if (endpoint.pathname === '/repos/example/project') return response({ full_name: 'example/project', fork: false });
+      const page = Number(endpoint.searchParams.get('page'));
+      if (endpoint.pathname === '/repos/example/project/labels') return response(labelPages[page - 1] ?? []);
+      if (endpoint.pathname === '/repos/example/project/assignees') return response(reviewerPages[page - 1] ?? []);
+      throw new Error(`Unexpected GitHub request: ${endpoint.pathname}`);
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const labels = await request(app).get('/api/source-control/github/references/labels')
+      .query({ ...readContext(project), owner: 'example', repo: 'project' }).expect(200);
+    const reviewers = await request(app).get('/api/source-control/github/references/reviewers')
+      .query({ ...readContext(project), owner: 'example', repo: 'project' }).expect(200);
+
+    expect(labels.body.items).toHaveLength(250);
+    expect(labels.body.items[249]).toEqual({ name: 'label-3-49', color: 'd73a4a' });
+    expect(reviewers.body.items).toHaveLength(130);
+    expect(reviewers.body.items[129]).toEqual({ id: 'user-2-29', login: 'user-2-29' });
+    const pickerCalls = (suffix) => fetch.mock.calls.filter(([called]) => new URL(called).pathname.endsWith(suffix)).length;
+    expect(pickerCalls('/labels')).toBe(3);
+    expect(pickerCalls('/assignees')).toBe(2);
+  });
+
+  it('returns the complete board picker list at exactly the pagination cap', async () => {
+    const fetch = vi.fn(async (url) => {
+      const endpoint = new URL(url);
+      if (endpoint.pathname === '/repos/example/project') return response({ full_name: 'example/project', fork: false });
+      if (endpoint.pathname !== '/repos/example/project/labels') throw new Error(`Unexpected GitHub request: ${endpoint.pathname}`);
+      if (Number(endpoint.searchParams.get('page')) > 20) return response([]);
+      return response(Array.from({ length: 100 }, (_, index) => ({ name: `label-${index}` })));
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const labels = await request(app).get('/api/source-control/github/references/labels')
+      .query({ ...readContext(project), owner: 'example', repo: 'project' }).expect(200);
+
+    expect(labels.body.items).toHaveLength(2000);
+    expect(fetch.mock.calls.filter(([called]) => new URL(called).pathname.endsWith('/labels'))).toHaveLength(21);
+  });
+
+  it('fails explicitly when a board picker list passes the pagination cap', async () => {
+    const fetch = vi.fn(async (url) => {
+      const endpoint = new URL(url);
+      if (endpoint.pathname === '/repos/example/project') return response({ full_name: 'example/project', fork: false });
+      if (endpoint.pathname === '/repos/example/project/labels') {
+        return response(Array.from({ length: 100 }, (_, index) => ({ name: `label-${index}` })));
+      }
+      if (endpoint.pathname === '/repos/example/project/assignees') {
+        return response(Array.from({ length: 100 }, (_, index) => ({ login: `user-${index}` })));
+      }
+      throw new Error(`Unexpected GitHub request: ${endpoint.pathname}`);
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const labels = await request(app).get('/api/source-control/github/references/labels')
+      .query({ ...readContext(project), owner: 'example', repo: 'project' }).expect(500);
+    const reviewers = await request(app).get('/api/source-control/github/references/reviewers')
+      .query({ ...readContext(project), owner: 'example', repo: 'project' }).expect(500);
+
+    expect(labels.body.error).toBe('GitHub label list reached the 2000-label safety limit and may be incomplete');
+    expect(reviewers.body.error).toBe('GitHub reviewer list reached the 2000-reviewer safety limit and may be incomplete');
+    const pickerCalls = (suffix) => fetch.mock.calls.filter(([called]) => new URL(called).pathname.endsWith(suffix)).length;
+    expect(pickerCalls('/labels')).toBe(21);
+    expect(pickerCalls('/assignees')).toBe(21);
+  });
+
   it('reads the statuses of listed PRs with the sidebar summaries, only from the project repo network', async () => {
     const fetch = serveGitHub((body) => {
       expect(body.variables).toMatchObject({ o0: 'example', n0: 'project', p0: 4, o1: 'example', n1: 'project', p1: 9 });
@@ -418,7 +490,7 @@ describe('GET /api/source-control/github/references', () => {
           mergeable: 'CONFLICTING',
           mergeStateStatus: 'DIRTY',
           headRefOid: 'sha-4',
-          commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+          commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { totalCount: 1, nodes: [
             { __typename: 'CheckRun', databaseId: 1, name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: null, checkSuite: { app: { databaseId: 1 } } },
           ] } } } }] },
         } },

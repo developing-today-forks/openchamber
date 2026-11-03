@@ -892,6 +892,7 @@ export const settingsDict = {
   'settings.skills.page.actions.createSkill': 'צור מיומנות',
   'settings.skills.page.actions.createFile': 'צור קובץ',
   'settings.skills.page.supportingFiles.empty': "אין קבצים נלווים. אפשר להוסיף חומרי עזר בעזרת \"הוסף קובץ\".",
+  'settings.skills.page.supportingFiles.truncated': 'רשימה זו אינה מלאה: תיקיית הסקיל גדולה מדי מכדי להציגה במלואה.',
   'settings.skills.page.loading.details': 'טוען את פרטי המיומנות…',
   'settings.skills.page.loading.fileContent': 'טוען את תוכן הקובץ…',
   'settings.skills.page.empty.title': 'יש לבחור מיומנות מסרגל הצד',

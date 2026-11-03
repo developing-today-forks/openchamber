@@ -2324,6 +2324,7 @@ export const settingsDict = {
   'settings.skills.page.subtitle.newSkill': 'Skonfiguruj nową umiejętność',
   'settings.skills.page.subtitle.skillLocation': 'Umiejętność {location}',
   'settings.skills.page.supportingFiles.empty': 'Brak plików pomocniczych. Użyj „Dodaj plik”, aby dołączyć materiały referencyjne.',
+  'settings.skills.page.supportingFiles.truncated': 'Ta lista jest niekompletna: folder skilla jest zbyt duży, aby wyświetlić go w całości.',
   'settings.skills.page.title.newSkill': 'Nowa umiejętność',
   'settings.skills.page.toast.createFileFailed': 'Nie udało się utworzyć pliku',
   'settings.skills.page.toast.createSkillFailed': 'Nie udało się utworzyć umiejętności',

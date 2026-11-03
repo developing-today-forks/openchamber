@@ -15,6 +15,7 @@ import {
 import { readSectionEntry, readMcpEntry } from './config-v2.js';
 import { resolveWorktreeDirectory } from './worktree-directory.js';
 import { writeFileAtomic } from './atomic-write.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 // ============== PATH CONSTANTS ==============
 
@@ -347,15 +348,35 @@ function isConfigFileTooLargeError(error) {
   return Boolean(error && error.code === CONFIG_FILE_TOO_LARGE);
 }
 
-function assertConfigFileWithinCap(filePath) {
-  const { size } = fs.statSync(filePath);
-  if (size > MAX_CONFIG_FILE_BYTES) {
+// Open once and judge from the handle (design #1254): a
+// stat-by-path-then-readFile-by-path gate lets a config grown or swapped
+// after the stat buffer whole past the cap. The shared bounded read fixes
+// the file identity at open, judges the size from the handle, and reads at
+// most one byte over the cap, so growth is refused, never buffered. Its
+// missing and non-regular answers are mapped back onto this module's
+// existing contract: a file that vanishes after the exists check throws the
+// ENOENT a stat would have thrown, and a non-regular file throws the EISDIR
+// a read would have thrown.
+function readCappedConfigFileSync(filePath) {
+  const result = readBoundedFileSync(filePath, MAX_CONFIG_FILE_BYTES);
+  if (result.ok) {
+    return result.buffer.toString('utf8');
+  }
+  if (result.reason === 'too-large') {
     const error = new Error(
       `OpenCode configuration at ${filePath} exceeds the ${MAX_CONFIG_FILE_BYTES}-byte limit and cannot be loaded safely`,
     );
     error.code = CONFIG_FILE_TOO_LARGE;
     throw error;
   }
+  if (result.reason === 'missing') {
+    const error = new Error(`ENOENT: no such file or directory, open '${filePath}'`);
+    error.code = 'ENOENT';
+    throw error;
+  }
+  const error = new Error(`EISDIR: illegal operation on a directory, read '${filePath}'`);
+  error.code = 'EISDIR';
+  throw error;
 }
 
 function formatJsoncParseError(filePath, errors) {
@@ -397,8 +418,7 @@ function readConfigFile(filePath) {
     return {};
   }
   try {
-    assertConfigFileWithinCap(filePath);
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = readCappedConfigFileSync(filePath);
     const normalized = content.trim();
     if (!normalized) {
       return {};
@@ -682,8 +702,7 @@ function writeConfig(config, filePath = CONFIG_FILE) {
     const hadExistingFile = fs.existsSync(filePath);
     if (hadExistingFile) {
       // Defense in depth: never overwrite a file we cannot fully parse.
-      assertConfigFileWithinCap(filePath);
-      existingRaw = fs.readFileSync(filePath, 'utf8');
+      existingRaw = readCappedConfigFileSync(filePath);
       if (existingRaw.trim()) {
         existingParse = parseConfigResult(existingRaw.trim(), filePath);
       }
@@ -927,11 +946,19 @@ async function pathExists(target) {
 // At most this many file-system calls of one walk are in flight at once.
 const SKILL_WALK_CONCURRENCY = 8;
 
+// At most this many directories one walk visits per root, the root itself
+// included. A skills root is project-controlled, and a link inside it can
+// point at a tree with tens of thousands of directories; past the cap the
+// walk stops opening new directories and returns the SKILL.md paths found
+// so far. The VS Code twin in opencodeConfig.ts uses the same value.
+const SKILL_WALK_MAX_DIRS = 5000;
+
 // Async so a skills tree with tens of thousands of entries (a bundled `.venv`
 // or `node_modules`) does not hold the server's event loop for seconds.
-// Sibling directories are read in parallel, a few calls at a time, and their
-// results are joined in readdir order, so the order matches the old
-// synchronous depth-first walk exactly.
+// Directories are visited one at a time in depth-first readdir order, so the
+// order matches the old synchronous walk exactly and the directory cap below
+// is allocated deterministically: an over-cap tree always yields the same
+// partial result, never whichever subtree's readdir finished first.
 async function walkSkillMdFiles(rootDir) {
   if (!rootDir || !(await pathExists(rootDir))) return [];
 
@@ -953,7 +980,14 @@ async function walkSkillMdFiles(rootDir) {
   // back to one of its own ancestors is skipped instead of recursing forever.
   // Two links to the same target elsewhere in the tree are both walked, as the
   // top level always did.
+  let visitedDirs = 0;
   const walk = async (dir, ancestors) => {
+    // Counted on entry, in the walk's deterministic depth-first order, so
+    // the total never passes the cap and the same tree always allocates the
+    // cap to the same directories.
+    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return [];
+    visitedDirs += 1;
+
     let realDir;
     try {
       realDir = await limited(() => fs.promises.realpath(dir));
@@ -970,7 +1004,13 @@ async function walkSkillMdFiles(rootDir) {
     }
 
     const childAncestors = new Set(ancestors).add(realDir);
-    const found = await Promise.all(entries.map(async (entry) => {
+    // Entries are processed one at a time, in readdir order: recursing into
+    // sibling subtrees in parallel would let their readdir completions race
+    // for the shared directory cap, so an unchanged over-cap tree could
+    // return different partial results (and different duplicate-name
+    // winners) from one scan to the next.
+    const found = [];
+    for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       // Junctions report as links, not directories. A link whose target cannot be
       // stat'ed is skipped, the way an unreadable directory is, instead of failing
@@ -983,13 +1023,16 @@ async function walkSkillMdFiles(rootDir) {
           isDirectoryEntry = target.isDirectory();
           isFileEntry = target.isFile();
         } catch {
-          return [];
+          continue;
         }
       }
-      if (isDirectoryEntry) return walk(fullPath, childAncestors);
-      return isFileEntry && entry.name === 'SKILL.md' ? [fullPath] : [];
-    }));
-    return found.flat();
+      if (isDirectoryEntry) {
+        found.push(...(await walk(fullPath, childAncestors)));
+      } else if (isFileEntry && entry.name === 'SKILL.md') {
+        found.push(fullPath);
+      }
+    }
+    return found;
   };
 
   return walk(rootDir, new Set());
@@ -1051,22 +1094,47 @@ function resolveSkillSearchDirectories(workingDirectory) {
   return directories;
 }
 
+// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+// node_modules, generated docs); one detail request must not walk all of it.
+// Keep these in sync with SKILL_SUPPORTING_FILES_MAX_* in
+// packages/vscode/src/opencodeConfig.ts.
+const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
+const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
+
 async function listSkillSupportingFiles(skillDir) {
   if (!(await pathExists(skillDir))) {
-    return [];
+    return { files: [], truncated: false };
   }
 
   const files = [];
+  let visitedDirectories = 0;
+  let truncated = false;
 
+  // Returns false once a limit is hit, so every caller unwinds and the walk
+  // stops instead of merely stopping collection. Files and directories seen
+  // before the limit are kept, in the original traversal order; a tree that
+  // ends exactly at a limit is complete, not truncated.
   async function walkDir(dir, relativePath = '') {
+    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
+      truncated = true;
+      return false;
+    }
+    visitedDirectories += 1;
+
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       const relPath = relativePath ? path.join(relativePath, entry.name) : entry.name;
 
       if (entry.isDirectory()) {
-        await walkDir(fullPath, relPath);
+        if (!(await walkDir(fullPath, relPath))) {
+          return false;
+        }
       } else if (entry.name !== 'SKILL.md') {
+        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
+          truncated = true;
+          return false;
+        }
         files.push({
           name: entry.name,
           path: relPath,
@@ -1074,10 +1142,11 @@ async function listSkillSupportingFiles(skillDir) {
         });
       }
     }
+    return true;
   }
 
   await walkDir(skillDir);
-  return files;
+  return { files, truncated };
 }
 
 function assertPathWithinSkillDir(skillDir, relativePath) {
@@ -1217,10 +1286,13 @@ export {
   resolvePromptFilePath,
   writePromptFile,
   walkSkillMdFiles,
+  SKILL_WALK_MAX_DIRS,
   addSkillFromMdFile,
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
   SKILL_SUPPORTING_FILE_MAX_BYTES,
+  SKILL_SUPPORTING_FILES_MAX_DIRECTORIES,
+  SKILL_SUPPORTING_FILES_MAX_FILES,
   SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
   readSkillSupportingFile,
   writeSkillSupportingFile,

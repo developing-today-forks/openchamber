@@ -1612,18 +1612,47 @@ export const registerFsRoutes = (app, dependencies) => {
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      // Identical-content shortcut: settle it from stat first so a save
-      // never buffers the existing file whole when it cannot be identical
-      // (byte length differs) or is over the read cap. Over-cap and
-      // length-differing files fall through to the atomic write below.
+      // Identical-content shortcut, settled from the open handle (design
+      // #1254): stat-then-read by path lets a file swapped or grown between
+      // the two calls escape the gate and buffer whole. The open fixes the
+      // file identity, the fstat judges the size, and at most one byte past
+      // the equal length is read, so a grown file falls through to the
+      // atomic write below. Over-cap and length-differing files fall
+      // through to the write the same way, without being read at all.
       const contentByteLength = Buffer.byteLength(content, 'utf8');
-      const existingStats =
-        typeof fsPromises.stat === 'function' ? await fsPromises.stat(writePath).catch(() => null) : null;
-      const canCompare =
-        !existingStats ||
-        typeof existingStats.size !== 'number' ||
-        (existingStats.size <= MAX_READ_BYTES && existingStats.size === contentByteLength);
-      const existing = canCompare ? await fsPromises.readFile(writePath, 'utf8').catch(() => null) : null;
+      let existing = null;
+      if (contentByteLength <= MAX_READ_BYTES && typeof fsPromises.open === 'function') {
+        let handle;
+        try {
+          handle = await fsPromises.open(writePath, 'r');
+        } catch (error) {
+          if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
+        }
+        if (handle) {
+          try {
+            const stat = await handle.stat();
+            const isFile = stat && typeof stat.isFile === 'function' ? stat.isFile() : true;
+            if (isFile && stat.size === contentByteLength) {
+              // One byte past the equal length: a file that grew after the
+              // fstat reads long and falls through to the write.
+              const buffer = Buffer.alloc(stat.size + 1);
+              let total = 0;
+              while (total < buffer.length) {
+                const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+                if (!bytesRead) break;
+                total += bytesRead;
+              }
+              if (total === stat.size) {
+                existing = buffer.toString('utf8', 0, total);
+              }
+            }
+          } catch {
+            existing = null;
+          } finally {
+            await handle.close();
+          }
+        }
+      }
       if (existing === content) {
         return res.json({ success: true, path: resolved.resolved });
       }

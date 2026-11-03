@@ -1,5 +1,5 @@
 import './opencodeConfigTestHome';
-import { afterEach, beforeEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, mock, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -96,6 +96,55 @@ describe('opencodeConfig JSONC parse safety (issue #2923)', () => {
       code: 'CONFIG_FILE_TOO_LARGE',
       message: /exceeds the 4194304-byte limit and cannot be loaded safely/,
     });
+  });
+
+  test('refuses a config that grows past the cap after the handle stat without buffering it whole (#1410)', () => {
+    const projectDir = path.join(tempDir, 'project');
+    fs.mkdirSync(projectDir);
+    const projectConfigPath = path.join(projectDir, 'opencode.json');
+    fs.writeFileSync(projectConfigPath, `{"padding":"${'x'.repeat(MAX_CONFIG_FILE_BYTES)}"}`, 'utf8');
+    assert.ok(fs.statSync(projectConfigPath).size > MAX_CONFIG_FILE_BYTES);
+
+    // The descriptor growth case: the handle stat answers the pre-growth
+    // size while the read meets the grown file. The same descriptor number
+    // is reused across sequential opens, so the bound is judged when each
+    // descriptor closes.
+    const originalFstatSync = fs.fstatSync;
+    const originalReadSync = fs.readSync;
+    const originalCloseSync = fs.closeSync;
+    const bytesByFd = new Map<number, number>();
+    const overBoundReads: number[] = [];
+    let readAny = false;
+    const fstatMock = mock.method(fs, 'fstatSync', (fd: number) => {
+      const stats = originalFstatSync(fd);
+      Object.defineProperty(stats, 'size', { value: 16 });
+      return stats;
+    });
+    const readMock = mock.method(
+      fs,
+      'readSync',
+      (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: number | null) => {
+        const bytesRead = originalReadSync(fd, buffer, offset, length, position);
+        readAny = true;
+        bytesByFd.set(fd, (bytesByFd.get(fd) ?? 0) + bytesRead);
+        return bytesRead;
+      },
+    );
+    const closeMock = mock.method(fs, 'closeSync', (fd: number) => {
+      const total = bytesByFd.get(fd) ?? 0;
+      if (total > MAX_CONFIG_FILE_BYTES + 1) overBoundReads.push(total);
+      bytesByFd.delete(fd);
+      return originalCloseSync(fd);
+    });
+    try {
+      assert.throws(() => getWebSearchSource(projectDir), { code: 'CONFIG_FILE_TOO_LARGE' });
+    } finally {
+      fstatMock.mock.restore();
+      readMock.mock.restore();
+      closeMock.mock.restore();
+    }
+    assert.ok(readAny);
+    assert.deepEqual(overBoundReads, []);
   });
 
   test('does not overwrite an oversized config when saving a websearch selection', () => {
