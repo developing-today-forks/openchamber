@@ -124,6 +124,7 @@ import { BROWSER_PROVIDER_IDLE_MS } from '@openchamber/sdk';
 import { createProjectConfigRuntime } from './lib/projects/project-config.js';
 import { ensureChatsDir, migrateLegacyUserDirs } from './lib/data-dir-migration.js';
 import { createProjectContextRuntime } from './lib/project-context/runtime.js';
+import { createPlanMetricsReader } from './lib/project-context/plan-metrics.js';
 import { createAgentMemoryRuntime } from './lib/agent-memory/runtime.js';
 import { createAgentMemoryActions } from './lib/agent-memory/actions.js';
 import { createMemoryProjectResolver } from './lib/agent-memory/project-resolution.js';
@@ -682,6 +683,10 @@ const projectContextRuntime = createProjectContextRuntime({
   fsPromises,
   path,
   projectsDirPath: OPENCHAMBER_PROJECTS_CONFIG_DIR,
+  readPlanMetrics: createPlanMetricsReader({
+    buildOpenCodeUrl: (...args) => buildOpenCodeUrl(...args),
+    getOpenCodeAuthHeaders: (...args) => getOpenCodeAuthHeaders(...args),
+  }),
   resolveSharedPlansDir: (projectId) => projectConfigRuntime.resolveSharedPlansDir(projectId),
   onChanged: (projectId) => broadcastOpenChamberUiEvent({
     type: 'openchamber:project-context-changed',

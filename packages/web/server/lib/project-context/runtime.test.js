@@ -1189,3 +1189,47 @@ describe('atomic write rename retry', () => {
     expect(await fsPromises.readdir(path.join(projectsDirPath, PROJECT_ID))).toEqual([]);
   });
 });
+
+describe('plan metrics (#16 stage 1)', () => {
+  const METRICS = {
+    costUsd: 4.25,
+    costSource: 'opencode',
+    tokens: { input: 10, output: 20, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 30 },
+  };
+
+  const runtimeWithMetrics = (readPlanMetrics) => createProjectContextRuntime({
+    fsPromises,
+    path,
+    projectsDirPath,
+    createId: () => `plan-${++idCounter}`,
+    readPlanMetrics,
+  });
+
+  test('a linked plan carries the metrics its reader reports', async () => {
+    const seen = [];
+    const withMetrics = runtimeWithMetrics(async (sessionId) => { seen.push(sessionId); return METRICS; });
+    const { plan } = await withMetrics.createPlan(PROJECT_ID, { title: 'Metered', body: 'x' });
+    await withMetrics.setPlanSession(PROJECT_ID, plan.id, { sessionId: 'ses_42' });
+
+    const context = await withMetrics.readContext(PROJECT_ID);
+    expect(context.plans.find((entry) => entry.id === plan.id)?.metrics).toEqual(METRICS);
+    // setPlanSession reads the plan back through readContext, so the reader
+    // is asked more than once; every ask is for the linked session.
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set(['ses_42']));
+  });
+
+  test('no reader, no session, an unreadable session, and a failing reader all show no metrics', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Plain', body: 'x' });
+    await runtime.setPlanSession(PROJECT_ID, plan.id, { sessionId: 'ses_42' });
+    expect((await runtime.readContext(PROJECT_ID)).plans[0].metrics).toBeUndefined();
+
+    const nullReader = runtimeWithMetrics(async () => null);
+    expect((await nullReader.readContext(PROJECT_ID)).plans[0].metrics).toBeUndefined();
+
+    const failingReader = runtimeWithMetrics(async () => { throw new Error('opencode down'); });
+    const context = await failingReader.readContext(PROJECT_ID);
+    expect(context.plans[0].session?.sessionId).toBe('ses_42');
+    expect(context.plans[0].metrics).toBeUndefined();
+  });
+});
