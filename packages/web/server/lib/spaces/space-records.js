@@ -43,7 +43,7 @@ const isHttpUrl = (value) => {
     return false;
   }
 };
-const upstreamSchema = z.string().url().refine(isHttpUrl, 'http or https');
+export const upstreamSchema = z.string().url().refine(isHttpUrl, 'http or https');
 /** Where the host finds a secret again, never the secret: an environment variable of the host's by name, or the user typed it once. */
 export const secretSourceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('env'), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,255}$/) }).strict(),
@@ -53,7 +53,7 @@ export const secretSourceSchema = z.discriminatedUnion('kind', [
  * A grant as the host remembers it. Strict, so a value under any name is refused rather than
  * written: a record holds where a secret comes from and never what it is (decision 5).
  */
-export const grantSchema = z.discriminatedUnion('kind', [
+const grantSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('model'),
     id: z.string().regex(GRANT_ID_PATTERN),
