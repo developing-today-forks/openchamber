@@ -359,8 +359,8 @@ describe('GET /api/source-control/github/references', () => {
       deletions: 2,
       changedFiles: 1,
       comments: { totalCount: 0, nodes: [] },
-      reviews: { nodes: [] },
-      reviewThreads: { nodes: [] },
+      reviews: { totalCount: 0, nodes: [] },
+      reviewThreads: { totalCount: 0, nodes: [] },
       commits: { totalCount: 0, nodes: [] },
     } } } }));
 

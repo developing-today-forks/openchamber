@@ -1794,6 +1794,8 @@ export type GitHubReferenceThread = {
   /** Whether this account can resolve the thread, or open it again. */
   canResolve: boolean;
   canReply: boolean;
+  /** How many comments the thread has in all; GitHub only, absent for GitLab. */
+  commentTotal?: number;
   /** Oldest first. */
   replies: GitHubReferenceComment[];
 };
@@ -1829,6 +1831,10 @@ export type GitHubReferenceDetail = {
     commits: GitHubReferenceCommit[];
     /** How many commits the PR has in all; null when the host does not say. */
     commitTotal: number | null;
+    /** How many reviews the PR has in all; GitHub only, absent for GitLab. */
+    reviewTotal?: number;
+    /** How many review threads the PR has in all; GitHub only, absent for GitLab. */
+    threadTotal?: number;
   } | null;
 };
 
