@@ -1,8 +1,83 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import type { Metadata } from '@/lib/opencode/model';
 import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
 
-const { nextGoalRecord } = await import('./sessionGoalActions');
+// setSessionGoal harness: the save reads and writes through the session
+// metadata store and the objective file store. Both are kept in memory here
+// so a test can land an intervening change between the pre-check read and
+// the guarded metadata write — the window #1372 is about.
+let storedMetadata: Metadata = {};
+let objectiveFileContent: string | null = null;
+let completeGoalBeforeMetadataWrite = false;
+const objectiveFileWrites: string[] = [];
+let objectiveFileDeletes = 0;
+
+const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
+  storedMetadata = { openchamber: { goal } };
+  objectiveFileContent = fileContent;
+  completeGoalBeforeMetadataWrite = false;
+  objectiveFileWrites.length = 0;
+  objectiveFileDeletes = 0;
+};
+
+mock.module('@/sync/session-actions', () => ({
+  abortCurrentOperation: () => undefined,
+  patchSessionMetadata: async (
+    _sessionId: string,
+    _directory: string | undefined,
+    updater: (metadata: Metadata) => Metadata,
+  ) => {
+    if (completeGoalBeforeMetadataWrite) {
+      const namespace = storedMetadata.openchamber as Metadata;
+      const goal = namespace.goal as Metadata;
+      storedMetadata = { openchamber: { goal: { ...goal, status: 'complete' } } };
+    }
+    storedMetadata = updater(storedMetadata);
+    return { metadata: storedMetadata };
+  },
+}));
+
+mock.module('@/lib/opencode/client', () => ({
+  opencodeClient: {
+    getSession: async () => ({ metadata: storedMetadata }),
+  },
+}));
+
+mock.module('@/lib/goalObjectiveFiles', () => ({
+  fetchGoalObjectiveContent: async () => objectiveFileContent,
+  writeGoalObjectiveFile: async (_sessionId: string, content: string) => {
+    objectiveFileWrites.push(content);
+    objectiveFileContent = content;
+    return { saved: true, truncated: false };
+  },
+  deleteGoalObjectiveFile: () => {
+    objectiveFileDeletes += 1;
+    objectiveFileContent = null;
+  },
+}));
+
+mock.module('@/lib/smallModel', () => ({
+  distillGoalObjective: async () => null,
+}));
+
+mock.module('@/lib/goalWriter', () => ({
+  requestGoalSpec: async () => ({ ok: false, message: 'writer unused in these tests' }),
+}));
+
+mock.module('@/lib/i18n', () => ({
+  formatMessage: () => '',
+  useI18nStore: { getState: () => ({ dictionary: {} }) },
+}));
+
+mock.module('@/components/ui', () => ({
+  toast: { error: () => undefined, success: () => undefined },
+}));
+
+mock.module('@/stores/useUIStore', () => ({
+  useUIStore: { getState: () => ({ sessionGoalObjectiveCharLimit: 100_000 }) },
+}));
+
+const { goalObjectiveRevision, nextGoalRecord, setSessionGoal } = await import('./sessionGoalActions');
 
 const existing: SessionGoalPayload = {
   id: 'goal-1',
@@ -110,5 +185,71 @@ describe('goal record for a save', () => {
       changed: false,
       record: { id: 'goal-2', ignoreObjectiveLimit: false, tokensUsed: 0, turnsUsed: 0, statusReason: '' },
     });
+  });
+});
+
+describe('session-goal save against the objective file', () => {
+  const priorText = 'Prior objective text';
+  const newText = 'New objective text';
+
+  const storedGoal = (overrides: Metadata = {}): Metadata => ({
+    id: 'goal-1',
+    status: 'active',
+    objective: '',
+    objectiveFile: true,
+    objectiveRevision: goalObjectiveRevision(priorText),
+    tokensUsed: 900,
+    turnsUsed: 4,
+    lastAccountedMessageID: 'msg-9',
+    updatedAt: 50,
+    ...overrides,
+  });
+
+  const editPayload = (): SessionGoalPayload => ({
+    ...existing,
+    objectiveRevision: goalObjectiveRevision(priorText),
+  });
+
+  const storedGoalNow = (): Metadata => (storedMetadata.openchamber as Metadata).goal as Metadata;
+
+  // The check completing the goal while this save is in flight aborts the
+  // metadata write; before #1372 the aborted save had already overwritten
+  // the objective file, leaving the surviving goal pointing at text its
+  // stored revision does not describe.
+  test('an intervening completion aborts the save and leaves the objective file byte-identical', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    completeGoalBeforeMetadataWrite = true;
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'changed' });
+    expect(objectiveFileContent).toBe(priorText);
+    expect(storedGoalNow().status).toBe('complete');
+    expect(storedGoalNow().objectiveRevision).toBe(goalObjectiveRevision(priorText));
+  });
+
+  test('an aborted save with no prior objective file deletes the file it wrote', async () => {
+    resetGoalHarness(storedGoal(), null);
+    completeGoalBeforeMetadataWrite = true;
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'changed' });
+    expect(objectiveFileWrites).toEqual([newText]);
+    expect(objectiveFileDeletes).toBe(1);
+    expect(objectiveFileContent).toBeNull();
+  });
+
+  test('a save with no intervening change writes the new objective and keeps it', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+    expect(objectiveFileContent).toBe(newText);
+    expect(objectiveFileDeletes).toBe(0);
+    expect(storedGoalNow().objectiveRevision).toBe(goalObjectiveRevision(newText));
+  });
+
+  test('a goal already changed at the pre-check is refused before any file write', async () => {
+    resetGoalHarness(storedGoal({ status: 'paused' }), priorText);
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'changed' });
+    expect(objectiveFileWrites).toEqual([]);
+    expect(objectiveFileContent).toBe(priorText);
   });
 });
