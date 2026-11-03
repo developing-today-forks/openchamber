@@ -1274,8 +1274,8 @@ export const useTerminalStore = create<TerminalStore>()(
           }
 
           const persistedNextTabId =
-            typeof persistedState.nextTabId === 'number' && Number.isFinite(persistedState.nextTabId)
-              ? (persistedState.nextTabId as number)
+            typeof persistedRecord.nextTabId === 'number' && Number.isFinite(persistedRecord.nextTabId)
+              ? (persistedRecord.nextTabId as number)
               : 1;
 
           const nextTabId = Math.max(currentState.nextTabId, persistedNextTabId, maxTabNum + 1);

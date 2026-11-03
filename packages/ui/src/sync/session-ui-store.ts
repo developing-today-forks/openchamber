@@ -605,7 +605,7 @@ const getAuthoritativeSessionDirectory = (sessionId: string): string | null => {
  * hardest source to observe and the one that survives reloads, so a report that
  * cannot show it cannot rule it out.
  */
-export type RememberedSessionDirectory = {
+type RememberedSessionDirectory = {
   runtime: string | null
   persisted: string | null
 }

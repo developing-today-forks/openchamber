@@ -5,9 +5,9 @@ import { getChatDraftIdentityKey } from "@/lib/chatDraftPersistence"
 
 class MockFileReader {
   result: string | ArrayBuffer | null = null
-  onload: ((this: FileReader, event: ProgressEvent<FileReader>) => void) | null = null
-  onerror: ((this: FileReader, event: ProgressEvent<FileReader>) => void) | null = null
-  onabort: ((this: FileReader, event: ProgressEvent<FileReader>) => void) | null = null
+  onload: ((this: MockFileReader, event: ProgressEvent<FileReader>) => void) | null = null
+  onerror: ((this: MockFileReader, event: ProgressEvent<FileReader>) => void) | null = null
+  onabort: ((this: MockFileReader, event: ProgressEvent<FileReader>) => void) | null = null
   error: DOMException | null = null
 
   readAsDataURL() {
@@ -17,6 +17,17 @@ class MockFileReader {
 
 const pendingReaders: MockFileReader[] = []
 const originalFileReader = globalThis.FileReader
+
+// The mock implements only the FileReader surface the input store uses
+// (readAsDataURL plus the load/error handlers), so it is installed by
+// property definition rather than by claiming the full constructor type.
+const installMockFileReader = () => {
+  Object.defineProperty(globalThis, "FileReader", {
+    value: MockFileReader,
+    configurable: true,
+    writable: true,
+  })
+}
 
 const restoreFileReader = () => {
   pendingReaders.length = 0
@@ -35,12 +46,12 @@ const testWithMockFileReader = (name: string, fn: () => Promise<void>) => {
 
 const resolveReader = (reader: MockFileReader, result: string) => {
   reader.result = result
-  reader.onload?.call(reader as FileReader, {} as ProgressEvent<FileReader>)
+  reader.onload?.call(reader, {} as ProgressEvent<FileReader>)
 }
 
 const rejectReader = (reader: MockFileReader) => {
   reader.error = new DOMException("read failed", "NotReadableError")
-  reader.onerror?.call(reader as FileReader, {} as ProgressEvent<FileReader>)
+  reader.onerror?.call(reader, {} as ProgressEvent<FileReader>)
 }
 
 const waitForReaderCount = async (count: number) => {
@@ -86,7 +97,7 @@ describe("input-store composer restore", () => {
 describe("input-store attachments", () => {
   beforeEach(() => {
     pendingReaders.length = 0
-    globalThis.FileReader = MockFileReader as typeof FileReader
+    installMockFileReader()
     useInputStore.setState({
       pendingInputText: null,
       pendingInputMode: "replace",

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { z } from "zod";
 import { listModelVariantIds, modelVariantNames } from "@/lib/modelVariants";
 import { AUTO_MODEL_ID, AUTO_PROVIDER_ID, isAutoModel } from '@/lib/routing/autoModel';
 import { selectAutoReady, useRoutingStore } from '@/stores/useRoutingStore';
@@ -577,7 +578,7 @@ const resolveGitGenerationModelSelection = ({
     return null;
 };
 
-interface ModelsDevModelEntry {
+type ModelsDevModelEntry = {
     id?: string;
     name?: string;
     tool_call?: boolean;
@@ -604,10 +605,12 @@ interface ModelsDevModelEntry {
     last_updated?: string;
 }
 
-interface ModelsDevProviderEntry {
+type ModelsDevProviderEntry = {
     id?: string;
     models?: Record<string, ModelsDevModelEntry | undefined>;
 }
+
+const storeRecordSchema = z.record(z.string(), z.unknown());
 
 const isRecord = (value: ConfigFieldValue): value is Record<string, ConfigFieldValue> =>
     typeof value === "object" && value !== null;
@@ -784,7 +787,7 @@ export const fetchModelsDevMetadata = async (): Promise<Map<string, ModelMetadat
             }
 
             const data: unknown = JSON.parse(await readBoundedResponseText(response, MODELS_DEV_CATALOG_MAX_BYTES));
-            return transformModelsDevResponse(data);
+            return transformModelsDevResponse(data as ConfigFieldValue);
         } catch (error: unknown) {
             if ((error as Error)?.name === 'AbortError') {
                 console.warn(`Model metadata request aborted (${source})`);
@@ -4464,12 +4467,12 @@ export const useConfigStore = create<ConfigStore>()(
                     const persisted = persistedState as Partial<ConfigStore> | undefined;
                     if (!persisted || persisted.configRuntimeKey !== getRuntimeKey()) return currentState;
 
-                    const storedScopes = isRecord(persisted.directoryScoped) && !Array.isArray(persisted.directoryScoped)
+                    const storedScopes = storeRecordSchema.safeParse(persisted.directoryScoped).success && !Array.isArray(persisted.directoryScoped)
                         ? persisted.directoryScoped
                         : currentState.directoryScoped;
                     const directoryScoped = { ...storedScopes };
                     for (const [directory, snapshot] of Object.entries(directoryScoped)) {
-                        if (!isRecord(snapshot)) {
+                        if (!storeRecordSchema.safeParse(snapshot).success) {
                             delete directoryScoped[directory];
                         } else if (snapshot.providers === undefined) {
                             // Version 1 persists selections without catalogs; give the

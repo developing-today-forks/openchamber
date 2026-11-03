@@ -17,7 +17,7 @@ import { getRuntimeKey } from '@/lib/runtime-switch';
 export type PluginScope = 'user' | 'project';
 
 /** Plugin options are JSON values from the config file: the value contract the server round-trips verbatim. */
-export type PluginOptionValue =
+type PluginOptionValue =
   | string
   | number
   | boolean
