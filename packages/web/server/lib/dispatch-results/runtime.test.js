@@ -390,6 +390,19 @@ describe('dispatch results runtime', () => {
     expect(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8')).toBe('{ not json');
   });
 
+  it('rejects register and drops the entry when the persist write fails (#1503)', async () => {
+    const fsPromises = {
+      ...fs,
+      rename: async () => {
+        throw new Error('rename blocked');
+      },
+    };
+    const { runtime } = await createRuntime({ fsPromises });
+    await expect(runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 }))
+      .rejects.toThrow('rename blocked');
+    expect(runtime.pending()).toEqual([]);
+  });
+
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');

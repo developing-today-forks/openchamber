@@ -292,28 +292,35 @@ export function createDispatchResultsRuntime({
     return loadPromise;
   };
 
-  const persist = () => {
+  // One chained write. The chain itself never rejects — a failed write is
+  // warned about and the chain stays alive for the next persist — but the
+  // per-write promise returned here DOES reject, for the one caller whose
+  // contract depends on this write having landed: register (#1503).
+  const persistWithResult = () => {
     const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
-    writePromise = writePromise
-      .then(async () => {
-        // Preserve before replacing, fail-closed (the primitive's
-        // contract): the load gate has normally judged the file already,
-        // but the write refuses on its own rather than trust that — a
-        // file that turned malformed since the load keeps its bytes.
-        // The thrown error lands in the catch below, so the write is
-        // skipped and warned about, never forced through.
-        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
-        if (preservation.outcome === 'failed') {
-          throw new Error('failed to preserve the unreadable dispatch-results file; refusing to overwrite it');
-        }
-        if (preservation.preserved) {
-          console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
-        }
-        await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
-      })
-      .catch((error) => {
-        console.warn('[dispatch-results] failed to persist pending results:', error?.message ?? error);
-      });
+    const result = writePromise.then(async () => {
+      // Preserve before replacing, fail-closed (the primitive's
+      // contract): the load gate has normally judged the file already,
+      // but the write refuses on its own rather than trust that — a
+      // file that turned malformed since the load keeps its bytes.
+      // The thrown error skips the write, never forces it through.
+      const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+      if (preservation.outcome === 'failed') {
+        throw new Error('failed to preserve the unreadable dispatch-results file; refusing to overwrite it');
+      }
+      if (preservation.preserved) {
+        console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
+      }
+      await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
+    });
+    writePromise = result.catch((error) => {
+      console.warn('[dispatch-results] failed to persist pending results:', error?.message ?? error);
+    });
+    return result;
+  };
+
+  const persist = () => {
+    persistWithResult();
     return writePromise;
   };
 
@@ -520,7 +527,15 @@ export function createDispatchResultsRuntime({
         console.warn(`[dispatch-results] too many pending results; no longer waiting on ${stale.sessionId} for ${stale.parentSessionId}`);
       }
     }
-    await persist();
+    try {
+      await persistWithResult();
+    } catch (error) {
+      // The entry exists only in memory until this write lands; reporting
+      // it as pending would strand it at the next restart (#1503). Drop
+      // it and let the caller see the failure instead.
+      entries.delete(entry.id);
+      throw error;
+    }
     // The session may already be done: a short turn can end before this
     // entry existed, and its idle event would then have found nothing to arm.
     arm(watched);
