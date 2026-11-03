@@ -117,7 +117,6 @@ import { createRelayDevTunnelBridge } from './relay-dev-tunnel.mjs';
 import { parsePairingDeepLink } from './pairing-deep-link.mjs';
 import { attachRendererRecovery, takeSafeStart } from './renderer-recovery.mjs';
 import { createLoadFailureWarningFilter } from './load-failure-warnings.mjs';
-import { mintOutsideFileGrant } from '@openchamber/web/server/lib/fs/routes.js';
 import { fetchUpdateNotes } from '@openchamber/web/server/lib/changelog/update-notes.js';
 import { applyConnectAttemptTimeout } from '@openchamber/web/server/lib/network-defaults.js';
 import { isNetworkAccessBlocked } from '@openchamber/web/server/lib/enterprise-mode.js';
@@ -6104,10 +6103,12 @@ ipcMain.handle('openchamber:dialog:open', async (event, options) => {
   const grantFilePath = async (filePath) => {
     if (options?.directory) return { path: filePath };
     try {
-      const grant = await mintOutsideFileGrant(filePath, { scopes: ['stat', 'read', 'raw'], fsPromises: fsp, path });
-      return { path: grant.path, outsideFileGrant: grant.outsideFileGrant, expiresAt: grant.expiresAt };
+      const canonicalPath = await fsp.realpath(filePath);
+      const stats = await fsp.stat(canonicalPath);
+      if (!stats.isFile()) throw new Error('Outside file access requires a file path');
+      return { path: canonicalPath };
     } catch (error) {
-      log.warn(`[ipc] failed to mint outside file grant: ${error?.message || error}`);
+      log.warn(`[ipc] failed to resolve outside file: ${error?.message || error}`);
       return { path: filePath };
     }
   };
@@ -6132,11 +6133,13 @@ ipcMain.handle('openchamber:file:grant-existing', async (event, filePath) => {
     throw new Error('Path is required');
   }
 
-  const grant = await mintOutsideFileGrant(targetPath, { scopes: ['stat', 'read', 'raw'], fsPromises: fsp, path });
+  const canonicalPath = await fsp.realpath(targetPath);
+  const stats = await fsp.stat(canonicalPath);
+  if (!stats.isFile()) {
+    throw new Error('Outside file access requires a file path');
+  }
   return {
-    path: grant.path,
-    outsideFileGrant: grant.outsideFileGrant,
-    expiresAt: grant.expiresAt,
+    path: canonicalPath,
   };
 });
 

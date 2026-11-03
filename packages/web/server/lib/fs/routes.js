@@ -19,18 +19,6 @@ import nodePath from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
 const EXEC_JOB_TTL_MS = 30 * 60 * 1000;
-const OUTSIDE_FILE_GRANT_TTL_MS = 10 * 60 * 1000;
-
-const outsideFileGrants = new Map();
-
-const pruneOutsideFileGrants = () => {
-  const now = Date.now();
-  for (const [token, grant] of outsideFileGrants.entries()) {
-    if (!grant || grant.expiresAt <= now) {
-      outsideFileGrants.delete(token);
-    }
-  }
-};
 
 const PREVIEW_GRANT_IDLE_TTL_MS = 10 * 60 * 1000;
 const PREVIEW_GRANT_MAX_ENTRIES = 256;
@@ -84,47 +72,6 @@ const isOsPermissionError = (error) => (
 const sendOsPermissionDenied = (res, message) => (
   res.status(403).json({ error: message, reason: 'os-permission' })
 );
-
-export const mintOutsideFileGrant = async (targetPath, {
-  scopes = ['stat', 'read', 'raw'],
-  fsPromises = nodeFsPromises,
-  path = nodePath,
-  crypto = globalThis.crypto,
-} = {}) => {
-  const raw = typeof targetPath === 'string' ? targetPath.trim() : '';
-  if (!raw) {
-    throw new Error('Path is required');
-  }
-  const canonicalPath = await fsPromises.realpath(raw);
-  const stats = await fsPromises.stat(canonicalPath);
-  if (!stats.isFile()) {
-    throw new Error('Outside file grants require a file path');
-  }
-  pruneOutsideFileGrants();
-  const token = typeof crypto?.randomUUID === 'function'
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const normalizedScopes = new Set(
-    (Array.isArray(scopes) ? scopes : [])
-      .filter((scope) => typeof scope === 'string' && scope.trim())
-      .map((scope) => scope.trim())
-  );
-  if (normalizedScopes.size === 0) {
-    normalizedScopes.add('read');
-  }
-  const grant = {
-    canonicalPath,
-    base: path.dirname(canonicalPath),
-    scopes: normalizedScopes,
-    expiresAt: Date.now() + OUTSIDE_FILE_GRANT_TTL_MS,
-  };
-  outsideFileGrants.set(token, grant);
-  return {
-    path: canonicalPath,
-    outsideFileGrant: token,
-    expiresAt: grant.expiresAt,
-  };
-};
 
 // A whole number from the environment, else null. The strict plain-decimal
 // judgement lives in shared/parse-int.js (design #802 phase 2, #804): a bare
