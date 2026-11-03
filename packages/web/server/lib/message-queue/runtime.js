@@ -13,7 +13,12 @@
 
 import fs from 'fs';
 import path from 'path';
-import { renameWithRetry } from '../shared/atomic-rename.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFile,
+  readDurableJsonFile,
+  writeDurableJsonFile,
+} from '../shared/durable-json-store.js';
 import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
 import { isBoolean } from '../shared/guards.js';
 import { assertPromptResponse } from '../opencode/prompt-response.js';
@@ -280,6 +285,7 @@ export function createMessageQueueRuntime({
   persistSessionGoal = null,
   dataDir,
   fetchImpl = fetch,
+  fsPromises = fs.promises,
   now = Date.now,
   dispatchQuietMs = DISPATCH_QUIET_MS,
   abortHoldMs = ABORT_HOLD_MS,
@@ -322,24 +328,42 @@ export function createMessageQueueRuntime({
     ),
   });
 
+  // This store rides the shared durable-store primitive (#976, phase 2 —
+  // #978). The value judgement is the one this store always made at the
+  // top level: a JSON object (the per-entry leniency below is unchanged).
+  // Anything else on disk (unparseable bytes, another shape) is malformed,
+  // and malformed bytes are queued user messages, not "an empty queue":
+  // the primitive preserves them aside under its collision-proof name
+  // before any write can replace them. Parse errors are never logged:
+  // they can quote the file.
+  const durableOptions = () => ({ fs: fsPromises, validateValue: isJsonObject });
+
   const readFile = async () => {
-    let raw;
-    try {
-      raw = await fs.promises.readFile(filePath, 'utf8');
-    } catch (error) {
-      if (asRecord(error)?.code === 'ENOENT') return { sessions: {}, revision: 0 };
-      throw error;
-    }
     let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      // Malformed is a failure, not an empty queue: keep the bytes for the
-      // user and start over rather than overwriting them on the next write.
-      const backup = `${filePath}.corrupt-${now()}`;
-      await fs.promises.rename(filePath, backup).catch(() => undefined);
-      console.warn(`[message-queue] queue file was unreadable and moved to ${backup}: ${error?.message ?? error}`);
-      return { sessions: {}, revision: 0 };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // A read failure other than absence throws (the primitive's rule):
+      // a failed read must not pass for "nothing queued", because the
+      // next write would clobber the file; load() below keeps writes off
+      // until a load succeeds.
+      const result = await readDurableJsonFile(filePath, durableOptions());
+      if (result.state === 'missing') return { sessions: {}, revision: 0 };
+      if (result.state === 'malformed') {
+        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+        if (preservation.outcome === 'failed') {
+          // Fail closed, like a failed read: writes stay off rather than
+          // overwrite bytes whose preservation just failed.
+          throw new Error('failed to preserve the unreadable message-queue file; refusing to treat it as empty');
+        }
+        // A valid replacement landed while the malformed bytes were
+        // being judged: read that file instead of starting over.
+        if (preservation.outcome === 'replaced') continue;
+        if (preservation.preserved) {
+          console.warn(`[message-queue] queue file was unreadable and moved to ${preservation.preservedPath}`);
+        }
+        return { sessions: {}, revision: 0 };
+      }
+      parsed = result.value;
+      break;
     }
     const stored = asRecord(parsed) ?? {};
     const sessions = {};
@@ -376,11 +400,21 @@ export function createMessageQueueRuntime({
     const payload = JSON.stringify(serialize());
     writePromise = writePromise
       .then(async () => {
-        await fs.promises.mkdir(dataDir, { recursive: true });
-        const tmpPath = `${filePath}.${process.pid}.tmp`;
+        // Preserve before replacing, fail-closed (the primitive's
+        // contract): the load gate has normally judged the file already,
+        // but the write refuses on its own rather than trust that — a
+        // file that turned malformed since the load keeps its bytes.
+        // The thrown error lands in the catch below, so the write is
+        // skipped and warned about, never forced through.
+        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+        if (preservation.outcome === 'failed') {
+          throw new Error('failed to preserve the unreadable message-queue file; refusing to overwrite it');
+        }
+        if (preservation.preserved) {
+          console.warn(`[message-queue] queue file was unreadable and moved to ${preservation.preservedPath}`);
+        }
         // Queued prompts are conversation content: readable by the owner only.
-        await fs.promises.writeFile(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
-        await renameWithRetry((from, to) => fs.promises.rename(from, to), tmpPath, filePath);
+        await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
       })
       .catch((error) => {
         console.warn('[message-queue] failed to persist queue:', error?.message ?? error);
