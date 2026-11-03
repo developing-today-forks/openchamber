@@ -1,6 +1,5 @@
 import express from 'express';
 import { constants as fsConstants } from 'node:fs';
-import { mintOutsideFileGrant } from '../fs/routes.js';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
 import { renderPageImageSources } from '../openchamber-control/render-page.js';
 import { isString } from '../shared/guards.js';
@@ -307,7 +306,6 @@ export const registerMarkdownImageGrantRoutes = (app, dependencies) => {
   const {
     fsPromises,
     path,
-    crypto,
     validateDirectoryPath,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
@@ -361,21 +359,13 @@ export const registerMarkdownImageGrantRoutes = (app, dependencies) => {
               results.push({ source, status: inspected.status });
               continue;
             }
-            // Reuse the existing path-bound raw-file grant instead of creating another asset lifecycle.
-            const grant = inspected.outsideWorkspace
-              ? await mintOutsideFileGrant(inspected.path, {
-                scopes: ['raw'],
-                fsPromises,
-                path,
-                crypto,
-              })
-              : null;
+            // Outside-workspace reads are allowed under normal server
+            // authentication and OS permissions (a91777602); the referenced
+            // check above is the gate, so the result carries path/status only.
             results.push({
               source,
               status: 'ready',
               path: inspected.path,
-              outsideFileGrant: grant?.outsideFileGrant,
-              expiresAt: grant?.expiresAt,
             });
           } catch {
             results.push({ source, status: 'error' });
