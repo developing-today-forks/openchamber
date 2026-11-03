@@ -629,16 +629,55 @@ describe('quota fallback credential source', () => {
       getLaunchEnvironment: () => launchEnvironment,
     };
     const fallback = { list: vi.fn(async () => ['local-row']) };
-    const source = createFallbackCredentialSource(primary, fallback, { HOME: '/cli-home' });
+    const source = createFallbackCredentialSource(primary, fallback);
     expect(source.getLaunchEnvironment()).toBe(launchEnvironment);
   });
 
-  it('supplies the CLI environment as the store location only for a known-local server', () => {
+  it('lets the direct local-store read resolve the store the server was launched with', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-quota-managed-test-'));
+    try {
+      const dataHome = path.join(root, 'data');
+      const dbPath = path.join(dataHome, 'opencode', 'opencode.db');
+      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+      const db = new DatabaseSync(dbPath);
+      db.exec(`create table credential (
+        id text primary key,
+        integration_id text,
+        label text not null,
+        value text not null,
+        connector_id text,
+        method_id text,
+        active integer,
+        time_created integer not null,
+        time_updated integer not null
+      )`);
+      db.prepare('insert into credential (id, integration_id, label, value, active, time_created, time_updated) values (?, ?, ?, ?, ?, ?, ?)')
+        .run('cred_google', 'google', 'default', JSON.stringify({ type: 'key', key: 'managed-store-key' }), 1, 100, 100);
+      db.close();
+      // The CLI launched this server, so the launch environment is the one
+      // the server resolves its store from and the direct read may use it.
+      const primary = {
+        list: vi.fn(async () => []),
+        usesLocalStore: () => true,
+        getLaunchEnvironment: () => ({ HOME: root, XDG_DATA_HOME: dataHome }),
+      };
+      const fallback = { list: vi.fn(async () => []) };
+      configureOpenCodeCredentials(createFallbackCredentialSource(primary, fallback));
+      await expect(readLocalOpenCodeCredentials()).resolves.toEqual({
+        google: { type: 'api', key: 'managed-store-key' },
+      });
+    } finally {
+      configureOpenCodeCredentials(null);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a loopback-only server source establishes no launch environment of its own', () => {
     // readLocalOpenCodeCredentials resolves the store from the launch
-    // environment and refuses without one; the CLI's server source has
-    // none to forward, so the combined source must supply the CLI's own
-    // environment -- the one its local fallback source already reads
-    // the store through -- or the Antigravity fallback can never run.
+    // environment and refuses without one. A live loopback server the CLI
+    // did not launch has no environment to forward, and the CLI's own
+    // shell environment is not it: substituting it would read a store the
+    // server may not use. The direct read stays off for this server.
     const cliEnvironment = { HOME: '/cli-home', XDG_DATA_HOME: '/cli-data' };
     const fallback = { list: vi.fn(async () => ['local-row']) };
     const localPrimary = {
@@ -646,7 +685,9 @@ describe('quota fallback credential source', () => {
       usesLocalStore: () => true,
       getLaunchEnvironment: () => null,
     };
-    expect(createFallbackCredentialSource(localPrimary, fallback, cliEnvironment).getLaunchEnvironment()).toBe(cliEnvironment);
+    // The combined source takes no CLI environment: passing one cannot
+    // turn it into the connected server's launch environment.
+    expect(createFallbackCredentialSource(localPrimary, fallback, cliEnvironment).getLaunchEnvironment()).toBe(null);
     const remotePrimary = {
       list: vi.fn(async () => ['server-row']),
       usesLocalStore: () => false,
@@ -655,7 +696,7 @@ describe('quota fallback credential source', () => {
     expect(createFallbackCredentialSource(remotePrimary, fallback, cliEnvironment).getLaunchEnvironment()).toBe(null);
   });
 
-  it('lets the direct local-store read resolve the store through the combined source (the Antigravity fallback path)', async () => {
+  it('a loopback-only server source does not enable the direct local-store read', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-quota-combined-test-'));
     try {
       const dataHome = path.join(root, 'data');
@@ -678,9 +719,10 @@ describe('quota fallback credential source', () => {
       db.close();
       // A live loopback server whose projection withholds the secret: it
       // says it is local but, being external to the CLI, has no launch
-      // environment -- exactly the Codex finding on PR #1142. Before the
-      // combined source supplied the CLI environment, the direct read
-      // below threw 'location is unknown' and the fallback never ran.
+      // environment. The direct read resolves the store from that
+      // environment alone, so it cannot reach this CLI's store here. The
+      // fallback source still reads the CLI's store when the server is
+      // down, and servedBy() labels that read 'local'.
       const primary = {
         list: vi.fn(async () => []),
         usesLocalStore: () => true,
@@ -689,9 +731,7 @@ describe('quota fallback credential source', () => {
       const fallback = { list: vi.fn(async () => []) };
       const cliEnvironment = { HOME: root, XDG_DATA_HOME: dataHome };
       configureOpenCodeCredentials(createFallbackCredentialSource(primary, fallback, cliEnvironment));
-      await expect(readLocalOpenCodeCredentials()).resolves.toEqual({
-        google: { type: 'api', key: 'cli-store-key' },
-      });
+      await expect(readLocalOpenCodeCredentials()).rejects.toThrow(/store location is unknown/);
     } finally {
       configureOpenCodeCredentials(null);
       fs.rmSync(root, { recursive: true, force: true });
@@ -701,7 +741,7 @@ describe('quota fallback credential source', () => {
   it('reports no launch environment when the server source does not say it is local', () => {
     const primary = { list: vi.fn(async () => ['server-row']) };
     const fallback = { list: vi.fn(async () => ['local-row']) };
-    expect(createFallbackCredentialSource(primary, fallback, { HOME: '/cli-home' }).getLaunchEnvironment()).toBe(null);
+    expect(createFallbackCredentialSource(primary, fallback).getLaunchEnvironment()).toBe(null);
   });
 
   it('names both failures when the server is down and the store cannot be read', async () => {
