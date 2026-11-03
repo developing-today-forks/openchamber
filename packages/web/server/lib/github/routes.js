@@ -1748,10 +1748,15 @@ export function registerGitHubRoutes(app, options = {}) {
     }
   });
 
-  /** Removes exactly `requestedAccountId`; bindings on it are reconciled first. */
+  /** Removes exactly `requestedAccountId`; bindings on it are reconciled first,
+   * except in the gh-CLI branch, where the strict settings write runs first so a
+   * malformed settings.json fails the removal before any binding is touched.
+   * If reconciliation then fails, the previous activation state is restored
+   * before the error propagates, so the account is not left deselected with
+   * unreconciled bindings. */
   const removeAccount = async (requestedAccountId) => {
     const {
-      getGitHubAuthAccounts, githubCliAccountId, isGhCliDisabled,
+      getGitHubAuthAccounts, githubCliAccountId, isGhCliActive, isGhCliDisabled,
       setGhCliActive, removeGitHubAuthAccount,
     } = await getGitHubLibraries();
     if (!requestedAccountId || requestedAccountId.trim() !== requestedAccountId) {
@@ -1767,8 +1772,14 @@ export function registerGitHubRoutes(app, options = {}) {
       if (githubCliAccountId(user.id) !== requestedAccountId) {
         return { status: 200, body: { success: true, removed: false } };
       }
-      await options.onAccountRemoved?.(accountIdentity(requestedAccountId));
+      const wasGhCliActive = isGhCliActive();
       setGhCliActive(false);
+      try {
+        await options.onAccountRemoved?.(accountIdentity(requestedAccountId));
+      } catch (error) {
+        setGhCliActive(wasGhCliActive);
+        throw error;
+      }
       return { status: 200, body: { success: true, removed: true } };
     }
     if (!accounts.some((account) => account.id === requestedAccountId)) return { status: 200, body: { success: true, removed: false } };

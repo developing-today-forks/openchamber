@@ -1863,4 +1863,47 @@ describe('gh CLI account consent', () => {
 
     expect(response.body).toMatchObject({ connected: true, user: { login: 'cli-user' }, ghCli: { active: true } });
   });
+
+  it('removes the gh CLI account and reconciles its bindings on success', async () => {
+    stubGitHubUsers();
+    auth.setGhCliActive(true);
+    const onAccountRemoved = vi.fn();
+
+    await request(makeApp({ onAccountRemoved })).delete('/api/source-control/github/auth')
+      .query({ accountId: 'github.com#cli:9' }).expect(200, { success: true, removed: true });
+
+    expect(onAccountRemoved).toHaveBeenCalledWith({ provider: 'github', instance: 'github.com', accountId: 'github.com#cli:9' });
+    expect(auth.isGhCliActive()).toBe(false);
+  });
+
+  // #1274: setGhCliActive reads settings.json strictly (#990) and throws on a
+  // malformed file. The settings write must run before binding reconciliation,
+  // or a failed removal strands the bindings while the account stays active.
+  it('leaves gh CLI bindings untouched when the settings write throws on removal', async () => {
+    stubGitHubUsers();
+    auth.setGhCliActive(true);
+    await fs.writeFile(path.join(directory, 'settings.json'), '{broken', 'utf8');
+    const onAccountRemoved = vi.fn();
+
+    const response = await request(makeApp({ onAccountRemoved })).delete('/api/source-control/github/auth')
+      .query({ accountId: 'github.com#cli:9' }).expect(500);
+
+    expect(response.body.error).toContain('not valid JSON');
+    expect(onAccountRemoved).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(directory, 'settings.json'), 'utf8')).toBe('{broken');
+  });
+
+  it('restores gh CLI activation when binding reconciliation fails after the settings write', async () => {
+    stubGitHubUsers();
+    auth.setGhCliActive(true);
+    const fail = async () => { throw Object.assign(new Error('binding store busy'), { code: 'SOURCE_CONTROL_LOCK_BUSY', status: 503 }); };
+    const onAccountRemoved = vi.fn(fail);
+
+    const response = await request(makeApp({ onAccountRemoved })).delete('/api/source-control/github/auth')
+      .query({ accountId: 'github.com#cli:9' }).expect(503);
+
+    expect(response.body).toEqual({ error: 'binding store busy', code: 'SOURCE_CONTROL_LOCK_BUSY' });
+    expect(onAccountRemoved).toHaveBeenCalledWith({ provider: 'github', instance: 'github.com', accountId: 'github.com#cli:9' });
+    expect(auth.isGhCliActive()).toBe(true);
+  });
 });
