@@ -124,17 +124,18 @@ describe('managed tunnel config runtime', () => {
     await fsPromises.writeFile(filePath, corrupt);
     const validRaw = JSON.stringify({ version: 1, tunnels: [tunnel('b', 'b.example.com', 'token-b')] }, null, 2);
     // The other process lands its save in the window between this process
-    // validating the corrupt bytes and preserving them: the preservation
-    // candidate-name check is the last step before the re-read/rename.
+    // validating the corrupt bytes and preserving them: the primitive's
+    // preservation candidate-name check (an access call on the
+    // .corrupt- candidate) is the last step before the re-read/rename.
     let swapped = false;
     const racingFs = {
       ...fsPromises,
-      stat: async (...args) => {
+      access: async (...args) => {
         if (!swapped && String(args[0]).includes('.corrupt-')) {
           swapped = true;
           await fsPromises.writeFile(filePath, validRaw);
         }
-        return fsPromises.stat(...args);
+        return fsPromises.access(...args);
       },
     };
     const { runtime } = await makeRuntime({ dir, fsPromises: racingFs });
@@ -204,6 +205,14 @@ describe('managed tunnel config runtime', () => {
     expect(await runtime.readManagedRemoteTunnelConfigFromDisk()).toEqual({ version: 1, tunnels: [] });
     expect(fs.readdirSync(dir)).toEqual([]);
   });
+  it('treats an empty config file as missing: reads empty, preserves nothing', async () => {
+    const { dir, filePath, runtime } = await makeRuntime();
+    await fsPromises.writeFile(filePath, '');
+    expect(await runtime.readManagedRemoteTunnelConfigFromDisk()).toEqual({ version: 1, tunnels: [] });
+    expect(preservedFiles(dir)).toEqual([]);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('');
+  });
+
   it('refuses an update when the existing config cannot be read (non-ENOENT)', async () => {
     const seeded = await makeRuntime();
     await seeded.runtime.upsertManagedRemoteTunnelToken({ id: 'a', name: 'Tunnel a', hostname: 'a.example.com', token: 'token-a' });

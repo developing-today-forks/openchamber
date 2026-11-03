@@ -1,9 +1,13 @@
-import { renameWithRetry } from '../shared/atomic-rename.js';
+import {
+  isJsonObject,
+  preserveMalformedJsonFile,
+  readDurableJsonFile,
+  writeDurableJsonFile,
+} from '../shared/durable-json-store.js';
 
 export const createManagedTunnelConfigRuntime = (deps) => {
   const {
     fsPromises,
-    path,
     normalizeManagedRemoteTunnelHostname,
     normalizeManagedRemoteTunnelPresets,
     constants,
@@ -62,87 +66,72 @@ export const createManagedTunnelConfigRuntime = (deps) => {
     return result;
   };
 
-  // A torn or otherwise unparseable config file holds tunnel tokens, not an
-  // empty store: move its bytes aside before any later write can overwrite
-  // them, and name the preserved copy so the loss is recoverable. The suffix
-  // is collision-proof (pid + random, existence-checked): rename would
-  // silently replace an earlier preserved copy on a bare-timestamp collision.
-  const preserveCorruptFile = async (error, expectedRaw) => {
-    let preservedPath = null;
-    for (let attempt = 0; attempt < 10 && preservedPath === null; attempt += 1) {
-      const candidate = `${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}.corrupt-${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-      try {
-        await fsPromises.stat(candidate);
-      } catch {
-        preservedPath = candidate;
-      }
-    }
-    if (preservedPath === null) {
-      console.warn('Failed to read managed remote tunnel config file:', error);
-      console.warn('Failed to preserve the unreadable managed remote tunnel config file: every preserved-file name collided');
-      return false;
-    }
-    // Cross-process guard: the persist lock serializes only this process.
-    // Another server sharing the data directory may have preserved the
-    // corrupt file and saved valid state in its place since the bytes that
-    // failed validation were read; renaming the path now would move that
-    // saved state aside. Rename only the exact validated bytes: re-read
-    // last, and leave a changed file in place for the caller to re-read.
-    let currentRaw = null;
-    try {
-      currentRaw = await fsPromises.readFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, 'utf8');
-    } catch {
-      currentRaw = null;
-    }
-    if (currentRaw !== expectedRaw) {
-      console.warn('Managed remote tunnel config file changed since it was read; leaving the current file in place instead of preserving it as corrupt.');
-      return false;
-    }
-    try {
-      await renameWithRetry((from, to) => fsPromises.rename(from, to), CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, preservedPath);
-      console.warn(`Failed to read managed remote tunnel config file: preserved the unreadable file at ${preservedPath}:`, error);
-      return true;
-    } catch (preserveError) {
-      console.warn('Failed to read managed remote tunnel config file:', error);
-      console.warn(`Failed to preserve the unreadable managed remote tunnel config file at ${preservedPath}:`, preserveError);
-      return false;
-    }
-  };
+  // This store rides the shared durable-store primitive (design #976):
+  // the strict reader, the preserve-aside step, and the mode-explicit
+  // atomic write all come from lib/shared/durable-json-store.js, with
+  // this store's fsPromises surface injected so the test seam is the one
+  // it always had. The value judgement stays this store's own: the file
+  // is a JSON object (its `tunnels` entries are sanitized from there);
+  // anything else is as malformed as unparseable bytes. The parse error
+  // itself is never logged or attached: Node's JSON.parse messages quote
+  // the file content, and this file holds tunnel tokens. An empty file
+  // now reads as missing per the primitive contract instead of being
+  // preserved as corrupt.
+  const storeOptions = { fs: fsPromises, validateValue: isJsonObject };
 
-  const configFromRaw = (raw) => {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Managed remote tunnel config file does not contain a config object');
-    }
-    return {
-      version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
-      tunnels: sanitizeManagedRemoteTunnelConfigEntries(parsed.tunnels),
-    };
-  };
+  const configFromValue = (value) => ({
+    version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
+    tunnels: sanitizeManagedRemoteTunnelConfigEntries(value.tunnels),
+  });
 
-  const readRawConfigFile = async () => {
+  // One strict read of the managed file, in the primitive's answers:
+  // 'valid' (with the sanitized config), 'missing' (absent or empty),
+  // 'malformed' (unparseable or not a config object), or 'error' (a read
+  // failure other than absence, with the error kept for the caller to
+  // warn about or refuse on).
+  const readStoreFile = async () => {
+    let result;
     try {
-      return { raw: await fsPromises.readFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, 'utf8') };
+      result = await readDurableJsonFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, storeOptions);
     } catch (error) {
-      return { error };
+      return { state: 'error', error };
     }
+    if (result.state === 'valid') {
+      return { state: 'valid', config: configFromValue(result.value) };
+    }
+    return { state: result.state };
+  };
+
+  // A torn or otherwise unparseable config file holds tunnel tokens, not
+  // an empty store: the primitive moves its bytes aside before any later
+  // write can overwrite them, under the collision-proof preserved name,
+  // re-reading and re-judging the on-disk bytes first so a valid
+  // replacement another process saved meanwhile is left in place
+  // ('replaced') rather than renamed away. Answers 'preserved',
+  // 'replaced', 'missing' (the file vanished or is empty now), or
+  // 'failed' — the fail-closed answer, on which an update must refuse.
+  const preserveCorruptFile = async () => {
+    const preservation = await preserveMalformedJsonFile(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH, storeOptions);
+    if (preservation.preserved) {
+      console.warn(
+        `Failed to read managed remote tunnel config file: preserved the unreadable file at ${preservation.preservedPath}:`,
+        new Error('the managed remote tunnel config file does not contain a config object'),
+      );
+      return 'preserved';
+    }
+    if (preservation.outcome === 'replaced' || preservation.outcome === 'missing') {
+      return preservation.outcome;
+    }
+    console.warn('Failed to preserve the unreadable managed remote tunnel config file');
+    return 'failed';
   };
 
   const writeManagedRemoteTunnelConfigToDisk = async (data) => {
-    await fsPromises.mkdir(path.dirname(CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH), { recursive: true });
-    const tempPath = `${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    try {
-      await fsPromises.writeFile(tempPath, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
-      await renameWithRetry((from, to) => fsPromises.rename(from, to), tempPath, CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH);
-    } catch (error) {
-      try {
-        await fsPromises.unlink(tempPath);
-      } catch {
-        // The write/rename error is the one the caller needs; a failed temp
-        // cleanup must not mask it.
-      }
-      throw error;
-    }
+    await writeDurableJsonFile(
+      CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH,
+      JSON.stringify(data, null, 2),
+      { fs: fsPromises, mode: 0o600 },
+    );
   };
 
   // Legacy migration, with the persist lock already held. Migration writes
@@ -155,30 +144,26 @@ export const createManagedTunnelConfigRuntime = (deps) => {
   // update landed while this migration waited for the lock, that state is
   // the answer and no migration write happens at all.
   const migrateManagedRemoteTunnelConfigFromLegacyFileLocked = async () => {
-    const current = await readRawConfigFile();
-    if (!current.error) {
-      try {
-        return configFromRaw(current.raw);
-      } catch (parseError) {
-        const preserved = await preserveCorruptFile(parseError, current.raw);
-        if (!preserved) {
-          // The file may have changed since validation (another process
-          // saved valid state): that state is the answer, not a refusal.
-          const latest = await readRawConfigFile();
-          if (!latest.error) {
-            try {
-              return configFromRaw(latest.raw);
-            } catch {
-              // Still unreadable: fall through to the refusal.
-            }
-          }
-          throw new Error(
-            `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
-            { cause: parseError },
-          );
+    const current = await readStoreFile();
+    if (current.state === 'valid') {
+      return current.config;
+    }
+    if (current.state === 'malformed') {
+      const outcome = await preserveCorruptFile();
+      if (outcome !== 'preserved') {
+        // The file may have changed since validation (another process
+        // saved valid state): that state is the answer, not a refusal.
+        const latest = await readStoreFile();
+        if (latest.state === 'valid') {
+          return latest.config;
         }
+        throw new Error(
+          `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
+        );
       }
-    } else if (!isEnoent(current.error)) {
+      // Preserved aside: fall through to the legacy migration, which
+      // writes a fresh managed file from the legacy one if it exists.
+    } else if (current.state === 'error') {
       console.warn('Failed to read managed remote tunnel config file:', current.error);
       return emptyConfig();
     }
@@ -193,7 +178,7 @@ export const createManagedTunnelConfigRuntime = (deps) => {
       await writeManagedRemoteTunnelConfigToDisk(migrated);
       return migrated;
     } catch (error) {
-      if (error && typeof error === 'object' && error.code === 'ENOENT') {
+      if (isEnoent(error)) {
         return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
       }
       console.warn('Failed to migrate legacy named tunnel config file:', error);
@@ -217,97 +202,88 @@ export const createManagedTunnelConfigRuntime = (deps) => {
     enqueuePersistLock(migrateLockedOrEmpty);
 
   const readManagedRemoteTunnelConfigFromDisk = async () => {
-    const { raw, error } = await readRawConfigFile();
-    if (error) {
-      if (isEnoent(error)) {
-        return migrateManagedRemoteTunnelConfigFromLegacyFile();
-      }
-      console.warn('Failed to read managed remote tunnel config file:', error);
+    const first = await readStoreFile();
+    if (first.state === 'valid') {
+      return first.config;
+    }
+    if (first.state === 'missing') {
+      return migrateManagedRemoteTunnelConfigFromLegacyFile();
+    }
+    if (first.state === 'error') {
+      console.warn('Failed to read managed remote tunnel config file:', first.error);
       return emptyConfig();
     }
-    try {
-      return configFromRaw(raw);
-    } catch (parseError) {
-      // The bytes above are stale the moment the read returns: a concurrent
-      // update may already have preserved the corrupt file and saved valid
-      // state in its place, and renaming the path now would move that saved
-      // state aside. Re-validate under the persist lock before preserving
-      // anything; if an update landed in between, its state is the answer.
-      return enqueuePersistLock(async () => {
-        const current = await readRawConfigFile();
-        if (current.error) {
-          if (isEnoent(current.error)) {
-            return migrateLockedOrEmpty();
-          }
-          console.warn('Failed to read managed remote tunnel config file:', current.error);
-          return emptyConfig();
-        }
-        if (current.raw !== raw) {
-          try {
-            return configFromRaw(current.raw);
-          } catch {
-            // Still corrupt under the lock: preserve those bytes below.
-          }
-        }
-        const preserved = await preserveCorruptFile(parseError, current.raw);
-        if (!preserved) {
-          // Changed since validation: return the current state if it is
-          // readable now instead of reporting an empty store.
-          const latest = await readRawConfigFile();
-          if (!latest.error) {
-            try {
-              return configFromRaw(latest.raw);
-            } catch {
-              // Still unreadable: fall through to the empty config.
-            }
-          }
-        }
+    // Malformed. The bytes above are stale the moment the read returns: a
+    // concurrent update may already have preserved the corrupt file and
+    // saved valid state in its place, and renaming the path now would move
+    // that saved state aside. Re-validate under the persist lock before
+    // preserving anything; if an update landed in between, its state is
+    // the answer.
+    return enqueuePersistLock(async () => {
+      const current = await readStoreFile();
+      if (current.state === 'valid') {
+        return current.config;
+      }
+      if (current.state === 'missing') {
+        return migrateLockedOrEmpty();
+      }
+      if (current.state === 'error') {
+        console.warn('Failed to read managed remote tunnel config file:', current.error);
         return emptyConfig();
-      });
-    }
+      }
+      const outcome = await preserveCorruptFile();
+      if (outcome === 'preserved') {
+        return emptyConfig();
+      }
+      // Changed since validation: return the current state if it is
+      // readable now instead of reporting an empty store.
+      const latest = await readStoreFile();
+      if (latest.state === 'valid') {
+        return latest.config;
+      }
+      return emptyConfig();
+    });
   };
 
   // Read on the update path, already serialized under the persist lock: a
   // corrupt file is preserved before the mutation overwrites it, and if it
   // cannot be preserved the update refuses rather than discarding tokens.
   const readConfigForUpdate = async () => {
-    const { raw, error } = await readRawConfigFile();
-    if (error) {
-      if (isEnoent(error)) {
-        return migrateManagedRemoteTunnelConfigFromLegacyFileLocked();
-      }
+    const first = await readStoreFile();
+    if (first.state === 'valid') {
+      return first.config;
+    }
+    if (first.state === 'missing') {
+      return migrateManagedRemoteTunnelConfigFromLegacyFileLocked();
+    }
+    if (first.state === 'error') {
       // A non-ENOENT read failure (EIO, EACCES, ...) leaves the on-disk
       // state unknown: treating it as empty and writing the mutation over
       // it would silently discard every stored token, the same loss the
-      // corrupt-file branch above refuses. Read paths may degrade to
+      // corrupt-file branch below refuses. Read paths may degrade to
       // empty; the update path must not.
       throw new Error(
         `Refusing to overwrite the managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be read`,
-        { cause: error },
+        { cause: first.error },
       );
     }
-    try {
-      return configFromRaw(raw);
-    } catch (parseError) {
-      const preserved = await preserveCorruptFile(parseError, raw);
-      if (!preserved) {
-        // Changed since validation: proceed from the current state if it
-        // is readable now; only a still-unreadable file refuses.
-        const latest = await readRawConfigFile();
-        if (!latest.error) {
-          try {
-            return configFromRaw(latest.raw);
-          } catch {
-            // Still unreadable: fall through to the refusal.
-          }
-        }
-        throw new Error(
-          `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
-          { cause: parseError },
-        );
-      }
+    const outcome = await preserveCorruptFile();
+    if (outcome === 'preserved') {
       return emptyConfig();
     }
+    // Changed since validation: proceed from the current state if it is
+    // readable now; a vanished file has nothing left to lose; only a
+    // still-unreadable file refuses.
+    const latest = await readStoreFile();
+    if (latest.state === 'valid') {
+      return latest.config;
+    }
+    if (latest.state === 'missing') {
+      return emptyConfig();
+    }
+    throw new Error(
+      `Refusing to overwrite the unreadable managed remote tunnel config file at ${CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH}: it could not be preserved`,
+    );
   };
 
   const updateManagedRemoteTunnelConfig = async (mutate) =>
