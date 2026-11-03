@@ -422,7 +422,13 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false } =
     if (!includeDisabled && facts.disabled.has(instanceId)) continue;
     const resolved = resolveInstanceProvider(facts, instanceId);
     if (!resolved?.provider.fetchQuotaForCredential) continue;
-    const rows = await listCredentials(instanceId);
+    let rows;
+    try {
+      rows = await listCredentials(instanceId);
+    } catch (error) {
+      if (isOpenCodeUpstreamAuthError(error)) throw new Error(OPENCODE_UPSTREAM_AUTH_ERROR);
+      throw error;
+    }
     if (rows.some((row) => isCredentialUsable(resolved.provider, row, resolved.instance.base))) {
       visible.push(instanceId);
     }

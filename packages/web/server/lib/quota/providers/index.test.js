@@ -183,6 +183,26 @@ describe('shared upstream auth failure (#894)', () => {
     await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
+  it('names the shared path when an instance credential read in the listing is rejected', async () => {
+    setMergedConfig({
+      provider: {
+        'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
+      },
+    });
+    authState.rowsError = new Error('Authentication required');
+    await expect(listConfiguredQuotaProviders()).rejects.toThrow('OpenCode upstream authentication failed');
+  });
+
+  it('rethrows a non-auth instance credential read failure in the listing unchanged', async () => {
+    setMergedConfig({
+      provider: {
+        'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
+      },
+    });
+    authState.rowsError = new Error('credential store exploded');
+    await expect(listConfiguredQuotaProviders()).rejects.toThrow('credential store exploded');
+  });
+
   it('leaves a provider-specific failure untouched', async () => {
     authState.readError = new Error('Request failed');
     const result = await fetchQuotaForProvider('openrouter', authDeps);
