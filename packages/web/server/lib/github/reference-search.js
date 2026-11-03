@@ -147,6 +147,7 @@ query ReferenceDetail($owner: String!, $repo: String!, $number: Int!) {
             commit {
               statusCheckRollup {
                 contexts(first: 100) {
+                  totalCount
                   nodes {
                     __typename
                     ... on CheckRun { databaseId name status conclusion startedAt checkSuite { app { databaseId } } }
@@ -266,7 +267,7 @@ const detailSchema = z.object({
         headCommit: z.object({
           nodes: z.array(z.object({
             commit: z.object({
-              statusCheckRollup: z.object({ contexts: z.object({ nodes: z.array(checkContextSchema) }) }).nullable(),
+              statusCheckRollup: z.object({ contexts: z.object({ totalCount: z.number().int(), nodes: z.array(checkContextSchema) }) }).nullable(),
             }),
           })),
         }),
@@ -470,7 +471,10 @@ export async function fetchReferenceDetail({ octokit, owner, repo, number }) {
       )),
       // Like the list's statuses: a closed or merged PR's checks are not actionable.
       checks: item.state === 'OPEN'
-        ? summarizeCheckContexts(item.headCommit.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [])
+        ? summarizeCheckContexts(
+          item.headCommit.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [],
+          item.headCommit.nodes[0]?.commit.statusCheckRollup?.contexts.totalCount,
+        )
         : null,
       additions: item.additions,
       deletions: item.deletions,

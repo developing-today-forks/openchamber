@@ -246,7 +246,7 @@ describe('fetchReferenceDetail', () => {
     number: 9,
     state: 'OPEN',
     reviewDecision: 'CHANGES_REQUESTED',
-    headCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [
+    headCommit: { nodes: [{ commit: { statusCheckRollup: { contexts: { totalCount: 2, nodes: [
       { __typename: 'CheckRun', databaseId: 1, name: 'test', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
       { __typename: 'CheckRun', databaseId: 2, name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: null, checkSuite: { app: { databaseId: 15368 } } },
     ] } } } }] },
@@ -311,6 +311,13 @@ describe('fetchReferenceDetail', () => {
       }],
       commitTotal: 1,
     });
+  });
+
+  it('a PR whose contexts are truncated does not report a definitive checks state (#1418)', async () => {
+    const item = pull();
+    item.headCommit.nodes[0].commit.statusCheckRollup.contexts.totalCount = 150;
+    const detail = await fetchReferenceDetail({ octokit: graphqlReturning(item), owner: 'acme', repo: 'app', number: 9 });
+    expect(detail?.pull?.checks).toEqual(expect.objectContaining({ state: 'unknown', incomplete: true, contextsTotal: 150 }));
   });
 
   it('reads a review thread as its first comment with the replies under it', async () => {
