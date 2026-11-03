@@ -481,7 +481,11 @@ describe('realtime proxy WebSocket bounds', () => {
       const frame = Buffer.alloc(REALTIME_PROXY_UPSTREAM_WS_MAX_PAYLOAD_BYTES, 0x68);
       const delivered = new Promise((resolve) => client.once('message', (data) => resolve(Buffer.from(data))));
       upstreamSocket.send(frame);
-      expect(await delivered).toEqual(frame);
+      const deliveredFrame = await delivered;
+      // Byte-identity via Buffer.equals: vitest's toEqual on two 16 MiB
+      // buffers OOMs the test worker even when they are identical (#1394).
+      expect(deliveredFrame.length).toBe(frame.length);
+      expect(deliveredFrame.equals(frame)).toBe(true);
       // The pair survived: a small client frame still reaches upstream.
       client.send(Buffer.from('still-open'));
       const deadline = Date.now() + 3_000;
