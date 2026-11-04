@@ -2055,7 +2055,7 @@ const ensureGlobalWatcherStarted = async () => {
 const bootstrapOpenCodeAtStartup = async (...args) => {
   await openCodeLifecycleRuntime.bootstrapOpenCodeAtStartup(...args);
   scheduleOpenCodeApiDetection();
-  if (openCodeLifecycleState.openCodeProcess && !openCodeLifecycleState.isExternalOpenCode) {
+  if (openCodeLifecycleState.openCodeProcess || openCodeLifecycleState.isExternalOpenCode) {
     startHealthMonitoring();
   }
   // The global watcher used to start only for desktop notifications; the

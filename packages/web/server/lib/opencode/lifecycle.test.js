@@ -900,6 +900,41 @@ describe('OpenCode lifecycle', () => {
     warn.mockRestore();
   });
 
+  it('tracks external OpenCode health failures and recovery without restarting it', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ error: 'unavailable' }, { status: 503 }))
+      .mockResolvedValueOnce(Response.json({ version: '2.0.20', pid: 1, urls: [], paths: { tmp: '/tmp' } }));
+    globalThis.fetch = fetchMock;
+    const runtime = createRuntime({}, {
+      openCodePort: 45678,
+      isExternalOpenCode: true,
+      isOpenCodeReady: true,
+    });
+
+    await runtime.triggerHealthCheck();
+
+    expect(runtime.testState.isOpenCodeReady).toBe(false);
+    expect(runtime.testState.lastOpenCodeHealthFailure).toEqual({
+      class: 'error',
+      detail: expect.any(String),
+      at: expect.any(String),
+      source: 'immediate',
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      'http://127.0.0.1:45678/api/info',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(runtime.testState.openCodeProcess).toBeNull();
+
+    await runtime.triggerHealthCheck();
+
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('does not mistake a live managed process wrapper for an exited child', async () => {
     const close = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
