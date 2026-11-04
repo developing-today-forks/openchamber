@@ -461,6 +461,10 @@ describe('credentialSourceUsesLocalStore', () => {
       getLaunchEnvironment: () => launchEnvironment,
     });
     expect(sourceFor('http://127.0.0.1:4096').usesLocalStore()).toBe(true);
+    expect(sourceFor('http://127.0.0.2:4096').usesLocalStore()).toBe(true);
+    expect(sourceFor('http://foo.localhost:4096').usesLocalStore()).toBe(true);
+    expect(sourceFor('http://[::ffff:127.0.0.1]:4096').usesLocalStore()).toBe(true);
+    expect(sourceFor('http://localhost.evil.example:4096').usesLocalStore()).toBe(false);
     expect(sourceFor('https://opencode.example.com:4096').usesLocalStore()).toBe(false);
     expect(sourceFor('https://opencode.example.com:4096', { OPENCODE_DB: 'opencode.db' }).usesLocalStore()).toBe(true);
   });

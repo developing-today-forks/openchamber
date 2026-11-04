@@ -21,9 +21,10 @@ no CI tier gates a merge.**
 The `pr checks` jobs in oc-review.yml are display-named
 `basic: lint`, `basic: type-check`, `full (main tier): tests`, and
 `full (main tier): build` — those names are historical. All four run
-automatically only after merge, on push to `main` and on the nightly
-schedule; a maintainer can also start them manually via
-`workflow_dispatch` (on a ref of their choosing). Automatic results
+automatically only on the nightly schedule; a maintainer can also
+start them manually via `workflow_dispatch` (on a ref of their
+choosing). There is no push trigger: merged code is verified by the
+next nightly run, or sooner by an exact-SHA dispatch. Automatic results
 feed the remediation chain below instead of blocking PRs. (This file
 documents the policy; branch-protection settings themselves are a
 maintainer action and are not changed by the CI redesign.)
@@ -34,18 +35,21 @@ maintainer action and are not changed by the CI redesign.)
   no automatic CI validation before merge; mergeability is a matter
   of the normal review protocol only. (A maintainer may still run a
   workflow manually via `workflow_dispatch`.)
-- **Main tier — everything, once per merge.** On push to `main`,
-  `pr checks` (oc-review.yml) runs its full suite; its nightly
-  schedule re-runs it as a backstop, and `workflow_dispatch` allows
-  manual runs. (`nix-eval.yml` is the exception: manual dispatch
+- **Main tier — everything, nightly and on dispatch.** The nightly
+  schedule runs the `pr checks` (oc-review.yml) full suite, and
+  `workflow_dispatch` allows manual runs on an exact SHA/ref at any
+  time. There is no per-merge run: verification of merged code is
+  batched into the nightly run (or an explicit dispatch). (`nix-eval.yml` is the exception: manual dispatch
   only — see the tier map below.) Main-tier results feed the
   remediation chain (the `main-broken` watcher workflow) instead of
   blocking PRs.
 - **Dedup rule.** A commit must not get duplicate automatic runs
-  from overlapping `push`/`pull_request` triggers. Shape: `push`
-  restricted to `branches: [main]`, plus `schedule` and
-  `workflow_dispatch`; no `pull_request` trigger. Scheduled and
-  manual reruns of the same commit are intentional, not duplicates.
+  from overlapping triggers. Shape: `schedule` and
+  `workflow_dispatch` only; no `push` and no `pull_request` trigger
+  (Drew 2026-11-04: no commit- or PR-triggered CI — CI runs via
+  dispatch/placement, schedule, and workflow_call only). Scheduled
+  and manual reruns of the same commit are intentional, not
+  duplicates.
 
 ## Change-class policy (design §3.3)
 
@@ -64,12 +68,12 @@ issues is the tuning signal.
 
 ## This repo's tier map (oc-review.yml, workflow name `pr checks`)
 
-| job | main (`push` to main) | nightly (`schedule`) | dispatch |
-|---|---|---|---|
-| `lint` | ✅ runs | ✅ runs | ✅ runs |
-| `type-check` | ✅ runs | ✅ runs | ✅ runs |
-| `tests` | ✅ runs | ✅ runs | ✅ runs |
-| `build` | ✅ runs | ✅ runs | ✅ runs |
+| job | nightly (`schedule`) | dispatch |
+|---|---|---|
+| `lint` | ✅ runs | ✅ runs |
+| `type-check` | ✅ runs | ✅ runs |
+| `tests` | ✅ runs | ✅ runs |
+| `build` | ✅ runs | ✅ runs |
 
 No job in this workflow runs on `pull_request`; there is no PR column
 because there is no PR trigger.
@@ -78,6 +82,12 @@ because there is no PR trigger.
 watcher (`main-broken.yml`) watches only this workflow's completions
 on `main`, so a red main produces exactly one owned breakage issue
 per distinct failure signature (Breakage-ID), not workflow fan-out.
+Because the main-gate now completes on nightly and dispatch runs,
+breakage attribution is batched: one nightly failure may cover
+several merges, and detection can be delayed up to ~24h after a
+breaking merge lands. The watcher fires on those nightly/dispatch
+completions (it accepts `schedule` and `workflow_dispatch` events),
+so a red nightly still files its breakage issue.
 
 `nix-eval.yml` runs only on `workflow_dispatch` (manual dispatch):
 it has no `push`, `schedule`, or `pull_request` trigger and is not
@@ -95,10 +105,11 @@ named `pr checks`, for the exact release SHA. New release tags point to
 that checked SHA. Failed, cancelled, pending, missing, or unreadable
 results stop the workflow before it publishes.
 
-The hotfix override path for a missing run is to dispatch `oc-review.yml`
-against the exact commit, using an existing branch at that SHA or a
-temporary branch pointing to it. Once that full-suite run succeeds,
-retry the release. There is no bypass for a failed or unreadable gate;
+The normal pre-release step for a missing run is to dispatch
+`oc-review.yml` against the exact release SHA, using an existing
+branch at that SHA or a temporary branch pointing to it. This
+exact-SHA dispatch is the standard path, not a hotfix override.
+Once that full-suite run succeeds, retry the release. There is no bypass for a failed or unreadable gate;
 fix the commit or release a known-green SHA.
 
 `build-macos-arm64-dmg.yml` is exempt because it only uploads a
@@ -116,8 +127,9 @@ concurrency:
   cancel-in-progress: true
 ```
 
-- PR/branch runs cancel on supersede; push-to-main and tag/release
-  runs are keyed by `run_id` so they are never cancelled.
+- Scheduled and dispatched main runs are keyed by `run_id` so they
+  are never cancelled; a PR/branch run of a workflow that has such a
+  trigger cancels on supersede.
 - Scheduled singleton/deploy workflows keep `cancel-in-progress:
   false` on purpose; they are not checks.
 - Event bots kept event-based (`pr-review`, `bot-help`,
