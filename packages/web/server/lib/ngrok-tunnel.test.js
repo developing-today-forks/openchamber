@@ -9,6 +9,7 @@ import {
   extractNgrokPublicUrlFromText,
   fetchNgrokPublicUrl,
   pollNgrokPublicUrl,
+  startNgrokQuickTunnel,
   summarizeNgrokOutput,
 } from './ngrok-tunnel.js';
 
@@ -275,5 +276,63 @@ describe('pollNgrokPublicUrl', () => {
     const callsAfterStop = calls;
     await wait(50);
     expect(calls).toBe(callsAfterStop);
+  });
+});
+
+describe('startNgrokQuickTunnel chunk-split output', () => {
+  const originalPath = process.env.PATH;
+  const originalAuthtoken = process.env.NGROK_AUTHTOKEN;
+  const tempDirs = [];
+
+  const installFakeNgrok = (tunnelScript) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ngrok-start-'));
+    tempDirs.push(dir);
+    const script = [
+      '#!/bin/sh',
+      'if [ "$1" = "version" ]; then echo "ngrok version 3.20.0"; exit 0; fi',
+      tunnelScript,
+    ].join('\n');
+    fs.writeFileSync(path.join(dir, 'ngrok'), script, { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ''}`;
+    process.env.NGROK_AUTHTOKEN = 'test-token';
+  };
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    if (originalAuthtoken === undefined) {
+      delete process.env.NGROK_AUTHTOKEN;
+    } else {
+      process.env.NGROK_AUTHTOKEN = originalAuthtoken;
+    }
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the full URL when the chunk splits after ngrok', async () => {
+    installFakeNgrok("printf %s '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https://abcd1234.ngrok'\nsleep 0.2\nprintf '%s\\n' '-free.app\"}'\nsleep 0.5");
+
+    const tunnel = await startNgrokQuickTunnel({ port: 3210 });
+
+    expect(tunnel.getPublicUrl()).toBe('https://abcd1234.ngrok-free.app');
+    tunnel.stop();
+  });
+
+  it('resolves the full URL when the chunk splits inside the scheme', async () => {
+    installFakeNgrok("printf %s '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https:'\nsleep 0.2\nprintf '%s\\n' '//abcd1234.ngrok-free.app\"}'\nsleep 0.5");
+
+    const tunnel = await startNgrokQuickTunnel({ port: 3210 });
+
+    expect(tunnel.getPublicUrl()).toBe('https://abcd1234.ngrok-free.app');
+    tunnel.stop();
+  });
+
+  it('resolves a single-chunk URL unchanged', async () => {
+    installFakeNgrok("printf '%s\\n' '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https://abcd1234.ngrok-free.app\"}'\nsleep 0.5");
+
+    const tunnel = await startNgrokQuickTunnel({ port: 3210 });
+
+    expect(tunnel.getPublicUrl()).toBe('https://abcd1234.ngrok-free.app');
+    tunnel.stop();
   });
 });
