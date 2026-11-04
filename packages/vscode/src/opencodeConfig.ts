@@ -3707,10 +3707,11 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
   // Every refusal above (missing description, over-cap Markdown, over-cap
   // supporting file) happens before the directory exists, so a failed create
   // leaves nothing behind (CodeRabbit review, #1444).
-  assertMdContentWithinCap(targetPath, serializeMdContent(frontmatter, typeof instructions === 'string' ? instructions : ''));
+  const instructionsText = typeof instructions === 'string' ? instructions : '';
+  assertMdContentWithinCap(targetPath, serializeMdContent(frontmatter, instructionsText));
   fs.mkdirSync(targetDir, { recursive: true });
 
-  writeMdFile(targetPath, frontmatter, typeof instructions === 'string' ? instructions : '');
+  writeMdFile(targetPath, frontmatter, instructionsText);
 
   // Write supporting files if provided
   if (supportingFilesData && Array.isArray(supportingFilesData)) {
