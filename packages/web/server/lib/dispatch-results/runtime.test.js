@@ -416,6 +416,88 @@ describe('dispatch results runtime', () => {
     expect(runtime.pending()).toEqual([]);
   });
 
+  it('does not resurrect a rolled-back registration through a queued snapshot', async () => {
+    const dataDir = await makeDataDir();
+    let writes = 0;
+    const fsPromises = {
+      ...fs,
+      writeFile: async (...args) => {
+        writes += 1;
+        if (writes === 1) throw new Error('no space left on device');
+        return fs.writeFile(...args);
+      },
+    };
+    const { runtime, openCode } = await createRuntime({ dataDir, fsPromises });
+    openCode.state.sessions.ses_first = { id: 'ses_first', title: 'First' };
+    openCode.state.sessions.ses_second = { id: 'ses_second', title: 'Second' };
+    // Two registrations overlap: the first write fails transiently while
+    // the second registration is already queued behind it. The first
+    // caller is refused and its entry rolled back; the queued write must
+    // not carry the rejected entry back onto disk (#1503).
+    const refused = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_first', dispatchedAt: 10 });
+    const accepted = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_second', dispatchedAt: 11 });
+    await expect(refused).rejects.toThrow('no space left on device');
+    await accepted;
+    await runtime.flush();
+    expect(runtime.pending().map((entry) => entry.sessionId)).toEqual(['ses_second']);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries.map((entry) => entry.sessionId)).toEqual(['ses_second']);
+  });
+
+  it('does not commit a registration whose own write fails after an earlier write succeeded', async () => {
+    const dataDir = await makeDataDir();
+    let writes = 0;
+    const fsPromises = {
+      ...fs,
+      writeFile: async (...args) => {
+        writes += 1;
+        if (writes === 2) throw new Error('no space left on device');
+        return fs.writeFile(...args);
+      },
+    };
+    const { runtime, openCode } = await createRuntime({ dataDir, fsPromises });
+    openCode.state.sessions.ses_first = { id: 'ses_first', title: 'First' };
+    openCode.state.sessions.ses_second = { id: 'ses_second', title: 'Second' };
+    // The mirror image of the queued-snapshot case: two registrations
+    // overlap and only the second write fails. The first registration is
+    // durable; the second is refused, and no earlier write may already
+    // have committed its entry to disk (#1503).
+    const accepted = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_first', dispatchedAt: 10 });
+    const refused = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_second', dispatchedAt: 11 });
+    await accepted;
+    await expect(refused).rejects.toThrow('no space left on device');
+    await runtime.flush();
+    expect(runtime.pending().map((entry) => entry.sessionId)).toEqual(['ses_first']);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries.map((entry) => entry.sessionId)).toEqual(['ses_first']);
+  });
+
+  it('refuses to register an entry whose write is refused', async () => {
+    const dataDir = await makeDataDir();
+    let failWrites = true;
+    const fsPromises = {
+      ...fs,
+      writeFile: async (...args) => {
+        if (failWrites) throw new Error('no space left on device');
+        return fs.writeFile(...args);
+      },
+    };
+    const { runtime } = await createRuntime({ dataDir, fsPromises });
+    await expect(runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 })).rejects.toThrow(
+      'no space left on device',
+    );
+    // The refused entry is not held as pending: it existed only in memory,
+    // so a restart would have dropped it while the caller waited (#1503).
+    expect(runtime.pending()).toEqual([]);
+    // The shared write chain is not poisoned by the refusal: once writes
+    // land again, a registration succeeds and persists.
+    failWrites = false;
+    await runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 });
+    expect(runtime.pending()).toHaveLength(1);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries).toHaveLength(1);
+  });
+
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');
