@@ -16,6 +16,7 @@ export interface ProviderOffState {
 }
 
 const providerOffStateSchema = z.object({
+  catalogReady: z.boolean().optional(),
   providers: z.array(z.string()),
   offProviders: z.array(z.string()).optional(),
   offReasons: z.record(z.string(), z.enum(['disabled', 'policy', 'allowlist'])).optional(),
@@ -58,12 +59,14 @@ const offStateAfterToggle = (providers: string[], previous: ProviderOffState | n
  * way Settings can show them again. Null where the runtime has no OpenChamber
  * server to ask (VS Code): the feature is not offered there.
  */
-const fetchDisabledProviders = async (): Promise<{ providers: string[]; offState: ProviderOffState } | null> => {
+const fetchDisabledProviders = async (): Promise<{ providers: string[]; offState: ProviderOffState; catalogReady: boolean } | null> => {
   const response = await runtimeFetch('/api/provider/disabled');
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Could not read disabled providers (${response.status})`);
   const payload = providerOffStateSchema.parse(await response.json());
-  return { providers: payload.providers, offState: offStateFromPayload(payload) };
+  // Older servers answer without the flag and awaited the catalog inline,
+  // so their reads are never catalog-incomplete.
+  return { providers: payload.providers, offState: offStateFromPayload(payload), catalogReady: payload.catalogReady ?? true };
 };
 
 // The last list read from the current runtime, kept so every part of the app
@@ -76,6 +79,51 @@ const fetchDisabledProviders = async (): Promise<{ providers: string[]; offState
 let snapshot: { runtimeKey: string; providers: string[] | null; offState: ProviderOffState | null } | null = null;
 let inFlight: { runtimeKey: string; promise: Promise<string[] | null> } | null = null;
 let latestRead = 0;
+
+// A read taken while the server's models.dev catalog is still cold carries
+// a config-only off state: allowlist omissions and wildcard policy denies
+// for providers absent from config are missing until the catalog lands
+// (#218). Such a read schedules one re-read past the catalog fetch's
+// timeout, bounded so a permanently unreachable catalog does not poll
+// forever; subscribers hear about the refreshed read when it lands.
+const CATALOG_REFRESH_DELAY_MS = 10_000;
+const CATALOG_REFRESH_MAX_ATTEMPTS = 3;
+let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let catalogRefreshAttempts = 0;
+const offStateListeners = new Set<() => void>();
+
+/** Subscribes to refreshed off-state reads landing; returns the unsubscribe. */
+export const subscribeProviderOffState = (listener: () => void): (() => void) => {
+  offStateListeners.add(listener);
+  return () => { offStateListeners.delete(listener); };
+};
+
+const notifyOffStateListeners = (): void => {
+  for (const listener of [...offStateListeners]) listener();
+};
+
+const scheduleCatalogRefresh = (): void => {
+  if (catalogRefreshTimer) return;
+  if (catalogRefreshAttempts >= CATALOG_REFRESH_MAX_ATTEMPTS) return;
+  catalogRefreshAttempts += 1;
+  catalogRefreshTimer = setTimeout(() => {
+    catalogRefreshTimer = null;
+    void loadDisabledProviders().catch(() => {});
+  }, CATALOG_REFRESH_DELAY_MS);
+  catalogRefreshTimer.unref?.();
+};
+
+const settleCatalogRefresh = (catalogReady: boolean): void => {
+  if (catalogReady) {
+    catalogRefreshAttempts = 0;
+    if (catalogRefreshTimer) {
+      clearTimeout(catalogRefreshTimer);
+      catalogRefreshTimer = null;
+    }
+    return;
+  }
+  scheduleCatalogRefresh();
+};
 
 /** The last list read from the current runtime, or `null` when there is none. */
 export const peekDisabledProviders = (): string[] | null =>
@@ -113,6 +161,8 @@ export const loadDisabledProviders = async (): Promise<string[] | null> => {
   const providers = fetched?.providers ?? null;
   if (read === latestRead && runtimeKey === getRuntimeKey()) {
     snapshot = { runtimeKey, providers, offState: fetched?.offState ?? null };
+    if (fetched) settleCatalogRefresh(fetched.catalogReady);
+    notifyOffStateListeners();
     return providers;
   }
   // Superseded while in flight - by a newer read, a provider toggle, or a

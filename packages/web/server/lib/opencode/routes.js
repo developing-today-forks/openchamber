@@ -354,6 +354,7 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       const knownProviderIds = cachedCatalog ? Object.keys(cachedCatalog) : [];
       const offState = readProviderOffState(null, knownProviderIds);
       return res.json({
+        catalogReady: Boolean(cachedCatalog),
         providers: readDisabledProviders(null),
         offProviders: offState.providers,
         offReasons: offState.reasons,

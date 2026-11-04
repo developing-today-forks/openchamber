@@ -21,7 +21,7 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { opencodeClient } from '@/lib/opencode/client';
 import { loadIntegrationCatalog, peekIntegrationCatalog, type IntegrationCatalog } from '@/lib/opencode/integration-catalog';
-import { loadDisabledProviders, peekDisabledProviders, peekProviderOffState, setProviderDisabled as setProviderDisabledRequest, type ProviderOffState } from '@/lib/disabledProviders';
+import { loadDisabledProviders, peekDisabledProviders, peekProviderOffState, setProviderDisabled as setProviderDisabledRequest, subscribeProviderOffState, type ProviderOffState } from '@/lib/disabledProviders';
 import { requiresProviderAuth } from './providerAvailability';
 import { listConnectableProviders } from './connectableProviders';
 import { ProviderConnectPicker } from './ProviderConnectPicker';
@@ -160,7 +160,14 @@ export const ProvidersPage: React.FC = () => {
     loadDisabledProviders()
       .then((list) => { if (active) { setDisabledProviders(list); setOffReasons(peekProviderOffState()?.offReasons ?? null); } })
       .catch((error) => { console.warn('[providers] could not read disabled providers:', error); });
-    return () => { active = false; };
+    // A first read taken while the server catalog is cold is refreshed in
+    // the background (#218); follow the refreshed read when it lands.
+    const unsubscribe = subscribeProviderOffState(() => {
+      if (!active) return;
+      setDisabledProviders(peekDisabledProviders());
+      setOffReasons(peekProviderOffState()?.offReasons ?? null);
+    });
+    return () => { active = false; unsubscribe(); };
   }, []);
   const handleProviderDisabled = React.useCallback(async (providerId: string, disabled: boolean) => {
     try {
