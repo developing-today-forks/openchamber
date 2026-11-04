@@ -101,10 +101,14 @@ A listed plan whose `planSessions` entry names a session also carries
 session's own cost figure is authoritative (`costSource: 'opencode'`); the
 models.dev catalog prices the tokens only for a session whose record has no
 cost figure (`costSource: 'catalog'`, reasoning billed at the output rate),
-and a session the catalog cannot price reports `costUsd: null`. Metrics are
-computed on read and never stored; a session that cannot be read gives the
-plan no metrics, never an error and never a fabricated zero. The client
-validates the field in `toPlanLink` and drops a malformed one.
+and a session the catalog cannot price reports `costUsd: null`. The server
+reader caches successful metrics per session for 30 seconds and shares
+concurrent reads. Each reader holds at most 500 results; session-read and
+catalog failures are not cached. The cache belongs to one server reader and
+clears when that process stops. A badge can lag a session update by up to 30
+seconds while the response shape stays unchanged. A session that cannot be read
+gives the plan no metrics, never an error and never a fabricated zero. The
+client validates the field in `toPlanLink` and drops a malformed one.
 
 ## Shared plans
 

@@ -64,16 +64,17 @@ describe('planMetricsOfSession', () => {
 });
 
 describe('createPlanMetricsReader', () => {
-  const readerWith = (session, loadCatalog) => createPlanMetricsReader({
+  const readerWith = (session, loadCatalog, options = {}) => createPlanMetricsReader({
     buildOpenCodeUrl: (fetchPath) => `http://opencode.test${fetchPath}`,
     getOpenCodeAuthHeaders: () => ({}),
-    fetchImpl: async (url) => {
+    fetchImpl: options.fetchImpl ?? (async (url) => {
       expect(url).toBe('http://opencode.test/api/session/ses_1');
       return session === null
         ? new Response(null, { status: 404 })
         : new Response(JSON.stringify({ data: session }), { status: 200 });
-    },
+    }),
     loadCatalog,
+    now: options.now,
   });
 
   test('reads the session record through the response envelope', async () => {
@@ -89,14 +90,101 @@ describe('createPlanMetricsReader', () => {
   });
 
   test('a missing session and a failed read both give no metrics', async () => {
-    expect(await readerWith(null, async () => CATALOG)('ses_1')).toBeNull();
+    let missingFetches = 0;
+    const missing = readerWith(null, async () => CATALOG, {
+      fetchImpl: async () => { missingFetches += 1; return new Response(null, { status: 404 }); },
+    });
+    expect(await missing('ses_1')).toBeNull();
+    expect(await missing('ses_1')).toBeNull();
+    expect(missingFetches).toBe(2);
+
+    let failedFetches = 0;
     const failing = createPlanMetricsReader({
       buildOpenCodeUrl: (fetchPath) => `http://opencode.test${fetchPath}`,
       getOpenCodeAuthHeaders: () => ({}),
-      fetchImpl: async () => { throw new Error('unreachable'); },
+      fetchImpl: async () => { failedFetches += 1; throw new Error('unreachable'); },
       loadCatalog: async () => CATALOG,
     });
     expect(await failing('ses_1')).toBeNull();
+    expect(await failing('ses_1')).toBeNull();
+    expect(failedFetches).toBe(2);
     expect(await failing('')).toBeNull();
+  });
+
+  test('reuses successful metrics for 30 seconds and refreshes at expiry', async () => {
+    let currentTime = 0;
+    let fetchCalls = 0;
+    const reader = readerWith({ ...SESSION, cost: 1.5 }, async () => CATALOG, {
+      now: () => currentTime,
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ data: { ...SESSION, cost: 1.5 } }), { status: 200 });
+      },
+    });
+
+    expect(await reader('ses_1')).toEqual({ costUsd: 1.5, costSource: 'opencode', tokens: TOKEN_TOTALS });
+    currentTime = 29_999;
+    await reader('ses_1');
+    expect(fetchCalls).toBe(1);
+
+    currentTime = 30_000;
+    await reader('ses_1');
+    expect(fetchCalls).toBe(2);
+  });
+
+  test('shares one in-flight read for concurrent requests of the same session', async () => {
+    let fetchCalls = 0;
+    let finishFetch;
+    const response = new Promise((resolve) => { finishFetch = resolve; });
+    const reader = readerWith({ ...SESSION, cost: 1.5 }, async () => CATALOG, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return response;
+      },
+    });
+
+    const first = reader('ses_1');
+    const second = reader('ses_1');
+    expect(fetchCalls).toBe(1);
+    finishFetch(new Response(JSON.stringify({ data: { ...SESSION, cost: 1.5 } }), { status: 200 }));
+    expect(await Promise.all([first, second])).toEqual([
+      { costUsd: 1.5, costSource: 'opencode', tokens: TOKEN_TOTALS },
+      { costUsd: 1.5, costSource: 'opencode', tokens: TOKEN_TOTALS },
+    ]);
+  });
+
+  test('does not cache a partial result when catalog loading fails', async () => {
+    let fetchCalls = 0;
+    let catalogCalls = 0;
+    const reader = readerWith(SESSION, async () => {
+      catalogCalls += 1;
+      throw new Error('catalog unavailable');
+    }, {
+      fetchImpl: async () => {
+        fetchCalls += 1;
+        return new Response(JSON.stringify({ data: SESSION }), { status: 200 });
+      },
+    });
+
+    expect(await reader('ses_1')).toEqual({ costUsd: null, costSource: null, tokens: TOKEN_TOTALS });
+    expect(await reader('ses_1')).toEqual({ costUsd: null, costSource: null, tokens: TOKEN_TOTALS });
+    expect(fetchCalls).toBe(2);
+    expect(catalogCalls).toBe(2);
+  });
+
+  test('bounds successful session entries to 500', async () => {
+    let fetchCalls = 0;
+    const reader = readerWith(null, async () => CATALOG, {
+      fetchImpl: async (url) => {
+        fetchCalls += 1;
+        const id = decodeURIComponent(new URL(url).pathname.split('/').at(-1));
+        return new Response(JSON.stringify({ data: { id, cost: 1 } }), { status: 200 });
+      },
+    });
+
+    for (let index = 0; index < 500; index += 1) await reader(`ses_${index}`);
+    await reader('ses_new');
+    await reader('ses_0');
+    expect(fetchCalls).toBe(502);
   });
 });
