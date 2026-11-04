@@ -101,10 +101,12 @@ pkgs.runCommand "openchamber-start-wrapper-guard-test" { } ''
   # — with the doubled backslash both this fixture's spaces and the
   # match disappear. The port reaches the pattern through $PORT so
   # this script's own cmdline never matches the pattern it tests.
+  # The fixture's interpreter is the store's runtimeShell, not
+  # /bin/sh: a build sandbox is not guaranteed to bind-mount /bin/sh.
   PORT=3999
   fakebin="$(mktemp -d)"
   cat > "$fakebin/openchamber" <<'FAKE_EOF'
-  #!/bin/sh
+  #!${pkgs.runtimeShell}
   sleep 300 & wait
   FAKE_EOF
   chmod +x "$fakebin/openchamber"
