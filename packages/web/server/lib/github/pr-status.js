@@ -404,16 +404,18 @@ export const invalidateRepoPullsCache = (owner, repo, octokitOrCacheIdentity = n
     }
   }
   // A just-created PR must also clear remembered search misses for this repo.
-  const repoNameLower = normalizeText(repo).toLowerCase();
+  // Search-miss keys carry comma-separated owner/repo entries (the #1496
+  // owner-qualified search scope), so match on the full owner/repo ref.
+  const repoRefLower = normalizeLower(`${owner}/${repo}`);
   for (const key of _searchMissCache.keys()) {
     const [repoPart] = key.split('::');
-    if (repoPart && repoPart.split(',').includes(repoNameLower) && matchesIdentity(key)) {
+    if (repoPart && repoPart.split(',').includes(repoRefLower) && matchesIdentity(key)) {
       _searchMissCache.delete(key);
     }
   }
   for (const [token, key] of pendingSearchMissWrites) {
     const [repoPart] = key.split('::');
-    if (repoPart && repoPart.split(',').includes(repoNameLower) && matchesIdentity(key)) {
+    if (repoPart && repoPart.split(',').includes(repoRefLower) && matchesIdentity(key)) {
       pendingSearchMissWrites.delete(token);
     }
   }
@@ -590,9 +592,17 @@ const setBoundedCacheEntry = (cache, key, value) => {
   capCacheEntries(cache);
 };
 
-const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
+const searchFallbackPr = async ({ octokit, branch, repos }) => {
+  const targetRepos = (Array.isArray(repos) ? repos : [])
+    .map((entry) => {
+      const owner = normalizeText(entry?.owner);
+      const repo = normalizeText(entry?.repo);
+      return owner && repo ? { owner, repo } : null;
+    })
+    .filter(Boolean);
+
   // Build a repo key to check/store 403 status per-repo
-  const repoKey = scopedCacheKey(octokit, [...repoNames].sort().join(',').toLowerCase());
+  const repoKey = scopedCacheKey(octokit, targetRepos.map((target) => `${target.owner}/${target.repo}`).sort().join(',').toLowerCase());
 
   // Skip if this repo set returned 403 recently
   const disabledAt = repoKey ? _searchApiDisabledRepos.get(repoKey) : null;
@@ -610,14 +620,15 @@ const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
   if (writeToken) pendingSearchMissWrites.set(writeToken, missKey);
 
   try {
-    const normalizedRepoNames = new Set(repoNames.map((name) => normalizeLower(name)).filter(Boolean));
+    const normalizedTargetRepos = new Set(targetRepos.map((target) => normalizeLower(`${target.owner}/${target.repo}`)));
 
     // The Search API has a tiny quota, so it is only spent on live branch status.
     // Closed/merged history is resolved by the cheaper per-head repo queries.
     let response;
     try {
+      const repoQualifiers = [...new Set(targetRepos.map((target) => `repo:${target.owner}/${target.repo}`))];
       response = await octokit.rest.search.issuesAndPullRequests({
-        q: `is:pr state:open head:${branch}`,
+        q: [`is:pr state:open head:${branch}`, ...repoQualifiers].join(' '),
         per_page: 20,
       });
       // If we get here, search API works for this repo — clear the disabled flag
@@ -641,7 +652,7 @@ const searchFallbackPr = async ({ octokit, branch, repoNames }) => {
       if (!repo) {
         continue;
       }
-      if (normalizedRepoNames.size > 0 && !normalizedRepoNames.has(normalizeLower(repo.repo))) {
+      if (normalizedTargetRepos.size > 0 && !normalizedTargetRepos.has(normalizeLower(`${repo.owner}/${repo.repo}`))) {
         continue;
       }
       try {
@@ -931,7 +942,7 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
     const fallbackSearch = await searchFallbackPr({
       octokit,
       branch: candidateBranch,
-      repoNames: resolvedTargets.map((target) => target.repo.repo),
+      repos: resolvedTargets.map((target) => target.repo),
     });
     if (fallbackSearch) {
       return {

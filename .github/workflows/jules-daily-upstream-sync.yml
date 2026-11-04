@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       - name: Dispatch the upstream sync via pm-dispatch
-        uses: developing-today/code/.github/actions/pm-dispatch-start@main
+        uses: ./.github/actions/pm-dispatch-start
         with:
           title: "chore: daily upstream sync from openchamber/openchamber"
           prompt: >-
@@ -106,7 +106,7 @@ jobs:
 
       - name: Queue the sync failure on the existing tracker via pm-dispatch
         if: failure() && steps.failure-issue.outputs.number != ''
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: "chore(deps): automated upstream sync failing"
           prompt: |
@@ -115,7 +115,7 @@ jobs:
 
       - name: Queue the sync failure via pm-dispatch (new tracker)
         if: failure() && steps.failure-issue.outputs.number == ''
-        uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+        uses: ./.github/actions/pm-dispatch-queue
         with:
           title: "chore(deps): automated upstream sync failing"
           prompt: |

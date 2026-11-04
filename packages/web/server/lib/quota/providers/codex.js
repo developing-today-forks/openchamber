@@ -1,5 +1,7 @@
 import { readQuotaJson } from '../utils/response-body.js';
 import { readOpenCodeCredentials } from '../../opencode/auth.js';
+import { readConfigLayers } from '../../opencode/shared.js';
+import { isRecord } from '../../opencode/config-v2.js';
 import {
   getAuthEntry,
   normalizeAuthEntry,
@@ -168,9 +170,56 @@ const fetchQuotaForEntry = async (entry) => {
   }
 };
 
+/**
+ * The ids of configured provider instances of a Codex base (`openai`, ...),
+ * in merged-config order. Since the provider re-seat the ChatGPT accounts
+ * live under instance integrations (`openai.main`, `openai.alternate`), so
+ * the bare integration read finds nothing; the instances are discovered
+ * from the merged config, never hardcoded. A config that cannot be read
+ * answers none, mirroring the registry's config-facts read.
+ */
+const readCodexInstanceIds = () => {
+  try {
+    const { mergedConfig } = readConfigLayers();
+    const ids = [];
+    for (const sectionKey of ['providers', 'provider']) {
+      const section = mergedConfig?.[sectionKey];
+      if (!isRecord(section)) continue;
+      for (const [id, definition] of Object.entries(section)) {
+        if (isRecord(definition) && aliases.includes(asNonEmptyString(definition.instanceOf))) ids.push(id);
+      }
+    }
+    return ids;
+  } catch (error) {
+    console.warn('Quota: failed to read the OpenCode config; Codex instance credentials are not considered.', error);
+    return [];
+  }
+};
+
+const entryWithToken = (entry) => {
+  const normalized = normalizeAuthEntry(entry);
+  return normalized && (normalized.access || normalized.token) ? normalized : null;
+};
+
+/**
+ * The credential the single Codex fetch uses: the bare integration's entry,
+ * or — when the re-seat left the bare integration empty — the first usable
+ * instance entry. The per-credential dispatch folds every instance into
+ * the base row instead (see providers/index.js).
+ */
+const resolveCodexEntry = (auth) => {
+  const direct = entryWithToken(getAuthEntry(auth, aliases));
+  if (direct) return direct;
+  for (const instanceId of readCodexInstanceIds()) {
+    const entry = entryWithToken(getAuthEntry(auth, [instanceId]));
+    if (entry) return entry;
+  }
+  return null;
+};
+
 export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) => {
   const auth = await readAuth();
-  return fetchQuotaForEntry(normalizeAuthEntry(getAuthEntry(auth, aliases)));
+  return fetchQuotaForEntry(resolveCodexEntry(auth));
 };
 
 /** Quota for one stored credential row, fetched with that row's own token. */

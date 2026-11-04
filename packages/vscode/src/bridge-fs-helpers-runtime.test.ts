@@ -9,21 +9,31 @@ const helpersSource = readFileSync(new URL('./bridge-fs-helpers-runtime.ts', imp
 const runtimeSource = readFileSync(new URL('./bridge-fs-runtime.ts', import.meta.url), 'utf8');
 const webSearchSource = readFileSync(new URL('../../web/server/lib/fs/search.js', import.meta.url), 'utf8');
 
+// The two copies enforce the ceilings differently: the VS Code copy counts
+// locally, while the web copy moved to the shared traversal budget (#1393),
+// whose counters own the stop conditions. Each copy is pinned on the pattern
+// that actually enforces the ceiling in it.
 describe('filesystem search inspected-file ceiling', () => {
-  for (const [label, source] of [['VS Code', helpersSource], ['web', webSearchSource]] as const) {
+  for (const [label, source, stopPattern] of [
+    ['VS Code', helpersSource, /inspectedFiles >= FILE_SEARCH_MAX_VISITED_FILES/],
+    ['web', webSearchSource, /budget\.visitedEntries >= FILE_SEARCH_MAX_VISITED_FILES/],
+  ] as const) {
     test(`${label} query searches stop on inspected files, not the old candidate cap`, () => {
       assert.doesNotMatch(source, /Math\.max\(limit \* 3, 200\)/);
       assert.match(source, /FILE_SEARCH_MAX_VISITED_FILES = 10_000/);
-      assert.match(source, /inspectedFiles >= FILE_SEARCH_MAX_VISITED_FILES/);
+      assert.match(source, stopPattern);
     });
   }
 });
 
 describe('filesystem search directory-visit ceiling', () => {
-  for (const [label, source] of [['VS Code', helpersSource], ['web', webSearchSource]] as const) {
+  for (const [label, source, stopPattern] of [
+    ['VS Code', helpersSource, /visited\.size >= FILE_SEARCH_MAX_VISITED_DIRS/],
+    ['web', webSearchSource, /maxDirs: FILE_SEARCH_MAX_VISITED_DIRS/],
+  ] as const) {
     test(`${label} file search bounds directory visits at the named ceiling`, () => {
       assert.match(source, /FILE_SEARCH_MAX_VISITED_DIRS = 50_000/);
-      assert.match(source, /visited\.size >= FILE_SEARCH_MAX_VISITED_DIRS/);
+      assert.match(source, stopPattern);
     });
   }
 });
@@ -75,7 +85,7 @@ describe('models.dev catalog read ceiling', () => {
     assert.match(helpersSource, /reader\.cancel\(\)/);
   });
 
-  test('VS Code over-cap body throws the web copy\u2019s error and a non-OK status still throws its own', () => {
+  test('VS Code over-cap body throws the web copy’s error and a non-OK status still throws its own', () => {
     assert.match(helpersSource, /models\.dev response exceeded size limit/);
     assert.match(helpersSource, /models\.dev responded with \$\{response\.status\}/);
   });

@@ -26,7 +26,16 @@ export const isPublicHostname = (hostname) => {
     return !PRIVATE_IPV4.some((pattern) => pattern.test(host));
   }
   if (version === 6) {
-    return !(host === '::1' || host === '::' || host.startsWith('fe80:') || host.startsWith('fc') || host.startsWith('fd') || host.startsWith('::ffff:'));
+    // Judge IPv6 ranges by the first hextet's value, not by text prefix:
+    // fe80::/10 link-local spans fe80-febf, so the old 'fe80:' prefix check
+    // judged fe81::-febf:: public (#1517). fec0::/10 is the deprecated
+    // site-local range (fec0-feff) and fc00::/7 unique-local is fc00-fdff.
+    const firstHextet = Number.parseInt(host.split(':')[0], 16);
+    const inRange = (low, high) => firstHextet >= low && firstHextet <= high;
+    return !(
+      host === '::1' || host === '::' || host.startsWith('::ffff:') ||
+      inRange(0xfe80, 0xfebf) || inRange(0xfec0, 0xfeff) || inRange(0xfc00, 0xfdff)
+    );
   }
   return host.includes('.');
 };

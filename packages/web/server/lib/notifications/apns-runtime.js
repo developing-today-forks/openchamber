@@ -578,7 +578,14 @@ export const createApnsRuntime = (deps) => {
   };
 
   const sendViaRelay = async (deviceTokens, payload, relay, environment) => {
-    const tokens = deviceTokens.slice(0, 100);
+    // The relay accepts at most 100 tokens per request. Chunk the group and
+    // send every chunk: slicing to the first 100 silently dropped the rest.
+    for (let offset = 0; offset < deviceTokens.length; offset += 100) {
+      await sendViaRelayChunk(deviceTokens.slice(offset, offset + 100), payload, relay, environment);
+    }
+  };
+
+  const sendViaRelayChunk = async (tokens, payload, relay, environment) => {
     const title = typeof payload?.title === 'string' && payload.title.length > 0 ? payload.title : 'OpenChamber';
     const { privateKey, publicJwk } = await getOrCreateRelayKeypair();
     const ts = Date.now();

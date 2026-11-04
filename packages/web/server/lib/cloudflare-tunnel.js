@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -13,6 +14,36 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const TRY_CF_URL_REGEX = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
+
+// cloudflared writes its URL and ready/fatal log lines with no regard for
+// pipe chunk boundaries, so output must be matched over an accumulated
+// buffer, never per chunk. The buffer is bounded: once it grows past this
+// many characters only the newest tail is kept, which is all a URL or a
+// log line can occupy.
+const CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024;
+
+// Accumulates one stream's output across chunk boundaries. `push` returns
+// the decoded text of this chunk, the lines completed by it (a trailing
+// partial line is held for the next chunk), and the bounded rolling text
+// for substring/regex matching that does not care about lines.
+function createBoundedOutputAccumulator() {
+  const decoder = new StringDecoder('utf8');
+  let pendingLine = '';
+  let recentText = '';
+  return {
+    push(chunk) {
+      const decoded = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      recentText = (recentText + decoded).slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
+      pendingLine += decoded;
+      const lines = pendingLine.split(/\r?\n/);
+      pendingLine = lines.pop() ?? '';
+      if (pendingLine.length > CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS) {
+        pendingLine = pendingLine.slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
+      }
+      return { decoded, lines, recentText };
+    },
+  };
+}
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
 // spawnSync blocks the whole server event loop while it waits, so a hung
@@ -312,13 +343,18 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
       handler(value);
     };
 
-    const inspectChunk = (chunk) => {
-      const text = chunk.toString('utf8');
-      if (text.trim().length > 0) {
+    // A ready/fatal line can be split across pipe chunks; match only
+    // complete lines reassembled by each stream's bounded accumulator.
+    const inspectChunk = (accumulator, chunk) => {
+      const { decoded, lines } = accumulator.push(chunk);
+      if (decoded.trim().length > 0) {
         sawOutput = true;
       }
-      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      for (const line of lines) {
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+          continue;
+        }
         if (isCloudflaredReadyLogLine(line)) {
           finish(resolve, null);
           return;
@@ -330,12 +366,15 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
       }
     };
 
+    const stdoutAccumulator = createBoundedOutputAccumulator();
+    const stderrAccumulator = createBoundedOutputAccumulator();
+
     const onStdout = (chunk) => {
-      inspectChunk(chunk);
+      inspectChunk(stdoutAccumulator, chunk);
     };
 
     const onStderr = (chunk) => {
-      inspectChunk(chunk);
+      inspectChunk(stderrAccumulator, chunk);
     };
 
     const onExit = (code) => {
@@ -375,18 +414,23 @@ export async function startCloudflareQuickTunnel({ originUrl }) {
   let publicUrl = null;
   let tunnelReady = false;
 
+  const stdoutAccumulator = createBoundedOutputAccumulator();
+  const stderrAccumulator = createBoundedOutputAccumulator();
+
   const onData = (chunk, isStderr) => {
-    const text = chunk.toString('utf8');
+    // The trycloudflare URL can be split across pipe chunks; match it
+    // against the bounded rolling buffer, not the single chunk.
+    const { decoded, recentText } = (isStderr ? stderrAccumulator : stdoutAccumulator).push(chunk);
 
     if (!tunnelReady) {
-      const match = text.match(TRY_CF_URL_REGEX);
+      const match = recentText.match(TRY_CF_URL_REGEX);
       if (match) {
         publicUrl = match[0];
         tunnelReady = true;
       }
     }
 
-    process.stderr.write(isStderr ? text : '');
+    process.stderr.write(isStderr ? decoded : '');
   };
 
   child.stdout.on('data', (chunk) => onData(chunk, false));

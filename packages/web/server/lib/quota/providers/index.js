@@ -73,6 +73,11 @@ const registry = {
     isConfigured: codex.isConfigured,
     fetchQuota: codex.fetchQuota,
     credentialAliases: ['openai', 'codex', 'chatgpt'],
+    // After the provider re-seat the ChatGPT accounts live only under
+    // instance integrations (openai.main, openai.alternate), so the base
+    // Codex row folds its configured instances' rows into its answer
+    // instead of reading as unconfigured (#1555).
+    foldInstanceCredentials: true,
     fetchQuotaForCredential: codex.fetchQuotaForCredential
   },
   'command-code': {
@@ -418,6 +423,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false } =
   }
   const facts = readQuotaConfigFacts();
   const configured = [];
+  const foldedBases = new Set();
 
   for (const [id, provider] of Object.entries(registry)) {
     try {
@@ -446,7 +452,17 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false } =
     }
     if (rows.some((row) => isCredentialUsable(resolved.provider, row, resolved.instance.base))) {
       visible.push(instanceId);
+      if (resolved.provider.foldInstanceCredentials) foldedBases.add(resolved.providerId);
     }
+  }
+
+  // A provider that folds its instances' credentials into its base row is
+  // configured when any of them is, even though its own bare integration
+  // holds no credential.
+  for (const baseId of foldedBases) {
+    if (visible.includes(baseId)) continue;
+    if (!includeDisabled && isProviderDisabled(facts, getRegistryProvider(baseId))) continue;
+    visible.push(baseId);
   }
 
   return visible;
@@ -548,6 +564,31 @@ const fetchInstanceResults = async (providerId, deps = {}) => {
 // as if they were registered providers.
 const getRegistryProvider = (providerId) => (Object.hasOwn(registry, providerId) ? registry[providerId] : undefined);
 
+/**
+ * Per-credential results for a provider's configured instances, labeled as
+ * the base provider's own rows: a provider whose accounts live under
+ * instance integrations answers for them from its base row too, not only
+ * from each instance's own row. Disabled instances stay out, as in the
+ * configured-provider listing.
+ */
+const fetchFoldedInstanceResults = async (provider, providerId, deps = {}) => {
+  const facts = readQuotaConfigFacts();
+  const results = [];
+  for (const instanceId of facts.instances.keys()) {
+    if (facts.disabled.has(instanceId)) continue;
+    const resolved = resolveInstanceProvider(facts, instanceId);
+    if (resolved?.providerId !== providerId) continue;
+    const folded = await fetchPerCredential(provider, {
+      resultProviderId: providerId,
+      resultProviderName: resolved.instance.name ?? undefined,
+      integrationIds: [instanceId],
+      authKey: resolved.instance.base
+    }, deps);
+    if (folded) results.push(...folded);
+  }
+  return results;
+};
+
 export const fetchQuotaForProviderInstances = async (providerId, deps = {}) => {
   const provider = getRegistryProvider(providerId);
 
@@ -564,6 +605,11 @@ export const fetchQuotaForProviderInstances = async (providerId, deps = {}) => {
       resultProviderId: providerId,
       integrationIds: provider.credentialAliases ?? [providerId]
     }, deps);
+
+    if (provider.foldInstanceCredentials) {
+      const folded = await fetchFoldedInstanceResults(provider, providerId, deps);
+      if (folded.length > 0) return [...(results ?? []), ...folded];
+    }
     return results ?? [await fetchQuotaForProvider(providerId, deps)];
   } catch (error) {
     // The credential-store read itself failed: that is the shared upstream

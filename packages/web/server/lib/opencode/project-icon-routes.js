@@ -1,3 +1,14 @@
+import { constants as nodeFsConstants } from 'node:fs';
+
+// Flags for opening a stored icon for serving: O_NONBLOCK (POSIX only)
+// keeps open() itself from blocking on a FIFO with no writer before the
+// handle stat can judge it non-regular (#1537) - the same pattern as
+// shared/bounded-file-read.js's openFlags.
+const storedIconOpenFlags = (platform) =>
+  platform === 'win32' || nodeFsConstants.O_NONBLOCK === undefined
+    ? 'r'
+    : nodeFsConstants.O_RDONLY | nodeFsConstants.O_NONBLOCK;
+
 export const registerProjectIconRoutes = (app, dependencies) => {
   const {
     fsPromises,
@@ -61,6 +72,47 @@ export const registerProjectIconRoutes = (app, dependencies) => {
       if (total === 0) {
         return { ok: false, reason: 'empty' };
       }
+      if (total > projectIconMaxBytes) {
+        return { ok: false, reason: 'too-large' };
+      }
+      return { ok: true, bytes: Buffer.concat(chunks, total) };
+    } finally {
+      await handle.close();
+    }
+  };
+
+  // Bounded serve read for a stored icon (#1537): the GET handler used to
+  // readFile() the candidate whole, with no stat, no size gate, and no
+  // regular-file check, so an over-cap file was buffered whole and a FIFO
+  // blocked the handler indefinitely. Open non-blocking, judge the handle
+  // stat, and read in chunks under the same 5 MiB cap readDiscoveredIcon
+  // enforces for discovered icons.
+  const readStoredIcon = async (filePath) => {
+    const handle = await fsPromises.open(filePath, storedIconOpenFlags(process.platform));
+    try {
+      const stats = await handle.stat();
+      if (stats.isFile?.() === false) {
+        return { ok: false, reason: 'not-regular' };
+      }
+      if (stats.size > projectIconMaxBytes) {
+        return { ok: false, reason: 'too-large' };
+      }
+
+      const chunks = [];
+      let total = 0;
+      while (total <= projectIconMaxBytes) {
+        const chunk = Buffer.alloc(Math.min(
+          projectIconReadChunkBytes,
+          projectIconMaxBytes + 1 - total,
+        ));
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+        if (bytesRead === 0) {
+          break;
+        }
+        chunks.push(chunk.subarray(0, bytesRead));
+        total += bytesRead;
+      }
+
       if (total > projectIconMaxBytes) {
         return { ok: false, reason: 'too-large' };
       }
@@ -285,7 +337,15 @@ export const registerProjectIconRoutes = (app, dependencies) => {
 
       for (const iconPath of candidates) {
         try {
-          const data = await fsPromises.readFile(iconPath);
+          const stored = await readStoredIcon(iconPath);
+          if (!stored.ok) {
+            if (stored.reason === 'too-large') {
+              return res.status(413).json({ error: 'Project icon is too large' });
+            }
+            console.warn('Failed to read project icon:', new Error(`stored project icon is not a regular file: ${iconPath}`));
+            return res.status(500).json({ error: 'Failed to read project icon' });
+          }
+          const data = stored.bytes;
           const ext = path.extname(iconPath).slice(1).toLowerCase();
           const resolvedMime = iconPath === preferredPath && metadataMime
             ? metadataMime

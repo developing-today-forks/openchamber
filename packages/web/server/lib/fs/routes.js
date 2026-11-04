@@ -14,9 +14,19 @@ import {
 } from './content-search.js';
 import { isString } from '../shared/guards.js';
 import nodeFsPromises from 'node:fs/promises';
+import { constants as nodeFsConstants } from 'node:fs';
 import { renameWithRetry } from '../shared/atomic-rename.js';
 import nodePath from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+
+// Flags for the fs/write identical-content check's open: O_NONBLOCK
+// (POSIX only) keeps open() itself from blocking on a FIFO with no writer
+// before the handle stat can judge it non-regular (#1533) - the same
+// pattern as shared/bounded-file-read.js's openFlags.
+const identicalCheckOpenFlags = (platform) =>
+  platform === 'win32' || nodeFsConstants.O_NONBLOCK === undefined
+    ? 'r'
+    : nodeFsConstants.O_RDONLY | nodeFsConstants.O_NONBLOCK;
 
 const EXEC_JOB_TTL_MS = 30 * 60 * 1000;
 
@@ -1571,7 +1581,7 @@ export const registerFsRoutes = (app, dependencies) => {
       if (contentByteLength <= MAX_READ_BYTES && typeof fsPromises.open === 'function') {
         let handle;
         try {
-          handle = await fsPromises.open(writePath, 'r');
+          handle = await fsPromises.open(writePath, identicalCheckOpenFlags(platform));
         } catch {
           // Any open failure skips the shortcut and falls through to the
           // atomic write below, which never reads the target: a missing file

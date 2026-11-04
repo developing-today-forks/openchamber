@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import crypto from 'crypto';
 import path from 'path';
+import os from 'os';
+import nativeFsPromises from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 
 import { registerProjectIconRoutes } from './project-icon-routes.js';
 
@@ -64,7 +67,7 @@ const createMockResponse = () => {
 const createMockFileHandle = (bytes, statSize = bytes.length) => {
   let totalBytesRead = 0;
   return {
-    stat: vi.fn(async () => ({ size: statSize })),
+    stat: vi.fn(async () => ({ size: statSize, isFile: () => true })),
     read: vi.fn(async (buffer, offset, length, position) => {
       const bytesRead = Math.min(length, Math.max(0, bytes.length - position));
       if (bytesRead > 0) {
@@ -84,9 +87,9 @@ describe('project icon routes', () => {
     const jpgBytes = Buffer.from('jpg-bytes');
     const enoent = Object.assign(new Error('missing'), { code: 'ENOENT' });
     const fsPromises = {
-      readFile: vi.fn(async (iconPath) => {
+      open: vi.fn(async (iconPath) => {
         if (iconPath.endsWith('.jpg')) {
-          return jpgBytes;
+          return createMockFileHandle(jpgBytes);
         }
         throw enoent;
       }),
@@ -119,10 +122,174 @@ describe('project icon routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.getHeader('Content-Type')).toBe('image/jpeg');
-    expect(res.body).toBe(jpgBytes);
+    expect(Buffer.isBuffer(res.body)).toBe(true);
+    expect(res.body.equals(jpgBytes)).toBe(true);
     // A repository icon opened as a page must stay inert.
     expect(res.getHeader('Content-Security-Policy')).toContain('sandbox');
     expect(res.getHeader('X-Content-Type-Options')).toBe('nosniff');
+  });
+
+  it('refuses an over-cap stored icon without reading it (#1537)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    const handle = createMockFileHandle(Buffer.alloc(0), 5 * 1024 * 1024 + 1);
+    const fsPromises = {
+      open: vi.fn(async () => handle),
+    };
+
+    registerProjectIconRoutes(app, {
+      fsPromises,
+      path,
+      crypto,
+      openchamberDataDir: '/tmp/openchamber-test',
+      sanitizeProjects: (projects) => projects,
+      readSettingsFromDiskMigrated: async () => ({
+        projects: [{
+          id: 'proj-1',
+          path: '/repo',
+          iconImage: { mime: 'image/png', updatedAt: 1, source: 'custom' },
+        }],
+      }),
+      persistSettings: async () => ({}),
+      createFsSearchRuntime: () => ({ searchFilesystemFiles: async () => [] }),
+      spawn: vi.fn(),
+      resolveGitBinaryForSpawn: vi.fn(),
+    });
+
+    const res = createMockResponse();
+    await getRoute('GET', '/api/projects/:projectId/icon')({
+      params: { projectId: 'proj-1' },
+      query: {},
+    }, res);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual({ error: 'Project icon is too large' });
+    expect(handle.read).not.toHaveBeenCalled();
+    expect(handle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves an at-cap stored icon byte-identically (#1537)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    const atCapBytes = Buffer.alloc(5 * 1024 * 1024, 7);
+    const fsPromises = {
+      open: vi.fn(async () => createMockFileHandle(atCapBytes)),
+    };
+
+    registerProjectIconRoutes(app, {
+      fsPromises,
+      path,
+      crypto,
+      openchamberDataDir: '/tmp/openchamber-test',
+      sanitizeProjects: (projects) => projects,
+      readSettingsFromDiskMigrated: async () => ({
+        projects: [{
+          id: 'proj-1',
+          path: '/repo',
+          iconImage: { mime: 'image/png', updatedAt: 1, source: 'custom' },
+        }],
+      }),
+      persistSettings: async () => ({}),
+      createFsSearchRuntime: () => ({ searchFilesystemFiles: async () => [] }),
+      spawn: vi.fn(),
+      resolveGitBinaryForSpawn: vi.fn(),
+    });
+
+    const res = createMockResponse();
+    await getRoute('GET', '/api/projects/:projectId/icon')({
+      params: { projectId: 'proj-1' },
+      query: {},
+    }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.getHeader('Content-Type')).toBe('image/png');
+    expect(res.getHeader('Cache-Control')).toBe('public, max-age=31536000, immutable');
+    expect(res.body.length).toBe(atCapBytes.length);
+    expect(res.body.equals(atCapBytes)).toBe(true);
+  });
+
+  it('rejects a non-regular stored icon without reading it (#1537)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    const read = vi.fn(async () => ({ bytesRead: 0 }));
+    const handle = {
+      stat: vi.fn(async () => ({ size: 0, isFile: () => false })),
+      read,
+      close: vi.fn(async () => {}),
+    };
+    const fsPromises = {
+      open: vi.fn(async () => handle),
+    };
+
+    registerProjectIconRoutes(app, {
+      fsPromises,
+      path,
+      crypto,
+      openchamberDataDir: '/tmp/openchamber-test',
+      sanitizeProjects: (projects) => projects,
+      readSettingsFromDiskMigrated: async () => ({
+        projects: [{
+          id: 'proj-1',
+          path: '/repo',
+          iconImage: { mime: 'image/png', updatedAt: 1, source: 'custom' },
+        }],
+      }),
+      persistSettings: async () => ({}),
+      createFsSearchRuntime: () => ({ searchFilesystemFiles: async () => [] }),
+      spawn: vi.fn(),
+      resolveGitBinaryForSpawn: vi.fn(),
+    });
+
+    const res = createMockResponse();
+    await getRoute('GET', '/api/projects/:projectId/icon')({
+      params: { projectId: 'proj-1' },
+      query: {},
+    }, res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: 'Failed to read project icon' });
+    expect(read).not.toHaveBeenCalled();
+    expect(handle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not block serving a FIFO stored icon with no writer (#1537)', async () => {
+    const dataDir = await nativeFsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-icon-fifo-'));
+    try {
+      const iconsDir = path.join(dataDir, 'project-icons');
+      await nativeFsPromises.mkdir(iconsDir, { recursive: true });
+      const base = `project-${crypto.createHash('sha1').update('proj-1').digest('hex')}`;
+      execFileSync('mkfifo', [path.join(iconsDir, `${base}.png`)]);
+
+      const { app, getRoute } = createRouteRegistry();
+      registerProjectIconRoutes(app, {
+        fsPromises: nativeFsPromises,
+        path,
+        crypto,
+        openchamberDataDir: dataDir,
+        sanitizeProjects: (projects) => projects,
+        readSettingsFromDiskMigrated: async () => ({
+          projects: [{
+            id: 'proj-1',
+            path: '/repo',
+            iconImage: { mime: 'image/png', updatedAt: 1, source: 'custom' },
+          }],
+        }),
+        persistSettings: async () => ({}),
+        createFsSearchRuntime: () => ({ searchFilesystemFiles: async () => [] }),
+        spawn: vi.fn(),
+        resolveGitBinaryForSpawn: vi.fn(),
+      });
+
+      const res = createMockResponse();
+      await Promise.race([
+        getRoute('GET', '/api/projects/:projectId/icon')({
+          params: { projectId: 'proj-1' },
+          query: {},
+        }, res),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('icon serve blocked on FIFO open')), 3000)),
+      ]);
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toEqual({ error: 'Failed to read project icon' });
+    } finally {
+      await nativeFsPromises.rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('discovers a favicon at a Windows project root', async () => {
