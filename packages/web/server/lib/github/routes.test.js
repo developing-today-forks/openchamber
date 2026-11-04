@@ -79,7 +79,7 @@ describe('POST /api/source-control/github/references/across', () => {
       const names = [...body.variables.q.matchAll(/repo:acme\/([^ ]+)/g)].map((match) => match[1]);
       return response({ data: { search: { issueCount: names.length, pageInfo: { hasNextPage: false, endCursor: null }, nodes: names.map((name, index) => ({
         __typename: 'Issue', number: index + 1, title: name, url: `https://github.com/acme/${name}/issues/1`,
-        createdAt: null, updatedAt: '2026-10-01', body: '', author: null, labels: { nodes: [] }, comments: { totalCount: 0 },
+        createdAt: null, updatedAt: '2026-10-01', body: '', author: null, labels: { totalCount: 0, nodes: [] }, comments: { totalCount: 0 },
         repository: { name, owner: { login: 'acme' } }, state: 'OPEN', stateReason: null,
       })) } } });
     }));
@@ -391,7 +391,7 @@ describe('GET /api/source-control/github/references', () => {
     updatedAt: null,
     body: '',
     author: null,
-    labels: { nodes: [] },
+    labels: { totalCount: 0, nodes: [] },
     comments: { totalCount: 0 },
     repository: { name: 'project', owner: { login: 'example' } },
     state: 'OPEN',
@@ -451,7 +451,8 @@ describe('GET /api/source-control/github/references', () => {
       state: 'OPEN',
       reviewDecision: 'APPROVED',
       headCommit: { nodes: [] },
-      reviewRequests: { nodes: [] },
+      labels: { totalCount: 0, nodes: [] },
+      reviewRequests: { totalCount: 0, nodes: [] },
       additions: 1,
       deletions: 2,
       changedFiles: 1,

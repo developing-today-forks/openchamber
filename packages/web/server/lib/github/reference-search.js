@@ -98,7 +98,7 @@ const COMMON_FIELDS = `
   updatedAt
   body
   author { login avatarUrl }
-  labels(first: 6) { nodes { name color } }
+  labels(first: 6) { totalCount nodes { name color } }
   comments { totalCount }
   repository { name owner { login } }
 `;
@@ -160,7 +160,8 @@ query ReferenceDetail($owner: String!, $repo: String!, $number: Int!) {
             }
           }
         }
-        reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { login avatarUrl } } } }
+        labels(first: 6) { totalCount nodes { name color } }
+        reviewRequests(first: 30) { totalCount nodes { requestedReviewer { __typename ... on User { login avatarUrl } } } }
         additions
         deletions
         changedFiles
@@ -221,7 +222,10 @@ const commonSchema = {
   updatedAt: z.string().nullable(),
   body: z.string().nullable(),
   author: userSchema,
-  labels: z.object({ nodes: z.array(z.object({ name: z.string(), color: z.string().nullable() }).nullable()) }).nullable(),
+  labels: z.object({
+    totalCount: z.number().int(),
+    nodes: z.array(z.object({ name: z.string(), color: z.string().nullable() }).nullable()),
+  }).nullable(),
   comments: z.object({ totalCount: z.number().int() }),
   repository: repositorySchema,
 };
@@ -276,7 +280,12 @@ const detailSchema = z.object({
             }),
           })),
         }),
+        labels: z.object({
+          totalCount: z.number().int(),
+          nodes: z.array(z.object({ name: z.string(), color: z.string().nullable() }).nullable()),
+        }).nullable(),
         reviewRequests: z.object({
+          totalCount: z.number().int(),
           nodes: z.array(z.object({
             requestedReviewer: z.object({
               __typename: z.string(),
@@ -370,6 +379,9 @@ export function toReference(value, repos) {
     labels: (node.labels?.nodes ?? [])
       .filter((label) => label !== null)
       .map((label) => ({ name: label.name, color: label.color ?? undefined })),
+    // The query returns at most six labels; the total says whether the
+    // returned list is the whole set (#1427).
+    labelTotal: node.labels?.totalCount ?? 0,
     commentCount: node.comments.totalCount,
     sourceRepo: { owner: sourceRepo.owner, repo: sourceRepo.repo, source: sourceRepo.source },
   };
@@ -469,8 +481,17 @@ export async function fetchReferenceDetail({ octokit, owner, repo, number }) {
     number: item.number,
     comments,
     commentTotal: item.comments.totalCount,
+    labels: (item.labels?.nodes ?? [])
+      .filter((label) => label !== null)
+      .map((label) => ({ name: label.name, color: label.color ?? undefined })),
+    // The detail query returns at most six labels; the total says whether
+    // the returned list is the whole set (#1427).
+    labelTotal: item.labels?.totalCount ?? 0,
     pull: {
       reviewDecision: item.reviewDecision ? REVIEW_DECISIONS[item.reviewDecision] : null,
+      // The query returns at most 30 requests; the total says whether the
+      // returned list is the whole set (#1427).
+      reviewRequestTotal: item.reviewRequests.totalCount,
       // People asked to review and not done yet; a team request is left out
       // since the board only picks people.
       reviewers: item.reviewRequests.nodes.flatMap(({ requestedReviewer: reviewer }) => (
