@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { StringDecoder } from 'node:string_decoder';
 import type { BridgeResponse } from './bridge';
 
 type BridgeMessageInput = {
@@ -468,6 +469,15 @@ export async function handleFsBridgeMessage(
             let stderrBytes = 0;
             let timedOut = false;
             let outputTooLarge = false;
+            let stdoutTruncated = false;
+            let stderrTruncated = false;
+            // Decode incrementally per stream: a multi-byte character split
+            // across pipe chunks has to survive, and chunk.toString() would
+            // turn each half into U+FFFD in the returned output (#1590).
+            // Mirrors the web twin in packages/web/server/lib/fs/routes.js
+            // (runCommandInDirectory).
+            const stdoutDecoder = new StringDecoder('utf8');
+            const stderrDecoder = new StringDecoder('utf8');
 
             const killForOutputLimit = () => {
               if (outputTooLarge) return;
@@ -521,17 +531,28 @@ export async function handleFsBridgeMessage(
             };
 
             // Append at most the bytes left under the cap and report
-            // overflow, so a capped stream stops at the cap.
-            const appendCapped = (current: string, currentBytes: number, buffer: Buffer) => {
+            // overflow, so a capped stream stops at the cap. Bytes go to
+            // the stream decoder, which holds a split character until the
+            // rest arrives; on truncation the held tail is dropped rather
+            // than flushed as a replacement character the cap did not ask
+            // for.
+            const appendCapped = (current: string, currentBytes: number, chunk: Buffer, decoder: StringDecoder) => {
+              const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
               if (currentBytes >= FS_EXEC_OUTPUT_LIMIT_BYTES) {
                 return { value: current, bytes: currentBytes, exceeded: true };
               }
               const remaining = FS_EXEC_OUTPUT_LIMIT_BYTES - currentBytes;
               if (buffer.length <= remaining) {
-                return { value: current + buffer.toString(), bytes: currentBytes + buffer.length, exceeded: false };
+                return { value: current + decoder.write(buffer), bytes: currentBytes + buffer.length, exceeded: false };
               }
-              return { value: current + buffer.subarray(0, remaining).toString(), bytes: FS_EXEC_OUTPUT_LIMIT_BYTES, exceeded: true };
+              return { value: current + decoder.write(buffer.subarray(0, remaining)), bytes: FS_EXEC_OUTPUT_LIMIT_BYTES, exceeded: true };
             };
+
+            // A stream that ended on its own flushes the decoder tail; a
+            // truncated one keeps its last whole character and drops the
+            // cut sequence.
+            const flushDecoded = (value: string, decoder: StringDecoder, truncated: boolean) =>
+              truncated ? value : value + decoder.end();
 
             let child: ReturnType<typeof spawn>;
             try {
@@ -562,16 +583,18 @@ export async function handleFsBridgeMessage(
 
             child.stdout?.on('data', (chunk) => {
               if (outputTooLarge) return;
-              const appended = appendCapped(stdout, stdoutBytes, chunk);
+              const appended = appendCapped(stdout, stdoutBytes, chunk, stdoutDecoder);
               stdout = appended.value;
               stdoutBytes = appended.bytes;
+              stdoutTruncated = stdoutTruncated || appended.exceeded;
               if (appended.exceeded) killForOutputLimit();
             });
             child.stderr?.on('data', (chunk) => {
               if (outputTooLarge) return;
-              const appended = appendCapped(stderr, stderrBytes, chunk);
+              const appended = appendCapped(stderr, stderrBytes, chunk, stderrDecoder);
               stderr = appended.value;
               stderrBytes = appended.bytes;
+              stderrTruncated = stderrTruncated || appended.exceeded;
               if (appended.exceeded) killForOutputLimit();
             });
 
@@ -580,8 +603,8 @@ export async function handleFsBridgeMessage(
               resolve({
                 command: cmd,
                 success: false,
-                stdout: stdout.trim(),
-                stderr: stderr.trim(),
+                stdout: flushDecoded(stdout, stdoutDecoder, stdoutTruncated).trim(),
+                stderr: flushDecoded(stderr, stderrDecoder, stderrTruncated).trim(),
                 error: error.message || 'Command execution failed',
               });
             });
@@ -591,8 +614,8 @@ export async function handleFsBridgeMessage(
               const result: FsExecCommandResult = {
                 command: cmd,
                 success: code === 0 && !timedOut,
-                stdout: stdout.trim(),
-                stderr: stderr.trim(),
+                stdout: flushDecoded(stdout, stdoutDecoder, stdoutTruncated).trim(),
+                stderr: flushDecoded(stderr, stderrDecoder, stderrTruncated).trim(),
               };
               if (typeof code === 'number') {
                 result.exitCode = code;
