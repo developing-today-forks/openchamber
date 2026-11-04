@@ -1792,6 +1792,63 @@ describe('fs raw download Content-Disposition', () => {
   });
 });
 
+describe('fs list check-ignore decoding (#1540)', () => {
+  const registerListWithSpawn = (fsPromises, spawn) => {
+    const { app, getRoute } = createRouteRegistry();
+    registerFsRoutes(app, {
+      os: { homedir: () => '/home/user' },
+      path: path.posix,
+      fsPromises: {
+        realpath: async (targetPath) => targetPath,
+        ...fsPromises,
+      },
+      spawn,
+      crypto: { randomUUID: () => 'job-0' },
+      normalizeDirectoryPath: (p) => p,
+      resolveProjectDirectory: async () => ({ directory: '/repo' }),
+      buildAugmentedPath: () => '/usr/bin',
+      resolveGitBinaryForSpawn: () => 'git',
+      openchamberUserConfigRoot: '/home/user/.config',
+    });
+    return getRoute('GET', '/api/fs/list');
+  };
+
+  it('hides a non-ASCII ignored entry when check-ignore output splits a multi-byte character', async () => {
+    const dirents = [
+      { name: 'café.txt', isDirectory: () => false, isSymbolicLink: () => false, isFile: () => true },
+      { name: 'visible.txt', isDirectory: () => false, isSymbolicLink: () => false, isFile: () => true },
+    ];
+    const fsPromises = {
+      stat: vi.fn(async () => ({ isDirectory: () => true })),
+      readdir: vi.fn(async () => dirents),
+    };
+    // The ignored name arrives in two chunks split inside the two-byte
+    // encoding of é (0xC3 0xA9): per-chunk decoding would corrupt it to
+    // U+FFFD and the entry would stay listed.
+    const full = Buffer.from('café.txt\n', 'utf8');
+    const splitAt = full.indexOf(0xc3) + 1;
+    const spawn = vi.fn(() => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      queueMicrotask(() => {
+        child.stdout.emit('data', full.subarray(0, splitAt));
+        child.stdout.emit('data', full.subarray(splitAt));
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    const handler = registerListWithSpawn(fsPromises, spawn);
+
+    const res = createMockResponse();
+    await handler({ query: { path: '/repo', respectGitignore: 'true' } }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.entries.map((entry) => entry.name)).toEqual(['visible.txt']);
+  });
+});
+
 describe('fs list symlink path space (issue 2627)', () => {
   const registerList = (fsPromises) => {
     const { app, getRoute } = createRouteRegistry();
