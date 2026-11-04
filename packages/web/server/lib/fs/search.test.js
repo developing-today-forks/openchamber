@@ -137,6 +137,42 @@ describe('filesystem search', () => {
     expect(readdirCalls).toBe(50_000);
   });
 
+  it('treats a non-ASCII path as ignored when check-ignore output splits a multi-byte character (#1540)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-fs-search-'));
+    try {
+      await fs.writeFile(path.join(root, 'café.txt'), '');
+      await fs.writeFile(path.join(root, 'visible.txt'), '');
+
+      // The ignored name arrives in two chunks split inside the two-byte
+      // encoding of é (0xC3 0xA9): per-chunk decoding would corrupt it to
+      // U+FFFD and the name would never match the directory entry.
+      const full = Buffer.from('café.txt\n', 'utf8');
+      const splitAt = full.indexOf(0xc3) + 1;
+      const chunkedSpawn = () => {
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.kill = () => {};
+        queueMicrotask(() => {
+          child.stdout.emit('data', full.subarray(0, splitAt));
+          child.stdout.emit('data', full.subarray(splitAt));
+          child.emit('close', 0, null);
+        });
+        return child;
+      };
+
+      const search = createSearchRuntime(chunkedSpawn);
+      const files = await search.searchFilesystemFiles(root, {
+        query: '',
+        limit: 10,
+        respectGitignore: true,
+      });
+
+      expect(files.map((file) => file.name)).toEqual(['visible.txt']);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('kills a stuck git check-ignore instead of hanging the search', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-fs-search-'));
     const previousTimeout = process.env.OPENCHAMBER_GIT_CHECK_IGNORE_TIMEOUT_MS;
