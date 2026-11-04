@@ -127,7 +127,11 @@ export const createClientPairingRuntime = ({
           id: typeof session.id === 'string' ? session.id : generateId(),
           secretHash: typeof session.secretHash === 'string' ? session.secretHash : '',
           createdAt: typeof session.createdAt === 'string' ? session.createdAt : nowIso(),
-          expiresAt: normalizeTimestamp(session.expiresAt) || new Date(Date.now() + ttlMs).toISOString(),
+          // A missing or unparseable expiresAt stays null: such a session is
+          // expired everywhere it is judged (pending, relay demand, redeem,
+          // sweep). Substituting a fresh TTL here would keep its pairing
+          // secret redeemable indefinitely and persist the fabricated stamp.
+          expiresAt: normalizeTimestamp(session.expiresAt),
           usedAt: normalizeTimestamp(session.usedAt),
           cancelledAt: normalizeTimestamp(session.cancelledAt),
           clientId: normalizeOptionalString(session.clientId),
@@ -211,7 +215,7 @@ export const createClientPairingRuntime = ({
       // Never used or cancelled: drop once the session itself has expired —
       // it can no longer be redeemed and would otherwise sit in the store forever.
       const expiresAt = Date.parse(session.expiresAt || '');
-      return !Number.isFinite(expiresAt) || expiresAt > now;
+      return Number.isFinite(expiresAt) && expiresAt > now;
     });
   };
 
@@ -296,7 +300,8 @@ export const createClientPairingRuntime = ({
       const session = store.sessions.find((entry) => entry.id === normalizedId);
       if (!session) throw redeemError();
       if (session.cancelledAt || session.usedAt) throw redeemError();
-      if (Date.parse(session.expiresAt) <= Date.now()) throw redeemError();
+      const expiresAtMs = Date.parse(session.expiresAt);
+      if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw redeemError();
       if (!session.allowedClientKinds.includes(normalizedKind)) throw redeemError();
       if (!constantTimeEqual(session.secretHash, hashSecret(normalizedSecret), crypto)) throw redeemError();
 
