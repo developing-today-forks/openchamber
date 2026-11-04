@@ -3,7 +3,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { checkCloudflaredAvailable, startCloudflareQuickTunnel } from './cloudflare-tunnel.js';
+import {
+  checkCloudflaredAvailable,
+  startCloudflareManagedRemoteTunnel,
+  startCloudflareQuickTunnel,
+} from './cloudflare-tunnel.js';
 
 describe('checkCloudflaredAvailable', () => {
   const originalPath = process.env.PATH;
@@ -148,5 +152,69 @@ ${onTunnelStart}
 
     await new Promise((resolve) => outcome.value.process.once('exit', resolve));
     expect(outcome.value.getPublicUrl()).toBe('https://steady.trycloudflare.com');
+  });
+
+  it('resolves when the tunnel URL is split across pipe chunks', async () => {
+    installFakeCloudflared('printf %s "https://split-"\nsleep 0.2\nprintf %s "across.trycloudflare.com\n"\nexec sleep 0.3');
+
+    const outcome = await settleWithin(startCloudflareQuickTunnel({ originUrl: 'http://localhost:3000' }));
+    expect(outcome.status).toBe('resolved');
+    expect(outcome.value.getPublicUrl()).toBe('https://split-across.trycloudflare.com');
+
+    await new Promise((resolve) => outcome.value.process.once('exit', resolve));
+  });
+});
+
+describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
+  const originalPath = process.env.PATH;
+  const tempDirs = [];
+
+  const installFakeCloudflared = (onTunnelStart) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-managed-'));
+    tempDirs.push(dir);
+    const binary = path.join(dir, 'cloudflared');
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "cloudflared version 2025.1.0"\n  exit 0\nfi\n${onTunnelStart}\n`, { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ''}`;
+  };
+
+  const settleWithin = (promise, timeoutMs = 3000) => new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve({ status: 'resolved', value });
+      },
+      (error) => {
+        clearTimeout(timeout);
+        resolve({ status: 'rejected', error });
+      },
+    );
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+
+  it('rejects when a fatal log line is split across pipe chunks', async () => {
+    installFakeCloudflared('printf %s "invalid tok"\nsleep 0.2\nprintf %s "en supplied\n"\nexec sleep 5');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  });
+
+  it('resolves when a ready log line is split across pipe chunks', async () => {
+    installFakeCloudflared('printf %s "Registered tunnel conn"\nsleep 0.2\nprintf %s "ection connIndex=0\n"\nexec sleep 5');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
+    outcome.value.stop();
   });
 });
