@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MAX_CAPTURED_STDOUT_BYTES, cloneGitRepository, isGitAuthFailure, runGit, runGitNetwork } from './clone.js';
+import { MAX_CAPTURED_STDOUT_BYTES, cloneGitRepository, gitNetworkArgs, isGitAuthFailure, isPublicHostname, publicAddressesOf, runGit, runGitNetwork } from './clone.js';
 
 const dirs = [];
 afterEach(() => {
@@ -114,5 +114,57 @@ exit 128`);
     const result = await cloneGitRepository('https://example.com/r.git', 'dest', { gitBinary, lookup });
 
     expect(result).toEqual({ ok: false, code: 'clone-failed' });
+  });
+});
+
+describe('isPublicHostname IPv6 local ranges (#1517)', () => {
+  it.each(['fe80::1', 'fe81::1', 'fe9f::1', 'feaf::1', 'febf::1', 'fe80:0:0:0:0:0:0:1'])(
+    'refuses the full fe80::/10 link-local range: %s',
+    (host) => {
+      expect(isPublicHostname(host)).toBe(false);
+    },
+  );
+
+  it.each(['fec0::1', 'feff::1'])('refuses the deprecated fec0::/10 site-local range: %s', (host) => {
+    expect(isPublicHostname(host)).toBe(false);
+  });
+
+  it.each(['fc00::1', 'fd12:3456::1', '::1'])('keeps refusing existing IPv6 controls: %s', (host) => {
+    expect(isPublicHostname(host)).toBe(false);
+  });
+
+  it('keeps public addresses and hostnames public, and private IPv4 refused', () => {
+    expect(isPublicHostname('2606:2800:220:1:248:1893:25c8:1946')).toBe(true);
+    expect(isPublicHostname('93.184.216.34')).toBe(true);
+    expect(isPublicHostname('example.com')).toBe(true);
+    expect(isPublicHostname('10.0.0.1')).toBe(false);
+    expect(isPublicHostname('192.168.1.1')).toBe(false);
+  });
+});
+
+describe('publicAddressesOf / gitNetworkArgs IPv6 local ranges (#1517)', () => {
+  it('refuses an in-range literal without resolving it', async () => {
+    expect(await publicAddressesOf('fe90::1')).toBeNull();
+    expect(await publicAddressesOf('fec0::1')).toBeNull();
+  });
+
+  it('fails closed when a DNS answer lands in fe80::/10, producing no curloptResolve args', async () => {
+    const lookup = async () => [{ address: 'fe90::1', family: 6 }];
+    expect(await publicAddressesOf('example.com', lookup)).toBeNull();
+    expect(await gitNetworkArgs('https://example.com/org/panel.git', lookup)).toBeNull();
+  });
+
+  it('fails closed when any one of several DNS answers is in range', async () => {
+    const lookup = async () => [{ address: '93.184.216.34', family: 4 }, { address: 'febf::1', family: 6 }];
+    expect(await publicAddressesOf('example.com', lookup)).toBeNull();
+    expect(await gitNetworkArgs('https://example.com/org/panel.git', lookup)).toBeNull();
+  });
+
+  it('still pins a public DNS answer into curloptResolve', async () => {
+    const lookup = async () => [{ address: '93.184.216.34', family: 4 }];
+    expect(await gitNetworkArgs('https://example.com/org/panel.git', lookup)).toEqual([
+      '-c', 'http.followRedirects=false',
+      '-c', 'http.curloptResolve=example.com:443:93.184.216.34',
+    ]);
   });
 });
