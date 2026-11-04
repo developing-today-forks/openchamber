@@ -257,6 +257,103 @@ describe('GET /api/source-control/github/pulls/list free-text search', () => {
   });
 });
 
+describe('GET /api/source-control/github/pulls/context diff cap (#1457)', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-github-context-diff-'));
+  const directory = path.join(dataDir, 'project');
+  let app;
+  let diffRequests;
+
+  const DIFF_MAX_BYTES = 50 * 1024 * 1024;
+  const diffOfBytes = (totalBytes) => {
+    const header = 'diff --git a/big b/big\n';
+    return header + 'x'.repeat(totalBytes - header.length);
+  };
+
+  const serveGitHub = (diffBody) => {
+    const fetch = vi.fn(async (urlString, init) => {
+      const url = new URL(urlString);
+      const accept = new Headers(init?.headers).get('accept') ?? '';
+      const pullMatch = url.pathname.match(/^\/repos\/team\/project\/pulls\/(\d+)$/);
+      if (pullMatch) {
+        if (accept.includes('vnd.github.v3.diff')) {
+          diffRequests += 1;
+          return new Response(diffBody, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        }
+        return response({
+          number: Number(pullMatch[1]),
+          title: 'Change',
+          html_url: `https://github.com/team/project/pull/${pullMatch[1]}`,
+          state: 'open',
+          head: { ref: 'feature', sha: 'abc123', repo: null },
+          base: { ref: 'main' },
+          user: { id: 7, login: 'tester' },
+          changed_files: 1,
+          merged: false,
+        });
+      }
+      if (url.pathname.endsWith('/check-runs')) return response({ total_count: 0, check_runs: [] });
+      if (url.pathname.endsWith('/status')) return response({ statuses: [] });
+      return response([]);
+    });
+    vi.stubGlobal('fetch', fetch);
+    return fetch;
+  };
+
+  const contextRequest = (number) => request(app).get('/api/source-control/github/pulls/context')
+    .query({ ...readContext(directory), number, diff: '1' });
+
+  beforeAll(async () => {
+    process.env.OPENCHAMBER_DATA_DIR = dataDir;
+    fs.mkdirSync(directory, { recursive: true });
+    const { setGitHubAuth, setGhCliDisabled } = await import('./auth.js');
+    setGhCliDisabled(true);
+    ({ accountId } = await setGitHubAuth({ accessToken: 'fake-test-token', user: { id: 7, login: 'tester' } }));
+    app = express();
+    app.use(express.json());
+    registerGitHubRoutes(app, {
+      validateReadContext: vi.fn(async (context) => ({ ...context, bindingRevision: Number(context.bindingRevision) })),
+      resolveGitHubRepoFromDirectory: vi.fn(async () => ({ repo: { owner: 'team', repo: 'project' } })),
+      resolveRepoNetwork: vi.fn(async () => null),
+    });
+  });
+
+  beforeEach(() => { diffRequests = 0; });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterAll(() => {
+    if (previousDataDir === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
+    else process.env.OPENCHAMBER_DATA_DIR = previousDataDir;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('refuses an over-cap diff with 413 and neither serves nor caches it whole', async () => {
+    serveGitHub(diffOfBytes(DIFF_MAX_BYTES + 1));
+    const first = await contextRequest(5).expect(413);
+    expect(first.body).toEqual({ error: 'Pull request diff is too large to serve' });
+    expect(first.body).not.toHaveProperty('diff');
+    expect(first.text).not.toContain('xxxxxxxxxx');
+    // A repeat request re-fetches and re-refuses: the over-cap diff was
+    // never retained in the response cache.
+    const second = await contextRequest(5).expect(413);
+    expect(second.body).toEqual({ error: 'Pull request diff is too large to serve' });
+    expect(diffRequests).toBe(2);
+  }, 60_000);
+
+  it('serves a diff at exactly the cap byte-identically', async () => {
+    const atCap = diffOfBytes(DIFF_MAX_BYTES);
+    serveGitHub(atCap);
+    const result = await contextRequest(6).expect(200);
+    expect(result.body.diff).toBe(atCap);
+    expect(Buffer.byteLength(result.body.diff, 'utf8')).toBe(DIFF_MAX_BYTES);
+  }, 60_000);
+
+  it('serves an under-cap diff byte-identically', async () => {
+    const small = 'diff --git a/a b/a\n+hello\n';
+    serveGitHub(small);
+    const result = await contextRequest(7).expect(200);
+    expect(result.body.diff).toBe(small);
+  });
+});
+
 describe('GET /api/source-control/github/references', () => {
   let app;
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-github-references-'));

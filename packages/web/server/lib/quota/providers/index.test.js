@@ -29,6 +29,7 @@ vi.hoisted(() => {
 });
 
 import * as google from './google/index.js';
+import { OpenCodeUpstreamAuthError } from '../../opencode/credential-auth-error.js';
 import { fetchQuotaForProvider, fetchQuotaForProviderInstances, listConfiguredQuotaProviders, listQuotaProviderCatalogue } from './index.js';
 
 const createdConfigPaths = [];
@@ -161,7 +162,7 @@ describe('quota provider registry', () => {
 
 describe('shared upstream auth failure (#894)', () => {
   it('marks a single-provider result whose credential read OpenCode rejected', async () => {
-    authState.readError = new Error('Authentication required');
+    authState.readError = new OpenCodeUpstreamAuthError('Authentication required');
     const result = await fetchQuotaForProvider('openrouter', authDeps);
     expect(result.ok).toBe(false);
     expect(result.error).not.toBe('Authentication required');
@@ -179,7 +180,7 @@ describe('shared upstream auth failure (#894)', () => {
   });
 
   it('answers one marked row when the credential-store read itself is rejected', async () => {
-    authState.rowsError = new Error('Authentication required');
+    authState.rowsError = new OpenCodeUpstreamAuthError('Authentication required');
     const results = await fetchQuotaForProviderInstances('codex', authDeps);
     expect(results).toHaveLength(1);
     expect(results[0].ok).toBe(false);
@@ -188,7 +189,7 @@ describe('shared upstream auth failure (#894)', () => {
   });
 
   it('names the shared path when the configured-provider listing cannot read credentials', async () => {
-    authState.readError = new Error('Authentication required');
+    authState.readError = new OpenCodeUpstreamAuthError('Authentication required');
     await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
@@ -198,7 +199,7 @@ describe('shared upstream auth failure (#894)', () => {
         'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
       },
     });
-    authState.rowsError = new Error('Authentication required');
+    authState.rowsError = new OpenCodeUpstreamAuthError('Authentication required');
     await expect(listConfiguredQuotaProviders({}, authDeps)).rejects.toThrow('OpenCode upstream authentication failed');
   });
 
@@ -217,6 +218,30 @@ describe('shared upstream auth failure (#894)', () => {
     const result = await fetchQuotaForProvider('openrouter', authDeps);
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Request failed');
+    expect(result.errorKind).toBeUndefined();
+  });
+
+  // #1129: a provider's own API can reject its credential with the shared
+  // path's exact words. Provenance, not text, decides the classification.
+  it('leaves a provider error worded exactly like the shared failure untouched', async () => {
+    authState.readError = new Error('Authentication required');
+    const result = await fetchQuotaForProvider('openrouter', authDeps);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('Authentication required');
+    expect(result.errorKind).toBeUndefined();
+  });
+
+  it('passes a z.ai payload.msg of Authentication required through unchanged', async () => {
+    authState.projected = { 'zai-coding-plan': { type: 'api', key: 'zai-key' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
+      code: 1001,
+      msg: 'Authentication required',
+      success: false,
+    })));
+
+    const result = await fetchQuotaForProvider('zai-coding-plan', authDeps);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('Authentication required');
     expect(result.errorKind).toBeUndefined();
   });
 });

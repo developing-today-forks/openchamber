@@ -293,7 +293,10 @@ export const registerNotificationRoutes = (app, dependencies) => {
   // status or null; model is the observed { modelID, providerID } pair from
   // the session's latest assistant message, or null (observed, not the
   // configured model); toolInFlight is null while no in-process source
-  // tracks it. Unknowns are explicit nulls, never fabricated values, and
+  // tracks it. queue is the session's queue binding
+  // { taskId, issueNumber, queue, lane } from the registered binding
+  // source, or null when no binding is known (#1473). Unknowns are
+  // explicit nulls, never fabricated values, and
   // watcherReady is false until the watcher stream has delivered its first
   // payload, so an empty sessions map with watcherReady false means the
   // watcher has not started yet, not that no sessions exist.

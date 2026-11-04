@@ -1,7 +1,6 @@
 import express from 'express';
 import { guestStorageRequestSchema } from '@openchamber/sdk/schemas';
 import { runGuestStorage } from './storage.js';
-import fs from 'node:fs/promises';
 import os from 'node:os';
 import { z } from 'zod';
 
@@ -29,6 +28,7 @@ import {
   toPublicGuest,
 } from './catalog.js';
 import { runGuestFileOperation } from './files.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import { injectGuestAssetTokens, parseGuestUrlToken } from './html-tokens.js';
 import { injectGuestDocumentStyles } from './html-styles.js';
 import { installGuest, installGuestFromZipBuffer, parseInstallRequest, uninstallGuest } from './install.js';
@@ -882,17 +882,23 @@ export const registerGuestRoutes = (app, {
         return res.status(404).end();
       }
       const { filePath, contentType } = served;
-      // Judged from the resolver's stat, before any read: an over-cap file
-      // is refused here and never buffered whole into the server.
-      if (typeof served.size === 'number' && served.size > GUEST_ASSET_MAX_BYTES) {
-        return res.status(413).json({ error: 'file-too-large' });
-      }
-      let raw;
+      // The cap is enforced during the read itself, judged from the opened
+      // handle (readBoundedFile): the resolver's stat is only a hint, so a
+      // file grown or swapped after it — or one whose size the stat could
+      // not report — is refused here having buffered at most the cap + 1
+      // byte, never read whole into the server.
+      let read;
       try {
-        raw = await fs.readFile(filePath);
+        read = await readBoundedFile(filePath, GUEST_ASSET_MAX_BYTES);
       } catch {
         return res.status(404).end();
       }
+      if (!read.ok) {
+        return read.reason === 'too-large'
+          ? res.status(413).json({ error: 'file-too-large' })
+          : res.status(404).end();
+      }
+      const raw = read.buffer;
       const token = parseGuestUrlToken(req.query.oc_url_token);
       const body = contentType.startsWith('text/html')
         ? injectGuestDocumentStyles(injectGuestAssetTokens(raw.toString('utf8'), token))

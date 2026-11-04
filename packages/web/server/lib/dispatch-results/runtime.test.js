@@ -390,6 +390,32 @@ describe('dispatch results runtime', () => {
     expect(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8')).toBe('{ not json');
   });
 
+  it('refuses to treat the file as empty when a valid replacement lands on every read attempt', async () => {
+    const dataDir = await makeDataDir();
+    await fs.writeFile(path.join(dataDir, 'dispatch-results.json'), '{ not json');
+    const replacement = JSON.stringify({ version: 1, entries: [] });
+    let reads = 0;
+    const fsPromises = {
+      ...fs,
+      readFile: async (filePath, encoding) => {
+        if (!String(filePath).endsWith('dispatch-results.json')) return fs.readFile(filePath, encoding);
+        reads += 1;
+        // The store's own read judges the bytes malformed; by the time
+        // preservation re-reads them, a valid replacement has landed, so
+        // every attempt answers 'replaced' and the loop runs out.
+        return reads % 2 === 1 ? '{ not json' : replacement;
+      },
+    };
+    const { runtime } = await createRuntime({ dataDir, fsPromises });
+    await expect(runtime.load()).rejects.toThrow('refusing to treat it as empty');
+    // Writes stay off: a registration re-runs the load and refuses too,
+    // rather than persisting over the unread replacement.
+    await expect(runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 10 })).rejects.toThrow(
+      'refusing to treat it as empty',
+    );
+    expect(runtime.pending()).toEqual([]);
+  });
+
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');

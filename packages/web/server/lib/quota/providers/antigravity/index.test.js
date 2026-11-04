@@ -111,6 +111,30 @@ describe('Antigravity fetchQuota credential resolution', () => {
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);
     expect(result.error).toBe('Failed to read OpenCode credential store');
+    // A store that is simply not connected is not the shared upstream-auth
+    // failure, so the result carries no classification marker (#1128).
+    expect(result.credentialReadFailure).toBeUndefined();
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('marks the store-read failure when the running OpenCode rejected the read', async () => {
+    const { configureOpenCodeCredentials, fetchQuota } = await loadProvider();
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw new Error('Authentication required');
+      },
+    });
+    const fetchStub = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchStub);
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(true);
+    expect(result.error).toBe('Failed to read OpenCode credential store');
+    // The dispatcher turns this marker into the shared upstream-auth
+    // classification (errorKind + shared error text) in providers/index.js.
+    expect(result.credentialReadFailure).toBe(true);
     expect(fetchStub).not.toHaveBeenCalled();
   });
 

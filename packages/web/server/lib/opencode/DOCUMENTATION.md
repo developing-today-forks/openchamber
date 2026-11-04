@@ -357,7 +357,11 @@ The runtime maintains active-session count incrementally from idempotent activit
 
 ### Why the session-activity snapshot is a versioned envelope and not the bare phase map
 
-`getSessionActivitySnapshot()` returns the external observability contract v1 (design #612, phase 1 - #524): `{ version: 1, serverTime, watcherReady, sessions }`, where each session entry keeps the frozen `{ type }` phase and adds `lastActivityAt` (the phase map's recorded `updatedAt`), `status` (session-state map), `model` (the observed `{ modelID, providerID }` pair remembered by the notifications runtime from the session's latest assistant message, or null), and `toolInFlight` (null while no in-process source tracks it). Unknowns are explicit nulls, never fabricated values, and `watcherReady` stays false until the watcher stream delivers its first payload in the process, so an empty read is distinguishable from a watcher that has not started. The bare `{ [sessionId]: { type } }` map was rejected for the envelope because external consumers cannot version, timestamp, or readiness-mark a bare map without colliding with session IDs.
+`getSessionActivitySnapshot()` returns the external observability contract v1 (design #612, phase 1 - #524): `{ version: 1, serverTime, watcherReady, sessions }`, where each session entry keeps the frozen `{ type }` phase and adds `lastActivityAt` (the phase map's recorded `updatedAt`), `status` (session-state map), `model` (the observed `{ modelID, providerID }` pair remembered by the notifications runtime from the session's latest assistant message, or null), `toolInFlight` (null while no in-process source tracks it), and `queue` (the session's queue binding `{ taskId, issueNumber, queue, lane }` from the binding source the launch side registered with the runtime, or null when no binding is known for the session). Unknowns are explicit nulls, never fabricated values, and `watcherReady` stays false until the watcher stream delivers its first payload in the process, so an empty read is distinguishable from a watcher that has not started. The bare `{ [sessionId]: { type } }` map was rejected for the envelope because external consumers cannot version, timestamp, or readiness-mark a bare map without colliding with session IDs.
+
+### Why the queue binding comes from a registered source and not a ledger read
+
+The binding of a session to its queue task lives in the repo-queue task ledger, which this server does not own and has no client for, and the snapshot builder is synchronous and in-process. So the runtime takes the binding from a getter the launch side registers (`getSessionQueueBinding`, wired in `index.js` through a ref, the same pattern as the model/provider read), and the projection normalizes whatever it returns through the four-key allowlist. The rejected alternative — the server querying the ledger itself — would couple every OpenChamber surface (desktop, VS Code, mobile hosts) to the fleet's queue database for one observability field. Until a source registers, entries report `queue: null`: no known binding is an explicit unknown under rule 2, never an inference from the process table.
 
 ## External observability contract v1 (design #612)
 
@@ -369,7 +373,7 @@ Two read-only endpoints expose this OpenChamber instance's state to external con
 2. **Explicit unknowns.** A value the server cannot verify is `null`, never a fabricated default — no invented `0`, empty string, or guessed status stands in for an unknown. Consumers must treat `null` as "unknown", not as "none".
 3. **Empty is not unknown.** An empty collection with its readiness marker set is a real answer ("nothing to report"); a not-ready read says so instead of looking empty. The markers are `watcherReady` for session activity and `status: "unknown"` per registry entry (below).
 4. **Allowlist projection, no auth material.** Responses are built by projecting source records onto a fixed key set, never by serializing the records. The managed state file and registry entries hold a managed password, an agent-tool token, a launch fingerprint, launch args, a binary path, and an owner pid; none of those keys — nor any password/token/secret/fingerprint/credential-shaped key — ever appears in either response, at any nesting depth.
-5. **Authoritative sources only.** Every field comes from the record that owns it: session phases and their timestamps from the watcher-fed activity map, session status from the session-state map, the model pair from the notifications runtime's observation of the session's latest assistant message, registry facts from the managed-process registry, and the hosting instance's own entry from lifecycle state. Nothing is inferred from the process table or from another field.
+5. **Authoritative sources only.** Every field comes from the record that owns it: session phases and their timestamps from the watcher-fed activity map, session status from the session-state map, the model pair from the notifications runtime's observation of the session's latest assistant message, registry facts from the managed-process registry, queue bindings from the binding source the launch side registered with the session runtime (the task ledger row bound to that session id), and the hosting instance's own entry from lifecycle state. Nothing is inferred from the process table or from another field.
 
 ### `GET /api/session-activity`
 
@@ -382,7 +386,7 @@ The envelope:
 | `watcherReady` | boolean | `false` until the OpenCode watcher stream delivers its first payload in this process. An empty `sessions` map with `watcherReady: false` means "the watcher has not started", not "no sessions exist"; with `watcherReady: true` it means no session has reported activity. |
 | `sessions` | object | Map of session ID to activity entry (below). Entries are pruned after 24 hours without a phase change. |
 
-Each entry in `sessions` has exactly these five keys:
+Each entry in `sessions` has exactly these six keys:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -391,6 +395,7 @@ Each entry in `sessions` has exactly these five keys:
 | `status` | string \| null | The session-state map's status for this session, or `null` when no state has been recorded for it. |
 | `model` | object \| null | The **observed** model pair `{ modelID, providerID }` (each a string or `null` when unreported) from the session's latest assistant message — observed, not the configured model — or `null` when no assistant message has been observed for the session. There is no separate `provider` key. |
 | `toolInFlight` | null | Pinned `null` in v1 today: no in-process source tracks a per-session in-flight tool, and rule 2 forbids fabricating one. The key exists so a future source can fill it without a version break. |
+| `queue` | object \| null | The session's queue binding, or `null` when no binding is known for the session (interactive/dispatcher sessions, or no source registered in this process). When bound, exactly `{ taskId, issueNumber, queue, lane }`: the repo-queue task id and issue number (numbers, or `null` when the source cannot verify them), the queue name and the lane id (strings, or `null` likewise). The source is the binding the launch side registered with the session runtime — the task ledger row bound to that session id at launch (code#1656 step 3) — projected through this allowlist, never inferred from the process table (rule 5) and never carrying auth material (rule 4). |
 
 This read is a pollable snapshot, not a stream guarantee: phases are the latest recorded state at `serverTime`, and a phase that starts and ends between two polls may never appear.
 

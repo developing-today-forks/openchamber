@@ -419,13 +419,14 @@ describe('session runtime', () => {
     const snapshot = runtime.getSessionActivitySnapshot();
     expect(snapshot.watcherReady).toBe(true);
     expect(snapshot.serverTime).toEqual(expect.any(Number));
-    expect(Object.keys(snapshot.sessions['session-1']).sort()).toEqual(['lastActivityAt', 'model', 'status', 'toolInFlight', 'type']);
+    expect(Object.keys(snapshot.sessions['session-1']).sort()).toEqual(['lastActivityAt', 'model', 'queue', 'status', 'toolInFlight', 'type']);
     expect(snapshot.sessions['session-1']).toEqual({
       type: 'busy',
       lastActivityAt: expect.any(Number),
       status: 'busy',
       model: { modelID: 'model-1', providerID: 'provider-1' },
       toolInFlight: null,
+      queue: null,
     });
 
     runtime.processOpenCodeSsePayload({

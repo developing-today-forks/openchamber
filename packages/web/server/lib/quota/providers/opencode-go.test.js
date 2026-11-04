@@ -18,6 +18,7 @@ import {
   parseConsoleGoUsage,
   parseOpenCodeGoUsage,
 } from './opencode-go.js';
+import { OpenCodeUpstreamAuthError } from '../../opencode/credential-auth-error.js';
 
 const apiKeyAuth = () => ({ 'opencode-go': { key: 'test-key' } });
 
@@ -570,5 +571,19 @@ describe('OpenCode Go quota provider — per-credential (per-workspace)', () => 
   it('reports an empty row as not configured', async () => {
     const result = await fetchQuotaForCredential({ id: 'cred_empty', integrationID: 'opencode', value: null });
     expect(result).toMatchObject({ ok: false, configured: false, error: 'Not configured' });
+  });
+});
+
+describe('OpenCode Go quota provider — shared upstream-auth provenance (#1129)', () => {
+  it('rethrows a marked shared credential-path rejection instead of returning it as its own error', async () => {
+    const marked = new OpenCodeUpstreamAuthError('Authentication required');
+    await expect(fetchQuota({ readAuth: async () => { throw marked; } })).rejects.toBe(marked);
+  });
+
+  it('still returns a plain result for an unmarked credential-read failure', async () => {
+    const result = await fetchQuota({ readAuth: async () => { throw new Error('store unavailable'); } });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe('store unavailable');
+    expect(result.errorKind).toBeUndefined();
   });
 });
