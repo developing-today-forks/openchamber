@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Readable, Writable } from 'node:stream';
 import path from 'path';
 import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import * as nativeFs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { execFileSync, spawn as nodeSpawn } from 'node:child_process';
@@ -10,6 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCommandTimeoutMs, createExecOutputMaxBytes, createGitReadCacheTtlMs, createUploadMaxBytes, registerFsRoutes } from './routes.js';
 import { createProjectDirectoryRuntime } from '../opencode/project-directory-runtime.js';
+
+// The fs/write identical-content check opens with O_NONBLOCK on POSIX so a
+// FIFO target cannot block the save (#1533); Windows keeps the 'r' string.
+const identicalCheckFlags = process.platform === 'win32' || fsConstants.O_NONBLOCK === undefined
+  ? 'r'
+  : fsConstants.O_RDONLY | fsConstants.O_NONBLOCK;
 
 const createRouteRegistry = () => {
   const routes = new Map();
@@ -554,7 +561,7 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'same' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', identicalCheckFlags);
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
   });
 
@@ -596,7 +603,7 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/link.txt', content: 'new' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/link.txt' });
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/target.txt', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/target.txt', identicalCheckFlags);
     const tmp = fsPromises.writeFile.mock.calls[0][0];
     expect(tmp).toMatch(/^\/repo\/target\.txt\.tmp-/);
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/target.txt');
@@ -643,11 +650,71 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', identicalCheckFlags);
     expect(read).not.toHaveBeenCalled();
     const tmp = fsPromises.writeFile.mock.calls[0][0];
     expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, 'new', 'utf8');
     expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+  });
+
+  it('opens the identical-content check with O_NONBLOCK and writes through on a non-regular target (#1533)', async () => {
+    const read = vi.fn(async () => ({ bytesRead: 0 }));
+    const open = vi.fn(async () => ({
+      stat: async () => ({ isFile: () => false, size: 0 }),
+      read,
+      close: vi.fn(async () => {}),
+    }));
+    const fsPromises = {
+      open,
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
+
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    expect(open).toHaveBeenCalledWith('/repo/file.txt', identicalCheckFlags);
+    if (process.platform !== 'win32') {
+      expect(identicalCheckFlags & fsConstants.O_NONBLOCK).toBeTruthy();
+    }
+    expect(read).not.toHaveBeenCalled();
+    const tmp = fsPromises.writeFile.mock.calls[0][0];
+    expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, 'new', 'utf8');
+    expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+  });
+
+  it.skipIf(process.platform === 'win32')('does not block saving over a FIFO with no writer (#1533)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'oc-fs-write-fifo-'));
+    try {
+      const fifoPath = path.join(dir, 'target.fifo');
+      execFileSync('mkfifo', [fifoPath]);
+      const { app, getRoute } = createRouteRegistry();
+      registerFsRoutes(app, {
+        os: { homedir: () => dir },
+        path,
+        fsPromises: nativeFs,
+        spawn: vi.fn(),
+        crypto: { randomUUID: () => 'job-0' },
+        normalizeDirectoryPath: (p) => p,
+        resolveProjectDirectory: async () => ({ directory: dir }),
+        buildAugmentedPath: () => '/usr/bin',
+        resolveGitBinaryForSpawn: () => 'git',
+        openchamberUserConfigRoot: dir,
+      });
+      const handler = getRoute('POST', '/api/fs/write');
+      const res = await Promise.race([
+        callWrite(handler, { path: fifoPath, content: 'new' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('save blocked on FIFO open')), 3000)),
+      ]);
+      expect(res.body).toEqual({ success: true, path: fifoPath });
+      // The atomic rename replaces the FIFO with a regular file.
+      await expect(nativeFs.readFile(fifoPath, 'utf8')).resolves.toBe('new');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('still short-circuits an identical small save without rewriting (#1127)', async () => {
@@ -663,7 +730,7 @@ describe('fs write', () => {
     const res = await callWrite(handler, { path: '/repo/file.txt', content: 'same' });
 
     expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/file.txt', identicalCheckFlags);
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
