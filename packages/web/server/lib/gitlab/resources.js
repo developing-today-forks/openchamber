@@ -1097,13 +1097,19 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       if (!Array.isArray(diffs)) throw new Error('GitLab returned an invalid merge request diff list');
       const files = diffs.filter((diff) => isPlainObject(diff) && (text(diff.new_path) || text(diff.old_path)));
       if (files.length !== diffs.length) throw new Error('GitLab returned an invalid merge request diff');
-      const pieces = files.map(gitPatchForDiff);
+      // Count while converting: the rejection fires as soon as the running
+      // total crosses the cap, so the pieces past that point are never built.
+      // Mapping every file to its piece first would materialize the whole
+      // patch before the cap could judge it.
+      const pieces = [];
       let patchBytes = 0;
-      for (const piece of pieces) {
+      for (const file of files) {
+        const piece = gitPatchForDiff(file);
         patchBytes += Buffer.byteLength(piece);
         if (patchBytes > MAX_PATCH_BYTES) {
           throw Object.assign(new Error('This merge request diff is too large to show'), { status: 413, code: 'patch-too-large' });
         }
+        pieces.push(piece);
       }
       return {
         patch: pieces.join(''),

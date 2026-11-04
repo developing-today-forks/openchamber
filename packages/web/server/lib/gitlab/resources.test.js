@@ -918,6 +918,22 @@ describe('GitLab merge request comparison reads', () => {
       .rejects.toMatchObject({ code: 'patch-too-large', status: 413 });
   });
 
+  it('rejects at the cap without building the pieces past it (#1456)', async () => {
+    const hunk = '@@ -1 +1 @@\n+' + 'x'.repeat(30 * 1024 * 1024) + '\n';
+    const big = { old_path: 'a.ts', new_path: 'a.ts', a_mode: '100644', b_mode: '100644', diff: hunk };
+    // The third file's diff throws if it is read: counting must reject on the
+    // second file (running total past 50 MiB) before this piece is ever built.
+    const poisoned = { old_path: 'b.ts', new_path: 'b.ts', a_mode: '100644', b_mode: '100644' };
+    Object.defineProperty(poisoned, 'diff', {
+      get() { throw new Error('the third diff must not be read'); },
+    });
+    const { service } = setup({
+      MergeRequests: { ...setup().client.MergeRequests, allDiffs: list([big, big, poisoned]) },
+    });
+    await expect(service.changeRequestPatch('/repo', 5, { project: { owner: 'team', name: 'repo' }, remote: 'origin' }))
+      .rejects.toMatchObject({ code: 'patch-too-large', status: 413 });
+  });
+
   it('reads both sides of a file at the merge base and the head', async () => {
     const showRaw = vi.fn(async (_project, path, ref) => `${path}@${ref.slice(0, 1)}`);
     const { service } = setup({
