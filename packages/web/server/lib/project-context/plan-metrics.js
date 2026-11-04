@@ -121,13 +121,28 @@ const defaultLoadCatalog = async () => (await getModelsMetadata()).metadata;
  * state, not an error. The catalog is fetched only for a session whose
  * record carries tokens but no cost figure.
  */
+// Metrics are a display badge — never stored, and a failed read already
+// degrades to no badge — so serving them slightly stale is acceptable.
+// A 30 s TTL collapses the per-context-read fan-out (change events,
+// focus reloads, multi-client broadcasts) into one fetch per session
+// per window while a running session's badge is never more than 30 s
+// behind. Failures are not cached, so a transient outage does not hide
+// a session's metrics for the whole TTL.
+const PLAN_METRICS_CACHE_TTL_MS = 30_000;
+const PLAN_METRICS_CACHE_MAX_ENTRIES = 512;
+
 export const createPlanMetricsReader = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
   fetchImpl = fetch,
   timeoutMs = 10_000,
   loadCatalog = defaultLoadCatalog,
+  cacheTtlMs = PLAN_METRICS_CACHE_TTL_MS,
+  now = Date.now,
 }) => {
+  const cache = new Map();
+  const inFlight = new Map();
+
   const readSession = async (sessionId) => {
     const response = await fetchImpl(buildOpenCodeUrl(`/api/session/${encodeURIComponent(sessionId)}`, ''), {
       method: 'GET',
@@ -139,14 +154,36 @@ export const createPlanMetricsReader = ({
     return isRecord(record) ? record : null;
   };
 
-  return async (sessionId) => {
-    const id = asNonEmptyString(sessionId);
-    if (!id) return null;
+  const readFresh = async (id) => {
     const session = await readSession(id).catch(() => null);
     if (!session) return null;
     const metrics = planMetricsOfSession(session, null);
     if (!metrics || metrics.costUsd !== null) return metrics;
     const catalog = await loadCatalog().catch(() => null);
     return planMetricsOfSession(session, catalog) ?? metrics;
+  };
+
+  return async (sessionId) => {
+    const id = asNonEmptyString(sessionId);
+    if (!id) return null;
+    const hit = cache.get(id);
+    if (hit && now() - hit.at < cacheTtlMs) return hit.metrics;
+    const pending = inFlight.get(id);
+    if (pending) return pending;
+    const promise = readFresh(id)
+      .then((metrics) => {
+        if (metrics) {
+          if (cache.size >= PLAN_METRICS_CACHE_MAX_ENTRIES) {
+            cache.delete(cache.keys().next().value);
+          }
+          cache.set(id, { at: now(), metrics });
+        }
+        return metrics;
+      })
+      .finally(() => {
+        inFlight.delete(id);
+      });
+    inFlight.set(id, promise);
+    return promise;
   };
 };

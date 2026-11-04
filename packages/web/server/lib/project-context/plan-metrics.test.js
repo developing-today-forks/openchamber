@@ -88,6 +88,51 @@ describe('createPlanMetricsReader', () => {
     expect((await reader('ses_1'))?.costSource).toBe('catalog');
   });
 
+  test('caches within the TTL, dedups concurrent reads, refetches after expiry (#1476)', async () => {
+    let fetches = 0;
+    let now = 1_000_000;
+    const reader = createPlanMetricsReader({
+      buildOpenCodeUrl: (fetchPath) => `http://opencode.test${fetchPath}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      fetchImpl: async () => {
+        fetches += 1;
+        return new Response(JSON.stringify({ data: { ...SESSION, cost: 1.5 } }), { status: 200 });
+      },
+      loadCatalog: async () => CATALOG,
+      cacheTtlMs: 30_000,
+      now: () => now,
+    });
+
+    expect((await reader('ses_1'))?.costUsd).toBe(1.5);
+    expect(await reader('ses_1')).not.toBeNull();
+    expect(fetches).toBe(1);
+
+    await Promise.all([reader('ses_1'), reader('ses_1'), reader('ses_1')]);
+    expect(fetches).toBe(1);
+
+    now += 30_000;
+    const [first, second] = await Promise.all([reader('ses_1'), reader('ses_1')]);
+    expect(first).toEqual(second);
+    expect(fetches).toBe(2);
+  });
+
+  test('does not cache a failed read (#1476)', async () => {
+    let fetches = 0;
+    const reader = createPlanMetricsReader({
+      buildOpenCodeUrl: (fetchPath) => `http://opencode.test${fetchPath}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      fetchImpl: async () => {
+        fetches += 1;
+        if (fetches === 1) throw new Error('unreachable');
+        return new Response(JSON.stringify({ data: { ...SESSION, cost: 2 } }), { status: 200 });
+      },
+      loadCatalog: async () => CATALOG,
+    });
+    expect(await reader('ses_1')).toBeNull();
+    expect((await reader('ses_1'))?.costUsd).toBe(2);
+    expect(fetches).toBe(2);
+  });
+
   test('a missing session and a failed read both give no metrics', async () => {
     expect(await readerWith(null, async () => CATALOG)('ses_1')).toBeNull();
     const failing = createPlanMetricsReader({
