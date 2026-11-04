@@ -668,6 +668,26 @@ describe('fs write', () => {
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
+  it('falls through to the write when the existing file cannot be opened for reading (#1534)', async () => {
+    const openError = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const fsPromises = {
+      open: vi.fn(async () => { throw openError; }),
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    const tmp = fsPromises.writeFile.mock.calls[0][0];
+    expect(fsPromises.writeFile).toHaveBeenCalledWith(tmp, 'new', 'utf8');
+    expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+  });
+
   it('writes an over-cap existing file via the atomic path without reading it whole (#1127)', async () => {
     const content = 'x'.repeat(16 * 1024 * 1024 + 1);
     const open = vi.fn(async () => { throw new Error('must not open an over-cap compare'); });
