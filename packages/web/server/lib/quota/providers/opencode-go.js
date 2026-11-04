@@ -1,5 +1,6 @@
 import { readQuotaJson } from '../utils/response-body.js';
 import { readOpenCodeCredentials } from '../../opencode/auth.js';
+import { isOpenCodeUpstreamAuthRejection } from '../../opencode/credential-auth-error.js';
 import { deleteLegacyOpenCodeGoCredential } from '../credentials/store.js';
 import {
   asNonEmptyString,
@@ -278,6 +279,10 @@ export const fetchQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl
     const windows = await fetchOpenCodeGoUsage(apiKey.key, fetchImpl, { consoleKey: apiKey.consoleKey });
     return buildResult({ providerId, providerName, ok: true, configured: true, usage: { windows } });
   } catch (error) {
+    // A marked shared credential-path rejection must reach the dispatcher
+    // still marked (#1129): converting it to this provider's own plain
+    // result would strip the origin the dispatcher classifies by.
+    if (isOpenCodeUpstreamAuthRejection(error)) throw error;
     return buildResult({ providerId, providerName, ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' });
   }
 };
