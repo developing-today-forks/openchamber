@@ -303,7 +303,6 @@ export function createDispatchResultsRuntime({
   // rejects — its catch warns and keeps later writes and flush() usable,
   // which is the contract persist() below has always offered.
   const persistWrite = () => {
-    const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
     const write = writePromise.then(async () => {
       // Preserve before replacing, fail-closed (the primitive's
       // contract): the load gate has normally judged the file already,
@@ -318,6 +317,14 @@ export function createDispatchResultsRuntime({
       if (preservation.preserved) {
         console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
       }
+      // The snapshot is taken here, when the write runs — not when it was
+      // queued. A registration whose queued write fails rolls its entry
+      // back before the next write in the chain runs, and a payload
+      // captured at queue time would still carry that rejected entry:
+      // the next write to succeed would put it back on disk, and a
+      // restart would restore a registration its caller was told had
+      // been refused (#1503, Codex review of #1511).
+      const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
       await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
     });
     writePromise = write.catch((error) => {

@@ -416,6 +416,32 @@ describe('dispatch results runtime', () => {
     expect(runtime.pending()).toEqual([]);
   });
 
+  it('does not resurrect a rolled-back registration through a queued snapshot', async () => {
+    const dataDir = await makeDataDir();
+    let writes = 0;
+    const fsPromises = {
+      ...fs,
+      writeFile: async (...args) => {
+        writes += 1;
+        if (writes === 1) throw new Error('no space left on device');
+        return fs.writeFile(...args);
+      },
+    };
+    const { runtime } = await createRuntime({ dataDir, fsPromises });
+    // Two registrations overlap: the first write fails transiently while
+    // the second registration is already queued behind it. The first
+    // caller is refused and its entry rolled back; the queued write must
+    // not carry the rejected entry back onto disk (#1503).
+    const refused = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_first', dispatchedAt: 10 });
+    const accepted = runtime.register({ parentSessionId: 'ses_parent', sessionId: 'ses_second', dispatchedAt: 11 });
+    await expect(refused).rejects.toThrow('no space left on device');
+    await accepted;
+    await runtime.flush();
+    expect(runtime.pending().map((entry) => entry.sessionId)).toEqual(['ses_second']);
+    const stored = JSON.parse(await fs.readFile(path.join(dataDir, 'dispatch-results.json'), 'utf8'));
+    expect(stored.entries.map((entry) => entry.sessionId)).toEqual(['ses_second']);
+  });
+
   it('refuses to register an entry whose write is refused', async () => {
     const dataDir = await makeDataDir();
     let failWrites = true;
