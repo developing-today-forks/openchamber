@@ -1813,6 +1813,10 @@ export type GitHubReferenceDetail = {
   comments: GitHubReferenceComment[];
   /** How many conversation comments the item has in all. */
   commentTotal: number;
+  /** The item's labels (at most six); GitHub PR detail only, absent elsewhere. */
+  labels?: { name: string; color?: string }[];
+  /** How many labels the item has in all; `labels` holds at most six (#1427). */
+  labelTotal?: number;
   /** Null for an issue. */
   pull: {
     reviewDecision: 'approved' | 'changes_requested' | 'review_required' | null;
