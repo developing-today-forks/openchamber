@@ -17,6 +17,10 @@ import { getModelsMetadata } from '../opencode/models-metadata.js';
 // One session record is small; the cap matches the session-activity probe's
 // page cap only in spirit — a single record never approaches it.
 const SESSION_RESPONSE_MAX_BYTES = 1024 * 1024;
+// Project context reloads on edits and focus changes. A 30-second window keeps
+// badge totals responsive without repeating the same session read per client.
+const PLAN_METRICS_CACHE_TTL_MS = 30_000;
+const PLAN_METRICS_CACHE_MAX_ENTRIES = 500;
 
 // Number.isFinite does not coerce, so a non-number fails it without a typeof.
 const nonNegativeNumber = (value) =>
@@ -127,7 +131,11 @@ export const createPlanMetricsReader = ({
   fetchImpl = fetch,
   timeoutMs = 10_000,
   loadCatalog = defaultLoadCatalog,
+  now = Date.now,
 }) => {
+  const metricsBySession = new Map();
+  const requestsBySession = new Map();
+
   const readSession = async (sessionId) => {
     const response = await fetchImpl(buildOpenCodeUrl(`/api/session/${encodeURIComponent(sessionId)}`, ''), {
       method: 'GET',
@@ -139,14 +147,62 @@ export const createPlanMetricsReader = ({
     return isRecord(record) ? record : null;
   };
 
+  const cacheMetrics = (sessionId, metrics) => {
+    const currentTime = now();
+    for (const [cachedSessionId, cached] of metricsBySession) {
+      if (cached.expiresAt > currentTime) break;
+      metricsBySession.delete(cachedSessionId);
+    }
+    while (metricsBySession.size >= PLAN_METRICS_CACHE_MAX_ENTRIES) {
+      const oldestSessionId = metricsBySession.keys().next().value;
+      if (oldestSessionId === undefined) break;
+      metricsBySession.delete(oldestSessionId);
+    }
+    metricsBySession.set(sessionId, {
+      metrics,
+      expiresAt: currentTime + PLAN_METRICS_CACHE_TTL_MS,
+    });
+  };
+
   return async (sessionId) => {
     const id = asNonEmptyString(sessionId);
     if (!id) return null;
-    const session = await readSession(id).catch(() => null);
-    if (!session) return null;
-    const metrics = planMetricsOfSession(session, null);
-    if (!metrics || metrics.costUsd !== null) return metrics;
-    const catalog = await loadCatalog().catch(() => null);
-    return planMetricsOfSession(session, catalog) ?? metrics;
+
+    const cached = metricsBySession.get(id);
+    if (cached && cached.expiresAt > now()) return cached.metrics;
+    if (cached) metricsBySession.delete(id);
+
+    const pending = requestsBySession.get(id);
+    if (pending) return pending;
+
+    const request = (async () => {
+      try {
+        const session = await readSession(id);
+        if (!session) return null;
+
+        const directMetrics = planMetricsOfSession(session, null);
+        if (!directMetrics) return null;
+        if (directMetrics.costUsd !== null) {
+          cacheMetrics(id, directMetrics);
+          return directMetrics;
+        }
+
+        let catalog;
+        try {
+          catalog = await loadCatalog();
+        } catch {
+          return directMetrics;
+        }
+        const metrics = planMetricsOfSession(session, catalog) ?? directMetrics;
+        if (isRecord(catalog)) cacheMetrics(id, metrics);
+        return metrics;
+      } catch {
+        return null;
+      } finally {
+        if (requestsBySession.get(id) === request) requestsBySession.delete(id);
+      }
+    })();
+    requestsBySession.set(id, request);
+    return request;
   };
 };
