@@ -5,6 +5,12 @@ text-to-speech. The client streams 16 kHz mono PCM16 chunks (base64) over a
 WebSocket while the user speaks; the server buffers them and transcribes each
 segment exactly once, when the segment is committed.
 
+Inbound frames are capped at `DICTATION_WS_MAX_PAYLOAD_BYTES` (512 KiB),
+passed as `maxPayload` to the WS server and checked again by the connection's
+`message` handler: Node's `ws` enforces `maxPayload` while parsing, but Bun
+may not, so the handler closes an over-cap frame with 1009 before parsing it.
+The handler cannot prevent the first over-cap allocation under Bun.
+
 Transcription is deliberately not incremental. Parakeet is an offline model
 trained on whole utterances, so re-decoding the growing buffer to animate a
 live transcript costs O(n^2) work for a result the final decode replaces. The
