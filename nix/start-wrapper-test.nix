@@ -93,13 +93,22 @@ pkgs.runCommand "openchamber-start-wrapper-guard-test" { } ''
     exit 1
   }
 
-  # A fake leftover server on the wrapper's port: argv[0] carries the
-  # guard's pattern and /proc separates argv entries with real NULs,
-  # exactly what the guard's tr exists to translate. The port reaches
-  # the pattern through $PORT so this script's own cmdline never
-  # matches the pattern it tests.
+  # A fake leftover server on the wrapper's port, launched with the
+  # guard's pattern split across separate argv entries
+  # (openchamber / serve / --port / 3999): /proc separates the entries
+  # with real NULs, so the translated cmdline can only contain the
+  # space-joined pattern when the wrapper's tr really translates NULs
+  # — with the doubled backslash both this fixture's spaces and the
+  # match disappear. The port reaches the pattern through $PORT so
+  # this script's own cmdline never matches the pattern it tests.
   PORT=3999
-  bash -c "exec -a 'openchamber serve --port $PORT' bash -c 'sleep 300 & wait'" &
+  fakebin="$(mktemp -d)"
+  cat > "$fakebin/openchamber" <<'FAKE_EOF'
+  #!/bin/sh
+  sleep 300 & wait
+  FAKE_EOF
+  chmod +x "$fakebin/openchamber"
+  "$fakebin/openchamber" serve --port "$PORT" &
   leftover=$!
   sleep 1
   [ -d "/proc/$leftover" ] || {
