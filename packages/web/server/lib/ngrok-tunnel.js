@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'child_process';
+import { StringDecoder } from 'string_decoder';
 import {
   createExecutableSearchEnv,
   resolveExecutableLaunchTarget,
@@ -26,6 +27,43 @@ const NGROK_POLL_INTERVAL_MS = 250;
 // fast loopback source on every poll.
 const NGROK_TUNNELS_RESPONSE_MAX_BYTES = 64 * 1024;
 const NGROK_PUBLIC_URL_REGEX = /https:\/\/[^\s"']+/i;
+// ngrok writes its tunnel URL and log lines with no regard for pipe chunk
+// boundaries, so output must be matched over accumulated complete lines,
+// never per chunk: a URL fragment at the end of a chunk (e.g. one ending
+// `https://abcd1234.ngrok`) would otherwise be accepted as the tunnel URL
+// and settle startup with a truncated address. The pending line is
+// bounded: once it grows past this many characters only the newest tail
+// is kept, which is all a URL or a log line can occupy.
+const NGROK_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024;
+
+// Accumulates one stream's output across chunk boundaries. `push` returns
+// the decoded text of this chunk and the lines completed by it (a trailing
+// partial line is held for the next chunk); `flush` releases the held
+// partial line when the stream ends, preserving the previous behaviour of
+// seeing a final unterminated line.
+function createBoundedOutputAccumulator() {
+  const decoder = new StringDecoder('utf8');
+  let pendingLine = '';
+  return {
+    push(chunk) {
+      const decoded = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+      pendingLine += decoded;
+      const lines = pendingLine.split(/\r?\n/);
+      pendingLine = lines.pop() ?? '';
+      if (pendingLine.length > NGROK_OUTPUT_BUFFER_MAX_CHARS) {
+        pendingLine = pendingLine.slice(-NGROK_OUTPUT_BUFFER_MAX_CHARS);
+      }
+      return { decoded, lines };
+    },
+    flush() {
+      const tail = decoder.end();
+      const line = pendingLine + tail;
+      pendingLine = '';
+      return line ? [line] : [];
+    },
+  };
+}
+
 const NGROK_AUTHTOKEN_HELP = 'Run: ngrok config add-authtoken <your-ngrok-token>';
 const getNgrokInstallInfo = () => getTunnelDependencyInstallInfo(TUNNEL_PROVIDER_NGROK);
 
@@ -347,14 +385,17 @@ export async function startNgrokQuickTunnel({ port }) {
   let publicUrl = null;
   const recentOutput = [];
 
-  const captureOutput = (chunk) => {
-    const text = chunk.toString('utf8');
-    const parsedUrl = extractNgrokPublicUrlFromText(text);
+  // Extraction and diagnostics run over complete lines only: a chunk that
+  // ends mid-URL or mid-log-line contributes nothing until the rest of the
+  // line arrives, so a fragment can never be captured as the tunnel URL or
+  // stored as a diagnostics line.
+  const captureLines = (lines) => {
+    const parsedUrl = extractNgrokPublicUrlFromText(lines.join('\n'));
     if (parsedUrl) {
       publicUrl = parsedUrl;
     }
 
-    for (const line of text.split(/\r?\n/)) {
+    for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) {
         continue;
@@ -364,16 +405,25 @@ export async function startNgrokQuickTunnel({ port }) {
         recentOutput.shift();
       }
     }
-    return text;
   };
 
+  const stdoutAccumulator = createBoundedOutputAccumulator();
+  const stderrAccumulator = createBoundedOutputAccumulator();
+
   child.stdout.on('data', (chunk) => {
-    captureOutput(chunk);
+    captureLines(stdoutAccumulator.push(chunk).lines);
+  });
+  child.stdout.on('end', () => {
+    captureLines(stdoutAccumulator.flush());
   });
 
   child.stderr.on('data', (chunk) => {
-    const text = captureOutput(chunk);
-    process.stderr.write(text);
+    const { decoded, lines } = stderrAccumulator.push(chunk);
+    captureLines(lines);
+    process.stderr.write(decoded);
+  });
+  child.stderr.on('end', () => {
+    captureLines(stderrAccumulator.flush());
   });
 
   await new Promise((resolve, reject) => {
