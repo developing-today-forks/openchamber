@@ -15,8 +15,6 @@ name: pr checks
 on:
   # Merged code gets the same verification on main itself: without this, a
   # merge that breaks main is only discovered by the next PR's run.
-  push:
-    branches: [main]
   schedule:
     # Nightly backstop for the main tier: the full suite (including the
     # tests and build jobs that no longer run on PRs) re-runs even on

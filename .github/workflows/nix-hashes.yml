@@ -7,11 +7,6 @@
 name: nix-hashes
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - bun.lock
-      - packages/electron/package.json
   workflow_dispatch:
 
 permissions: {}
