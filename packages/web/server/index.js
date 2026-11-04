@@ -1837,6 +1837,7 @@ const openChamberSessionService = createOpenChamberSessionService({
   // OpenCode 2.x has no archive route, so the state is OpenChamber's own and
   // lives beside the instance it describes.
   dataDir: OPENCHAMBER_DATA_DIR,
+  enableIdleSessionReaper: true,
   sessionMetadataStore,
   persistSessionMetadata: persistSessionMetadataPatch,
   updateSessionMetadata: updateSessionMetadataWith,
