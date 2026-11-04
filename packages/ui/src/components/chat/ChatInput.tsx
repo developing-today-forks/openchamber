@@ -582,7 +582,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingBtwComposerRequest = useInputStore((s) => s.pendingBtwComposerRequest);
     const pendingPresetSubmit = useInputStore((s) => s.pendingPresetSubmit);
     const pendingDraftSubmit = useInputStore((s) => s.pendingDraftSubmit);
-    const pendingSessionSubmit = useInputStore((s) => s.pendingSessionSubmit);
+    const pendingSessionSubmits = useInputStore((s) => s.pendingSessionSubmits);
     const setPendingInputText = useInputStore((s) => s.setPendingInputText);
     const pendingGuestIssue = useInputStore((s) => s.pendingGuestIssue);
     const consumePendingGuestIssue = useInputStore((s) => s.consumePendingGuestIssue);
@@ -2616,7 +2616,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     // text in the box the request waits, and with an empty box the mode is
     // switched back to normal first and the effect runs again to send.
     React.useEffect(() => {
-        if (pendingSessionSubmit == null || isBtwActive) return;
+        if (pendingSessionSubmits.length === 0 || isBtwActive) return;
         if (inputMode === 'shell') {
             if (message.trim().length > 0) return;
             setInputMode('normal');
@@ -2634,7 +2634,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         setMessage(text);
         messageRef.current = text;
         void handleSubmitRef.current({ presetText: text });
-    }, [currentSessionId, getCurrentInputSnapshot, inputMode, isBtwActive, mailboxTarget, message, pendingSessionSubmit, t]);
+    }, [currentSessionId, getCurrentInputSnapshot, inputMode, isBtwActive, mailboxTarget, message, pendingSessionSubmits, t]);
 
     const handleKeyDown = (e: KeyboardEvent) => {
         // Early return during IME composition to prevent interference with autocomplete.

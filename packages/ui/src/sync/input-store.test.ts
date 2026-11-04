@@ -633,7 +633,7 @@ describe("input-store draft submit", () => {
 
 describe("input-store session submit", () => {
   beforeEach(() => {
-    useInputStore.setState({ pendingSessionSubmit: null })
+    useInputStore.setState({ pendingSessionSubmits: [] })
   })
 
   test("the composer it names takes the text once while it shows that session", () => {
@@ -647,7 +647,7 @@ describe("input-store session submit", () => {
     useInputStore.getState().requestSessionSubmit({ target: "ses_pinned", sessionId: "ses_pinned", text: "My answers" })
 
     expect(useInputStore.getState().consumePendingSessionSubmit(null, "ses_pinned")).toBeNull()
-    expect(useInputStore.getState().pendingSessionSubmit).not.toBeNull()
+    expect(useInputStore.getState().pendingSessionSubmits).toHaveLength(1)
     expect(useInputStore.getState().consumePendingSessionSubmit("ses_pinned", "ses_pinned")).toBe("My answers")
   })
 
@@ -655,6 +655,23 @@ describe("input-store session submit", () => {
     useInputStore.getState().requestSessionSubmit({ target: null, sessionId: "ses_a", text: "My answers" })
 
     expect(useInputStore.getState().consumePendingSessionSubmit(null, "ses_b")).toBeNull()
-    expect(useInputStore.getState().pendingSessionSubmit).toBeNull()
+    expect(useInputStore.getState().pendingSessionSubmits).toEqual([])
+  })
+})
+
+describe("input-store session submit queue", () => {
+  beforeEach(() => {
+    useInputStore.setState({ pendingSessionSubmits: [] })
+  })
+
+  test("a second submission waits behind the first instead of replacing it", () => {
+    useInputStore.getState().requestSessionSubmit({ target: null, sessionId: "ses_a", text: "First answers" })
+    useInputStore.getState().requestSessionSubmit({ target: null, sessionId: "ses_a", text: "Second answers" })
+    useInputStore.getState().requestSessionSubmit({ target: "ses_pinned", sessionId: "ses_pinned", text: "Pinned answers" })
+
+    expect(useInputStore.getState().consumePendingSessionSubmit(null, "ses_a")).toBe("First answers")
+    expect(useInputStore.getState().consumePendingSessionSubmit(null, "ses_a")).toBe("Second answers")
+    expect(useInputStore.getState().consumePendingSessionSubmit(null, "ses_a")).toBeNull()
+    expect(useInputStore.getState().consumePendingSessionSubmit("ses_pinned", "ses_pinned")).toBe("Pinned answers")
   })
 })

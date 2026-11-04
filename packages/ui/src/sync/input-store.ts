@@ -168,13 +168,15 @@ export type InputState = {
    */
   pendingDraftSubmit: { draftId: number; text: string } | null
   /**
-   * Text to send in one chat's session, asked for from its transcript (a
-   * question answered again from its tool row). `target` names the composer
-   * like `pendingInputTarget`: null for the main chat, the session id for a
-   * chat pinned in the side panel. That composer sends it only while it shows
-   * `sessionId`, and drops it otherwise; other composers leave it alone.
+   * Texts to send in one chat's session, asked for from its transcript (a
+   * question answered again from its tool row), queued in request order: a
+   * second answer never replaces one still waiting to be sent. `target`
+   * names the composer like `pendingInputTarget`: null for the main chat,
+   * the session id for a chat pinned in the side panel. That composer sends
+   * each queued text only while it shows `sessionId`, and drops it
+   * otherwise; other composers leave it alone.
    */
-  pendingSessionSubmit: { target: string | null; sessionId: string; text: string } | null
+  pendingSessionSubmits: { target: string | null; sessionId: string; text: string }[]
   /** Guest rail/dialog attach. ChatInput consumes this into the composer chip. */
   pendingGuestIssue: AttachIssueRequest | null
   pendingBtwComposerRequest: PendingBtwComposerRequest | null
@@ -195,7 +197,7 @@ export type InputState = {
   /** Takes the pending text when it belongs to this draft; any other pending request is dropped. */
   consumePendingDraftSubmit: (draftId: number | null) => string | null
   requestSessionSubmit: (request: { target: string | null; sessionId: string; text: string }) => void
-  /** Takes the pending text when it is for this composer and session; a request for this composer and another session is dropped. */
+  /** Takes the earliest queued text for this composer; a queued request for this composer and another session is dropped. */
   consumePendingSessionSubmit: (target: string | null, sessionId: string | null) => string | null
   setPendingGuestIssue: (issue: AttachIssueRequest | null) => void
   consumePendingGuestIssue: () => AttachIssueRequest | null
@@ -230,7 +232,7 @@ export const useInputStore = create<InputState>()((set, get) => ({
   pinnedSyntheticParts: new Map(),
   pendingPresetSubmit: null,
   pendingDraftSubmit: null,
-  pendingSessionSubmit: null,
+  pendingSessionSubmits: [],
   pendingGuestIssue: null,
   pendingBtwComposerRequest: null,
   attachedFiles: [],
@@ -299,13 +301,16 @@ export const useInputStore = create<InputState>()((set, get) => ({
     return pendingDraftSubmit.draftId === draftId ? pendingDraftSubmit.text : null
   },
 
-  requestSessionSubmit: (request) => set({ pendingSessionSubmit: request }),
+  requestSessionSubmit: (request) =>
+    set({ pendingSessionSubmits: [...get().pendingSessionSubmits, request] }),
 
   consumePendingSessionSubmit: (target, sessionId) => {
-    const { pendingSessionSubmit } = get()
-    if (pendingSessionSubmit === null || pendingSessionSubmit.target !== target) return null
-    set({ pendingSessionSubmit: null })
-    return pendingSessionSubmit.sessionId === sessionId ? pendingSessionSubmit.text : null
+    const { pendingSessionSubmits } = get()
+    const index = pendingSessionSubmits.findIndex((pending) => pending.target === target)
+    if (index === -1) return null
+    const pending = pendingSessionSubmits[index]
+    set({ pendingSessionSubmits: pendingSessionSubmits.filter((_, i) => i !== index) })
+    return pending.sessionId === sessionId ? pending.text : null
   },
 
   setPendingGuestIssue: (issue) => set({ pendingGuestIssue: issue }),
