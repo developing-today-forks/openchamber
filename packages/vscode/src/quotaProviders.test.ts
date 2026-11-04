@@ -867,6 +867,29 @@ describe('Codex quota provider (VS Code parity)', () => {
     assert.equal(expired.error, 'Session expired \u2014 please re-authenticate with OpenAI');
   });
 
+  test('falls back to an instance credential when the bare integration holds none', async () => {
+    const configPath = path.join(os.tmpdir(), `openchamber-codex-instance-${process.pid}.json`);
+    fs.writeFileSync(configPath, JSON.stringify({
+      provider: { 'openai.main': { instanceOf: 'openai', name: 'OpenAI Main (drewrypope)' } },
+    }));
+    process.env.OPENCODE_CONFIG = configPath;
+    configureOpenCodeCredentials({ list: async () => [oauth('openai.main')] });
+    try {
+      globalThis.fetch = async () => Response.json({
+        rate_limit: { primary_window: { used_percent: 8, limit_window_seconds: 604800, reset_at: 1793513510 } },
+      });
+
+      const result = await fetchQuotaForProvider('codex');
+
+      assert.equal(result.ok, true);
+      assert.equal(result.usage?.windows.weekly.usedPercent, 8);
+    } finally {
+      delete process.env.OPENCODE_CONFIG;
+      fs.rmSync(configPath, { force: true });
+      configureOpenCodeCredentials({ list: async () => baseCredentialList() });
+    }
+  });
+
   test('omits the balance window when credits are absent', async () => {
     globalThis.fetch = async () => Response.json({ rate_limit: null });
 

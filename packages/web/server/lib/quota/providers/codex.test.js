@@ -1,11 +1,35 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// The instance fallback reads the merged config layers. Point the global
+// config directory at a path that does not exist so the machine's own
+// opencode config can never leak into these assertions; the custom layer
+// is resolved from OPENCODE_CONFIG at call time.
+vi.hoisted(() => {
+  process.env.OPENCODE_CONFIG_DIR = 'codex-test-without-config-dir';
+});
 
 const readAuth = async () => ({ openai: { access: 'test-token' } });
 
 import { fetchQuota } from './codex.js';
 
+const createdConfigPaths = [];
+
+const setMergedConfig = (config) => {
+  const filePath = path.join(os.tmpdir(), `codex-config-${process.pid}-${Math.random().toString(16).slice(2)}`);
+  fs.writeFileSync(filePath, JSON.stringify(config));
+  vi.stubEnv('OPENCODE_CONFIG', filePath);
+  createdConfigPaths.push(filePath);
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  for (const filePath of createdConfigPaths.splice(0)) {
+    fs.rmSync(filePath, { force: true });
+  }
 });
 
 const mockUsage = (rateLimit) => {
@@ -178,5 +202,62 @@ describe('Codex request deadline', () => {
     expect(result.usage).toBeNull();
     expect(result.error).toBe('Request timed out');
     expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe('Codex quota instance fallback', () => {
+  const instanceConfig = {
+    provider: {
+      'openai.main': { instanceOf: 'openai', name: 'OpenAI Main (drewrypope)' },
+      'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
+    },
+  };
+
+  const mockWhamByToken = () => {
+    vi.stubGlobal('fetch', vi.fn(async (_url, init = {}) => ({
+      ok: true,
+      json: async () => ({
+        email: (init.headers?.Authorization ?? '').endsWith('main-token') ? 'drewrypope@gmail.com' : 'popesdrew@gmail.com',
+        rate_limit: {
+          primary_window: { used_percent: 8, limit_window_seconds: 604800, reset_at: 1793513510 },
+          secondary_window: null,
+        },
+      }),
+    })));
+  };
+
+  it('fetches with the first usable instance credential when the bare integration is empty', async () => {
+    setMergedConfig(instanceConfig);
+    mockWhamByToken();
+    const result = await fetchQuota({
+      readAuth: async () => ({
+        'openai.main': { access: 'main-token', accountId: 'acc_main' },
+        'openai.alternate': { access: 'alt-token', accountId: 'acc_alt' },
+      }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.accountLabel).toBe('drewrypope@gmail.com');
+    expect(result.usage.windows.weekly.usedPercent).toBe(8);
+  });
+
+  it('prefers the bare integration entry over instance credentials', async () => {
+    setMergedConfig(instanceConfig);
+    mockWhamByToken();
+    const result = await fetchQuota({
+      readAuth: async () => ({
+        openai: { access: 'alt-token', accountId: 'acc_alt' },
+        'openai.main': { access: 'main-token', accountId: 'acc_main' },
+      }),
+    });
+    expect(result.ok).toBe(true);
+    expect(result.accountLabel).toBe('popesdrew@gmail.com');
+  });
+
+  it('still answers Not configured when no instance holds a credential', async () => {
+    setMergedConfig(instanceConfig);
+    const result = await fetchQuota({ readAuth: async () => ({}) });
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
   });
 });
