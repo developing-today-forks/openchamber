@@ -1838,6 +1838,9 @@ const openChamberSessionService = createOpenChamberSessionService({
   // lives beside the instance it describes.
   dataDir: OPENCHAMBER_DATA_DIR,
   enableIdleSessionReaper: true,
+  // Sessions an enabled scheduled task targets are never idle-reaped: the
+  // task's next run refuses an archived target (#791).
+  listScheduledTaskTargetIds: () => scheduledTaskService.existingSessionTargetIds(),
   sessionMetadataStore,
   persistSessionMetadata: persistSessionMetadataPatch,
   updateSessionMetadata: updateSessionMetadataWith,

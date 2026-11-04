@@ -18,9 +18,19 @@
  * - Archiving only, never deletion: a reaped session stays restorable through
  *   the archive store's unarchive path, and a failed archive write leaves the
  *   session live (the store applies a batch only when its persist succeeds).
+ * - A session the user pinned (`metadata.openchamber.pinned`) or marked
+ *   In work (`metadata.openchamber.work.state === 'open'`) is never reaped:
+ *   the same persisted protections the UI's own retention applies.
+ * - A session an enabled scheduled task targets is never reaped: the task's
+ *   next run validates its target and refuses an archived session, so
+ *   reaping one would silently break the schedule. When the protected set
+ *   cannot be read, the sweep reaps nothing — unknown is not unprotected.
+ * - Candidates are revalidated against a fresh read before the batch is
+ *   committed: a session resumed while the sweep probed other candidates
+ *   (new activity, a busy status, an archive by someone else) is dropped.
  */
 
-import { asNonEmptyString } from '../shared/guards.js';
+import { asNonEmptyString, isRecord } from '../shared/guards.js';
 
 /** Default idle age after which a finished session is reaped: 2 hours. */
 export const IDLE_SESSION_MAX_AGE_MS = 2 * 60 * 60 * 1000;
@@ -33,6 +43,18 @@ const asTimestamp = (value) => (Number.isSafeInteger(value) && value > 0 ? value
 const statusTypeOf = (status) => asNonEmptyString(status) ?? asNonEmptyString(status?.type);
 
 const lastActivityAt = (session) => asTimestamp(session?.time?.updated) ?? asTimestamp(session?.time?.created);
+
+/**
+ * The persisted keep protections, mirroring the UI's retention rules
+ * (`isSessionPinnedInMetadata`, `isSessionInWork`): a pin stamped in the
+ * session metadata, or work the user has open and not closed.
+ */
+const isKeptByUser = (session) => {
+  const openchamber = session?.metadata?.openchamber;
+  if (!isRecord(openchamber)) return false;
+  if (asTimestamp(openchamber.pinned?.at) !== null) return true;
+  return openchamber.work?.state === 'open';
+};
 
 /**
  * @param {object} options
@@ -49,6 +71,13 @@ const lastActivityAt = (session) => asTimestamp(session?.time?.updated) ?? asTim
  *   Extra pending-work guard for an otherwise reapable session (e.g. a working
  *   subagent descendant). Only an explicit `false` lets the reap proceed:
  *   `true` and `null` (unknown) both keep the session live.
+ * @param {() => Promise<Set<string> | null>} [options.getProtectedSessionIds]
+ *   Resolves the ids that must never be reaped (the targets of enabled
+ *   scheduled tasks). Resolving `null` — or rejecting — means the set could
+ *   not be read, and the sweep then reaps nothing at all.
+ * @param {(archived: Array<{ id: string, archivedAt: number }>) => void} [options.onArchived]
+ *   Called with the entries a sweep actually archived, so the caller can
+ *   publish the same archive transition the interactive archive path emits.
  * @param {number} [options.maxIdleAgeMs] Idle threshold; defaults to IDLE_SESSION_MAX_AGE_MS.
  * @param {() => number} [options.now]
  * @param {(line: string) => void} [options.log] Receives exactly one line per sweep.
@@ -58,6 +87,8 @@ export const createIdleSessionReaper = ({
   listSessions,
   getSessionStatuses = null,
   hasPendingWork = null,
+  getProtectedSessionIds = null,
+  onArchived = null,
   maxIdleAgeMs = IDLE_SESSION_MAX_AGE_MS,
   now = Date.now,
   log = (line) => console.log(line),
@@ -77,35 +108,74 @@ export const createIdleSessionReaper = ({
     if (sweeping) return { skipped: 'sweep-in-progress', liveIdle: 0, reaped: [], failedIds: [] };
     sweeping = true;
     try {
-      const sessions = await listSessions();
-      const statusMap = getSessionStatuses ? await getSessionStatuses(sessions) : null;
-      const statusFor = (session) => {
-        if (statusMap) {
-          const fromMap = statusMap instanceof Map ? statusMap.get(session.id) : statusMap[session.id];
-          if (fromMap !== undefined) return statusTypeOf(fromMap);
+      // The protected set gates the whole sweep: if it cannot be read, a
+      // scheduled task's target might be in the candidate list unseen, so
+      // nothing is reaped this sweep.
+      let protectedIds = null;
+      if (getProtectedSessionIds) {
+        protectedIds = await getProtectedSessionIds().catch(() => null);
+        if (!protectedIds) {
+          log('[openchamber-sessions] idle-session sweep: skipped, the scheduled-task target set could not be read');
+          return { skipped: 'protected-unknown', liveIdle: 0, reaped: [], failedIds: [] };
         }
-        return statusTypeOf(session?.status);
+      }
+
+      const selectCandidates = async (sessions, statusMap, currentTime) => {
+        const statusFor = (session) => {
+          if (statusMap) {
+            const fromMap = statusMap instanceof Map ? statusMap.get(session.id) : statusMap[session.id];
+            if (fromMap !== undefined) return statusTypeOf(fromMap);
+          }
+          return statusTypeOf(session?.status);
+        };
+        let liveIdleCount = 0;
+        const selected = [];
+        for (const session of Array.isArray(sessions) ? sessions : []) {
+          const id = asNonEmptyString(session?.id);
+          if (!id) continue;
+          if (statusFor(session) !== 'idle') continue;
+          liveIdleCount += 1;
+          // Already archived (by a person or an earlier sweep) is not live residue.
+          if (asTimestamp(session?.time?.archived)) continue;
+          const lastActivity = lastActivityAt(session);
+          if (lastActivity === null) continue;
+          if (currentTime - lastActivity < thresholdMs) continue;
+          if (isKeptByUser(session)) continue;
+          if (protectedIds?.has(id)) continue;
+          // The archive store's own state is authoritative for OpenChamber
+          // archives: a session it already holds is not live residue, whatever
+          // the OpenCode record still says.
+          if (await archiveStore.isArchived?.(id)) continue;
+          if (hasPendingWork && (await hasPendingWork(session)) !== false) continue;
+          selected.push(id);
+        }
+        return { liveIdleCount, selected };
       };
 
+      const sessions = await listSessions();
+      const statusMap = getSessionStatuses ? await getSessionStatuses(sessions) : null;
       const currentTime = now();
-      let liveIdle = 0;
-      const candidates = [];
-      for (const session of Array.isArray(sessions) ? sessions : []) {
-        const id = asNonEmptyString(session?.id);
-        if (!id) continue;
-        if (statusFor(session) !== 'idle') continue;
-        liveIdle += 1;
-        // Already archived (by a person or an earlier sweep) is not live residue.
-        if (asTimestamp(session?.time?.archived)) continue;
-        const lastActivity = lastActivityAt(session);
-        if (lastActivity === null) continue;
-        if (currentTime - lastActivity < thresholdMs) continue;
-        // The archive store's own state is authoritative for OpenChamber
-        // archives: a session it already holds is not live residue, whatever
-        // the OpenCode record still says.
-        if (await archiveStore.isArchived?.(id)) continue;
-        if (hasPendingWork && (await hasPendingWork(session)) !== false) continue;
-        candidates.push(id);
+      const first = await selectCandidates(sessions, statusMap, currentTime);
+      const liveIdle = first.liveIdleCount;
+      let candidates = first.selected;
+
+      if (candidates.length > 0) {
+        // Revalidate against a fresh read before committing the batch: the
+        // probes above await per candidate, and a session resumed while
+        // later candidates were checked must not be archived out from
+        // under its user. A candidate survives only if a fresh selection
+        // still picks it; an unreadable fresh read drops the whole batch.
+        const freshSessions = await listSessions().catch(() => null);
+        const freshStatusMap = freshSessions && getSessionStatuses
+          ? await getSessionStatuses(freshSessions).catch(() => undefined)
+          : null;
+        if (!freshSessions || freshStatusMap === undefined) {
+          candidates = [];
+        } else {
+          const fresh = await selectCandidates(freshSessions, freshStatusMap, currentTime);
+          const stillEligible = new Set(fresh.selected);
+          candidates = candidates.filter((id) => stillEligible.has(id));
+        }
       }
 
       let reaped = [];
@@ -114,6 +184,14 @@ export const createIdleSessionReaper = ({
         const result = await archiveStore.archive(candidates);
         reaped = (result?.archived ?? []).map((entry) => entry.id);
         failedIds = result?.failedIds ?? [];
+        if (onArchived && result?.archived?.length) {
+          try {
+            onArchived(result.archived);
+          } catch {
+            // A failed notification must not fail the sweep: the archive
+            // itself already landed, and clients reconcile on next fetch.
+          }
+        }
       }
 
       log(

@@ -49,6 +49,83 @@ describe('createIdleSessionReaper', () => {
     expect(store.archived.has('ses_old')).toBe(true);
   });
 
+  it('never reaps a session the user pinned or marked In work', async () => {
+    const store = makeArchiveStore();
+    const pinned = session('ses_pinned');
+    pinned.metadata = { openchamber: { pinned: { at: NOW - HOUR } } };
+    const inWork = session('ses_work');
+    inWork.metadata = { openchamber: { work: { state: 'open', openedAt: NOW - HOUR } } };
+    const doneWork = session('ses_done_work');
+    doneWork.metadata = { openchamber: { work: { state: 'done', openedAt: NOW - 4 * HOUR, doneAt: NOW - 3 * HOUR } } };
+    const reaper = makeReaper({ sessions: [pinned, inWork, doneWork], store });
+
+    const result = await reaper.sweep();
+
+    expect(result.reaped).toEqual(['ses_done_work']);
+    expect(store.archived.has('ses_pinned')).toBe(false);
+    expect(store.archived.has('ses_work')).toBe(false);
+  });
+
+  it('never reaps a session an enabled scheduled task targets', async () => {
+    const store = makeArchiveStore();
+    const reaper = makeReaper({
+      sessions: [session('ses_target'), session('ses_plain')],
+      store,
+      getProtectedSessionIds: async () => new Set(['ses_target']),
+    });
+
+    const result = await reaper.sweep();
+
+    expect(result.reaped).toEqual(['ses_plain']);
+    expect(store.archived.has('ses_target')).toBe(false);
+  });
+
+  it('reaps nothing when the protected set cannot be read', async () => {
+    const store = makeArchiveStore();
+    const reaper = makeReaper({
+      sessions: [session('ses_old')],
+      store,
+      getProtectedSessionIds: async () => null,
+    });
+
+    const result = await reaper.sweep();
+
+    expect(result.skipped).toBe('protected-unknown');
+    expect(result.reaped).toEqual([]);
+    expect(store.archive).not.toHaveBeenCalled();
+  });
+
+  it('drops a candidate that became active again while the sweep probed', async () => {
+    const store = makeArchiveStore();
+    const resumed = session('ses_resumed');
+    let listings = 0;
+    const reaper = makeReaper({
+      sessions: [],
+      store,
+      listSessions: async () => {
+        listings += 1;
+        // Second listing (the pre-commit revalidation): the user resumed
+        // the session, so its activity stamp moved past the threshold.
+        return [listings === 1 ? resumed : { ...resumed, time: { ...resumed.time, updated: NOW } }];
+      },
+    });
+
+    const result = await reaper.sweep();
+
+    expect(result.reaped).toEqual([]);
+    expect(store.archive).not.toHaveBeenCalled();
+  });
+
+  it('publishes the archived entries through onArchived', async () => {
+    const store = makeArchiveStore();
+    const onArchived = vi.fn();
+    const reaper = makeReaper({ sessions: [session('ses_old')], store, onArchived });
+
+    await reaper.sweep();
+
+    expect(onArchived).toHaveBeenCalledWith([{ id: 'ses_old', archivedAt: NOW }]);
+  });
+
   it('never archives a busy or retrying session, however old', async () => {
     const store = makeArchiveStore();
     const reaper = makeReaper({

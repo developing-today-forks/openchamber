@@ -55,6 +55,33 @@ describe('scheduled-task service list', () => {
     expect(projectConfigRuntime.listScheduledTasks).not.toHaveBeenCalled();
   });
 
+  it('collects the targets of enabled tasks and only those', async () => {
+    const { service } = createService({
+      scheduledTasksRuntime: {
+        syncProject: vi.fn(async () => [
+          { id: 'task-a', enabled: true, targetSessionId: 'ses_target_a' },
+          { id: 'task-b', targetSessionId: 'ses_target_b' },
+          { id: 'task-c', enabled: false, targetSessionId: 'ses_disabled' },
+          { id: 'task-d', enabled: true },
+        ]),
+      },
+    });
+
+    await expect(service.existingSessionTargetIds()).resolves.toEqual(new Set(['ses_target_a', 'ses_target_b']));
+  });
+
+  it('does not report a partial target set when a scope cannot be read', async () => {
+    const { service } = createService({
+      scheduledTasksRuntime: {
+        syncProject: vi.fn(async () => {
+          throw new Error('loop reconciliation failed');
+        }),
+      },
+    });
+
+    await expect(service.existingSessionTargetIds()).rejects.toThrow('loop reconciliation failed');
+  });
+
   it('surfaces reconciliation failure instead of returning a stale list', async () => {
     const syncError = new Error('loop reconciliation failed');
     const { service, projectConfigRuntime } = createService({

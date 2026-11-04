@@ -60,6 +60,29 @@ export const createScheduledTaskService = (dependencies) => {
     return scheduledTasksRuntime.syncProject(id);
   };
 
+  /**
+   * The session ids that enabled scheduled tasks will run against, across
+   * every project and the chats scope. A run validates its target and
+   * refuses an archived session, so these ids are protected from automatic
+   * archiving (the idle-session reaper consults this set). Throws when any
+   * scope cannot be read: a partial set must not pass for the whole one.
+   */
+  const existingSessionTargetIds = async () => {
+    const projects = await listProjects();
+    const scopeIds = projects.map((project) => project.id);
+    if (chatsScope) scopeIds.push(chatsScope.id);
+    const targetIds = new Set();
+    for (const scopeId of scopeIds) {
+      const tasks = await scheduledTasksRuntime.syncProject(scopeId);
+      for (const task of tasks ?? []) {
+        if (task?.enabled === false) continue;
+        const target = asNonEmptyString(task?.targetSessionId);
+        if (target) targetIds.add(target);
+      }
+    }
+    return targetIds;
+  };
+
   const findLoopTask = async (projectID, taskID) => {
     const { id } = await findProjectByID(projectID);
     const normalizedTaskID = asNonEmptyString(taskID);
@@ -232,6 +255,7 @@ export const createScheduledTaskService = (dependencies) => {
     listProjects,
     resolveProjectID,
     list,
+    existingSessionTargetIds,
     upsert,
     remove,
     run,

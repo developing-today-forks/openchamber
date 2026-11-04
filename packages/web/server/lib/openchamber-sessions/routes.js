@@ -474,6 +474,11 @@ export const createOpenChamberSessionService = (dependencies) => {
     dataDir = null,
     archiveStore: injectedArchiveStore = null,
     idleSessionReaper: injectedIdleSessionReaper = null,
+    // Resolves the session ids enabled scheduled tasks target, so the idle
+    // reaper never archives a session out from under its schedule (#791).
+    // Null where scheduled tasks are not wired in; the reaper then reaps
+    // without that protection rather than not at all.
+    listScheduledTaskTargetIds = null,
     // Only the real server enables the periodic idle-session sweep (#791);
     // module tests construct the service without it.
     enableIdleSessionReaper = false,
@@ -538,23 +543,44 @@ export const createOpenChamberSessionService = (dependencies) => {
   // busy, and an unreadable active set reaps nothing.
   const activityProbe = createSessionActivityProbe({ buildOpenCodeUrl, getOpenCodeAuthHeaders });
   let activeStatuses = null;
+  // Bounded sweeps rotate through the full session history: archiving does
+  // not remove a record from the upstream list, so a sweep that always
+  // started at the newest page would re-examine the same first pages
+  // forever and never reach older live sessions beyond them. Each listing
+  // resumes where the previous one stopped; reaching the end wraps around.
+  let listContinuationCursor;
   const idleSessionReaper = injectedIdleSessionReaper || createIdleSessionReaper({
     archiveStore,
     listSessions: async () => {
       const client = clientFor(undefined);
       const sessions = [];
       const seenCursors = new Set();
-      let cursor;
+      let cursor = listContinuationCursor;
+      let exhausted = false;
       for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
         const page = await client.session.list({ limit: 100, ...(cursor ? { cursor } : { order: 'desc' }) });
         if (!Array.isArray(page?.data)) throw new Error('OpenCode session list returned no data page');
         sessions.push(...page.data);
         const next = page.cursor?.next;
-        if (!next || page.data.length === 0 || seenCursors.has(next)) break;
+        if (!next || page.data.length === 0) {
+          exhausted = true;
+          break;
+        }
+        if (seenCursors.has(next)) break;
         seenCursors.add(next);
         cursor = next;
       }
+      listContinuationCursor = exhausted ? undefined : cursor;
       return sessions;
+    },
+    getProtectedSessionIds: listScheduledTaskTargetIds
+      ? async () => {
+          const ids = await listScheduledTaskTargetIds();
+          return ids instanceof Set ? ids : null;
+        }
+      : null,
+    onArchived: (archived) => {
+      for (const entry of archived) broadcastArchived(entry.id, entry.archivedAt);
     },
     getSessionStatuses: async (sessions) => {
       activeStatuses = await activityProbe.fetchActiveSessionStatuses();
