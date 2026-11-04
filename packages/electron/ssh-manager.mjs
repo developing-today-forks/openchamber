@@ -4,8 +4,11 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 import { replaceFileWithRetry } from './windows-file-replace.mjs';
+
+const asBuffer = (chunk) => (Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
 
 const LOCAL_HOST_ID = 'local';
 const DEFAULT_CONNECTION_TIMEOUT_SEC = 60;
@@ -529,13 +532,17 @@ export class ElectronSshManager {
     childProcessDiagnostics.set(child, diagnostics);
     const auth = this.sshAuth.get(parsed);
     auth?.children.add(child);
+    // stderr is diagnostic text, but a multi-byte character split across
+    // pipe chunks would still garble it; decode incrementally like stdout.
+    const stderrDecoder = new StringDecoder('utf8');
     child.stderr?.on('data', (chunk) => {
-      diagnostics.stderr = `${diagnostics.stderr}${chunk.toString()}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
+      diagnostics.stderr = `${diagnostics.stderr}${stderrDecoder.write(asBuffer(chunk))}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
     });
     child.on('error', (error) => {
       diagnostics.error = error;
     });
     child.on('close', () => {
+      diagnostics.stderr = `${diagnostics.stderr}${stderrDecoder.end()}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
       auth?.children.delete(child);
     });
     return child;
@@ -570,6 +577,11 @@ export class ElectronSshManager {
 
       let stdout = '';
       let stderr = '';
+      // Decode incrementally: a multi-byte character split across pipe
+      // chunks must round-trip exactly, because callers parse this output
+      // as data (ssh -G config, status --json, probe bodies) (#1577).
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
       let stdoutBytes = 0;
       let settled = false;
       const settle = (action, value) => {
@@ -593,22 +605,24 @@ export class ElectronSshManager {
         : null;
       child.stdout?.on('data', (chunk) => {
         if (settled) return;
-        const text = chunk.toString();
-        stdoutBytes += Buffer.byteLength(text);
+        const buffer = asBuffer(chunk);
+        stdoutBytes += buffer.length;
         if (stdoutBytes > maxStdoutBytes) {
           killChild();
           settle(reject, new Error(`SSH command output exceeded the ${maxStdoutBytes} byte limit (output-too-large)`));
           return;
         }
-        stdout += text;
+        stdout += stdoutDecoder.write(buffer);
       });
       child.stderr?.on('data', (chunk) => {
-        stderr = `${stderr}${chunk.toString()}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
+        stderr = `${stderr}${stderrDecoder.write(asBuffer(chunk))}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
       });
       child.on('error', () => {
         settle(reject, new Error(this.processErrorDetail(child, 'Failed to start SSH process')));
       });
       child.on('close', (code) => {
+        stdout += stdoutDecoder.end();
+        stderr = `${stderr}${stderrDecoder.end()}`.slice(-MAX_PROCESS_ERROR_CAPTURE_CHARS);
         const auth = this.sshAuth.get(parsed);
         settle(resolve, {
           code: typeof code === 'number' ? code : -1,
