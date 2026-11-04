@@ -1,9 +1,6 @@
 name: Publish VS Code Extension
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 # CI policy: .github/ci-policy.md (fleet design developing-today/code#1779;
