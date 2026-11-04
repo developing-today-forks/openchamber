@@ -542,6 +542,15 @@ export const createGuestSurfaceRuntime = ({
     deliverLatest(session, viewer);
 
     ws.on('message', (raw, isBinary) => {
+      // Per-frame bound: maxPayload alone is not enforced by the bundled ws
+      // under every runtime (Bun delivers the oversized message whole), so
+      // refuse it here — before it is parsed — with the same 1009 the ws
+      // layer would have used.
+      const frameBytes = typeof raw === 'string' ? Buffer.byteLength(raw) : (raw?.byteLength ?? 0);
+      if (frameBytes > VIEWER_MESSAGE_MAX_BYTES) {
+        try { ws.close(1009, 'Surface frame too large'); } catch { /* already closing */ }
+        return;
+      }
       if (isBinary) return;
       handleViewerMessage(session, viewer, raw);
     });
@@ -634,6 +643,7 @@ export const createGuestSurfaceRuntime = ({
   server.on('upgrade', upgradeHandler);
 
   return {
+    wsServer,
     /**
      * Read by the browser provider before an action: a user holding the
      * surface must not have the agent clicking under their hands.
