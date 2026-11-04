@@ -74,6 +74,16 @@ export async function getModelsMetadata({
   }
 }
 
+/**
+ * The catalog this process already holds (fresh or stale), or null when it
+ * has not fetched one yet. Never fetches and never waits: latency-critical
+ * readers (the provider off-state route, which provider loading awaits)
+ * enrich from this copy only, so models.dev availability cannot stall them.
+ */
+export function peekModelsMetadata() {
+  return cachedMetadata;
+}
+
 // The model fields the UI reads (packages/ui stores/useConfigStore.ts,
 // transformModelsDevResponse). The full catalog is several megabytes; the
 // browser needs only these, so the route sends nothing else.
