@@ -60,8 +60,11 @@ const isKeptByUser = (session) => {
  * @param {object} options
  * @param {{ archive: (ids: string[]) => Promise<{ archived: Array<{ id: string }>, failedIds: string[] }> }} options.archiveStore
  *   The archive store from `./archive-store.js`; the only write path.
- * @param {() => Promise<Array<object>>} options.listSessions
+ * @param {(options?: { revalidate?: boolean }) => Promise<Array<object>>} options.listSessions
  *   Resolves the current live session records (`{ id, time: { updated, created }, time.archived? }`).
+ *   The pre-commit revalidation calls it with `{ revalidate: true }`: a provider whose
+ *   reads are stateful (a rotating window over a large history) must then re-read the
+ *   same batch the candidates came from, not the next one.
  * @param {(sessions: Array<object>) => Promise<Map<string, unknown> | Record<string, unknown> | null>} [options.getSessionStatuses]
  *   Resolves the OpenCode status per session id (`{ type: 'idle' | 'busy' | 'retry', ... }`
  *   or the type string itself). When absent, a record's own `status` field is used;
@@ -165,7 +168,7 @@ export const createIdleSessionReaper = ({
         // later candidates were checked must not be archived out from
         // under its user. A candidate survives only if a fresh selection
         // still picks it; an unreadable fresh read drops the whole batch.
-        const freshSessions = await listSessions().catch(() => null);
+        const freshSessions = await listSessions({ revalidate: true }).catch(() => null);
         const freshStatusMap = freshSessions && getSessionStatuses
           ? await getSessionStatuses(freshSessions).catch(() => undefined)
           : null;

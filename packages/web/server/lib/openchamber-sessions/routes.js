@@ -549,13 +549,19 @@ export const createOpenChamberSessionService = (dependencies) => {
   // forever and never reach older live sessions beyond them. Each listing
   // resumes where the previous one stopped; reaching the end wraps around.
   let listContinuationCursor;
+  // Where the most recent fresh batch started. A sweep reads its batch
+  // twice — once to select candidates, once to revalidate them — and the
+  // revalidation must re-read the same batch, not advance into the next
+  // one; the continuation moves only on a fresh read.
+  let lastBatchStartCursor;
   const idleSessionReaper = injectedIdleSessionReaper || createIdleSessionReaper({
     archiveStore,
-    listSessions: async () => {
+    listSessions: async ({ revalidate = false } = {}) => {
       const client = clientFor(undefined);
       const sessions = [];
       const seenCursors = new Set();
-      let cursor = listContinuationCursor;
+      let cursor = revalidate ? lastBatchStartCursor : listContinuationCursor;
+      if (!revalidate) lastBatchStartCursor = cursor;
       let exhausted = false;
       for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
         const page = await client.session.list({ limit: 100, ...(cursor ? { cursor } : { order: 'desc' }) });
@@ -570,7 +576,7 @@ export const createOpenChamberSessionService = (dependencies) => {
         seenCursors.add(next);
         cursor = next;
       }
-      listContinuationCursor = exhausted ? undefined : cursor;
+      if (!revalidate) listContinuationCursor = exhausted ? undefined : cursor;
       return sessions;
     },
     getProtectedSessionIds: listScheduledTaskTargetIds
