@@ -815,3 +815,84 @@ describe('pr-status repo metadata cache bounds (#972)', () => {
     nowSpy.mockRestore();
   });
 });
+
+describe('pr-status search fallback scoping (#1496)', () => {
+  let directory;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pr-status-fallback-'));
+    const git = (...args) => execFileSync('git', args, { cwd: directory, stdio: 'ignore' });
+    git('init', '-q', '-b', 'feature');
+    git('remote', 'add', 'origin', 'https://github.com/acme/app.git');
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const fallbackClient = (token, searchItems, prsByKey) => {
+    const searchMock = mock(async () => ({ data: { items: searchItems } }));
+    const getMock = mock(async ({ owner, repo, pull_number }) => {
+      const pr = prsByKey[`${owner}/${repo}#${pull_number}`];
+      if (!pr) {
+        throw Object.assign(new Error('Not Found'), { status: 404 });
+      }
+      return { data: pr };
+    });
+    const client = {
+      openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit(token, `${token}-account`)),
+      rest: {
+        repos: { get: async () => ({ data: { default_branch: 'main' } }) },
+        pulls: {
+          // A full page of unrelated open PRs makes the per-repo list
+          // incomplete, so resolveGitHubPrStatus spends the search fallback.
+          list: async ({ head }) => (head
+            ? { data: [] }
+            : { data: Array.from({ length: 100 }, (_, index) => ({ number: index, state: 'open', head: { ref: 'other' } })) }),
+          get: getMock,
+        },
+        search: { issuesAndPullRequests: searchMock },
+      },
+    };
+    return { client, searchMock, getMock };
+  };
+
+  const searchItem = (owner, number) => ({
+    number,
+    repository_url: `https://api.github.com/repos/${owner}/app`,
+  });
+
+  const branchPr = (number) => ({
+    number,
+    state: 'open',
+    head: { ref: 'feature' },
+  });
+
+  test('never returns a same-named PR from a different owner', async () => {
+    const { client, searchMock, getMock } = fallbackClient('fallback-owner-token', [searchItem('stranger', 77)], {
+      'stranger/app#77': branchPr(77),
+    });
+
+    const result = await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: false });
+
+    expect(result.pr).toBeNull();
+    // The other owner's item is rejected before any pulls.get is spent on it.
+    expect(getMock.mock.calls.length).toBe(0);
+    // The search itself is scoped to the resolved target repo.
+    expect(searchMock.mock.calls.length).toBeGreaterThan(0);
+    expect(searchMock.mock.calls[0][0].q).toContain('repo:acme/app');
+  });
+
+  test('finds the real PR behind same-named results from other owners', async () => {
+    const { client, getMock } = fallbackClient('fallback-order-token', [searchItem('stranger', 100), searchItem('acme', 42)], {
+      'stranger/app#100': branchPr(100),
+      'acme/app#42': branchPr(42),
+    });
+
+    const result = await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: false });
+
+    expect(result.pr?.number).toBe(42);
+    expect(result.repo?.owner).toBe('acme');
+    expect(getMock.mock.calls.every((entry) => entry[0]?.owner === 'acme')).toBe(true);
+  });
+});
