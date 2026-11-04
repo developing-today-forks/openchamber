@@ -69,6 +69,18 @@ export const parsePlanProgress = (raw) => {
 };
 
 /**
+ * Most plan summaries the cache holds at once.
+ *
+ * The cache is one server-lifetime instance shared by every project, and the
+ * list flow only ever queries paths a listing just returned, so an entry for
+ * a deleted or renamed plan is never queried again and nothing else would
+ * ever remove it. The cap matches the sibling plan-metrics cache: past it,
+ * the least recently used entry goes first, which is exactly the orphaned
+ * entries - live plans are re-listed (and so refreshed) constantly.
+ */
+export const PLAN_SUMMARY_CACHE_MAX_ENTRIES = 500;
+
+/**
  * Plan files read for the list, remembered by modification time and size.
  *
  * The Plans tab re-reads the list while it is open, and agents tick steps with
@@ -78,6 +90,17 @@ export const parsePlanProgress = (raw) => {
  */
 export const createPlanSummaryCache = ({ fsPromises, parseTitle }) => {
   const entries = new Map();
+
+  /** Remember one entry, evicting least recently used entries past the cap. */
+  const remember = (filePath, entry) => {
+    entries.delete(filePath);
+    while (entries.size >= PLAN_SUMMARY_CACHE_MAX_ENTRIES) {
+      const oldest = entries.keys().next().value;
+      if (oldest === undefined) break;
+      entries.delete(oldest);
+    }
+    entries.set(filePath, entry);
+  };
 
   /**
    * `{ title, progress, mtimeMs }`, or null when the file is gone. Other read
@@ -96,22 +119,26 @@ export const createPlanSummaryCache = ({ fsPromises, parseTitle }) => {
     }
     const cached = entries.get(filePath);
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      // A hit makes this the most recently used entry, so the entries the
+      // list flow has stopped querying age out first at the cap.
+      entries.delete(filePath);
+      entries.set(filePath, cached);
       return cached.summary;
     }
     if (stat.size > PLAN_FILE_READ_MAX_BYTES) {
       const summary = { title: 'Plan', progress: null, mtimeMs: stat.mtimeMs, tooLarge: true };
-      entries.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+      remember(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
       return summary;
     }
     const raw = await readBoundedUtf8(fsPromises, filePath, PLAN_FILE_READ_MAX_BYTES);
     if (raw === null) {
       // Grew past the cap between the stat above and this read.
       const summary = { title: 'Plan', progress: null, mtimeMs: stat.mtimeMs, tooLarge: true };
-      entries.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+      remember(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
       return summary;
     }
     const summary = { title: parseTitle(raw), progress: parsePlanProgress(raw), mtimeMs: stat.mtimeMs };
-    entries.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
+    remember(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, summary });
     return summary;
   };
 
