@@ -511,6 +511,8 @@ Upstream health is probed with `GET /api/info` (OpenCode 2.0.8 removed `/api/hea
 
 Transport-triggered health checks share the periodic monitor's failure accounting interval. Rapid WS reconnect callbacks therefore cannot exhaust the managed-process restart threshold using one cached unhealthy result; an exited managed process still restarts immediately.
 
+External OpenCode uses the same periodic monitor. A failed probe marks it not ready and records `lastOpenCodeHealthFailure`; a successful probe restores readiness and leaves the last failure available for diagnosis. Health checks never restart an external process.
+
 Managed health failures are classified as `timeout`, `connection_refused`, `connection_reset`, `invalid_response`, or `error`. The lifecycle retains the latest counted failure with a bounded detail string and source. Managed process wrappers continue capturing a sanitized, bounded stderr tail after readiness and retain exit code/signal. Before replacing a managed process, lifecycle snapshots the reason, latest health failure, process diagnostics/aliveness, busy-session count, and timestamp into `lastOpenCodeRestartDiagnostics`; successful startup does not clear this snapshot, and `/health` exposes it for post-restart diagnosis without process environment or credentials.
 
 Managed process ownership starts at spawn. The registry and runtime process

@@ -979,9 +979,9 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       return false;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
       const base = origin ?? `http://127.0.0.1:${port}`;
       const response = await fetch(`${base}${OPENCODE_HEALTH_PATH}`, {
         method: 'GET',
@@ -991,11 +991,16 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         },
         signal: controller.signal,
       });
-      clearTimeout(timeout);
+      // The deadline stays active until the body is consumed: a server
+      // that sends 200 headers and then stalls the body would otherwise
+      // wedge this probe — and every health-check cycle sharing its
+      // promise — forever.
       const info = await readOpenCodeInfo(response);
       return info !== null && isSupportedOpenCodeVersion(info.version);
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   };
 
@@ -1940,10 +1945,43 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   const runHealthCheckCycle = async (source) => {
-    if (!state.openCodeProcess || state.isShuttingDown || state.isRestartingOpenCode) return;
+    if ((!state.openCodeProcess && !state.isExternalOpenCode) || state.isShuttingDown || state.isRestartingOpenCode) return;
     if (healthCheckCyclePromise) return healthCheckCyclePromise;
 
     healthCheckCyclePromise = (async () => {
+      if (state.isExternalOpenCode) {
+        const probePort = state.openCodePort ?? env.ENV_EFFECTIVE_PORT ?? 4096;
+        const probeOrigin = state.openCodeBaseUrl ?? env.ENV_CONFIGURED_OPENCODE_HOST?.origin;
+        const healthy = await probeExternalOpenCode(probePort, probeOrigin);
+        const checkedAt = now();
+
+        if (healthy) {
+          if (!state.isOpenCodeReady) {
+            diagnosticJournal.record('health recovered');
+            state.isOpenCodeReady = true;
+            state.openCodeNotReadySince = 0;
+            syncToHmrState();
+          }
+          resetHealthFailureState();
+          return;
+        }
+
+        const wasReady = state.isOpenCodeReady;
+        state.isOpenCodeReady = false;
+        if (!state.openCodeNotReadySince) state.openCodeNotReadySince = checkedAt;
+        state.lastOpenCodeHealthFailure = {
+          class: 'error',
+          detail: 'External OpenCode health probe failed or returned an unsupported version',
+          at: new Date(checkedAt).toISOString(),
+          source,
+        };
+        if (wasReady) {
+          diagnosticJournal.record('health failed', { failureClass: 'error' });
+        }
+        syncToHmrState();
+        return;
+      }
+
       const healthResult = await probeOpenCodeHealth();
       if (!healthResult.healthy) {
         if (!isManagedOpenCodeProcessAlive()) {
