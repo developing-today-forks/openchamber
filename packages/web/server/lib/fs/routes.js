@@ -1582,8 +1582,12 @@ export const registerFsRoutes = (app, dependencies) => {
         let handle;
         try {
           handle = await fsPromises.open(writePath, identicalCheckOpenFlags(platform));
-        } catch (error) {
-          if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
+        } catch {
+          // Any open failure skips the shortcut and falls through to the
+          // atomic write below, which never reads the target: a missing file
+          // is the ordinary case, and a write-only file the process cannot
+          // read back must still save (#1534).
+          handle = undefined;
         }
         if (handle) {
           try {
