@@ -889,6 +889,58 @@ const readDisabledQuotaProviderIds = (): Set<string> => {
   }
 };
 
+const CODEX_AUTH_ALIASES = ['openai', 'codex', 'chatgpt'];
+
+/**
+ * The ids of configured provider instances of a Codex base (`openai`, ...),
+ * in merged-config order. Since the provider re-seat the ChatGPT accounts
+ * live under instance integrations (`openai.main`, `openai.alternate`), so
+ * the bare integration read finds nothing; the instances are discovered
+ * from the merged config, never hardcoded. A config that cannot be read
+ * answers none and is logged, mirroring readDisabledQuotaProviderIds.
+ */
+const readCodexInstanceIds = (): string[] => {
+  try {
+    const config = readConfig();
+    const ids: string[] = [];
+    for (const sectionKey of ['providers', 'provider']) {
+      const section = asObject(config[sectionKey]);
+      if (!section) continue;
+      for (const [id, definition] of Object.entries(section)) {
+        const instanceOf = asNonEmptyString(asObject(definition)?.instanceOf);
+        if (instanceOf && CODEX_AUTH_ALIASES.includes(instanceOf)) ids.push(id);
+      }
+    }
+    return ids;
+  } catch (error) {
+    console.warn('Quota: failed to read the OpenCode config; Codex instance credentials are not considered.', error);
+    return [];
+  }
+};
+
+const codexEntryWithToken = (auth: AuthFile, aliases: string[]) => {
+  const entry = normalizeAuthEntry(getAuthEntry(auth, aliases)) as Record<string, unknown> | null;
+  return entry && (entry.access || entry.token) ? entry : null;
+};
+
+/**
+ * The credential the Codex fetch uses: the bare integration's entry, or —
+ * when the re-seat left the bare integration empty — the first usable
+ * instance entry. The VS Code surface answers a single result, so one
+ * account serves it; the web surface folds every instance into the base
+ * row. Mirrors packages/web/server/lib/quota/providers/codex.js (kept in
+ * sync per the quota DOCUMENTATION.md parity note).
+ */
+const resolveCodexEntry = (auth: AuthFile) => {
+  const direct = codexEntryWithToken(auth, CODEX_AUTH_ALIASES);
+  if (direct) return direct;
+  for (const instanceId of readCodexInstanceIds()) {
+    const entry = codexEntryWithToken(auth, [instanceId]);
+    if (entry) return entry;
+  }
+  return null;
+};
+
 /**
  * Providers with a usable credential. Throws when OpenCode's credentials
  * cannot be read, so a transient failure does not look like "nothing
@@ -917,8 +969,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
     configured.add('claude');
   }
 
-  const openaiAuth = normalizeAuthEntry(getAuthEntry(auth, ['openai', 'codex', 'chatgpt']));
-  if (openaiAuth && ((openaiAuth as Record<string, unknown>).access || (openaiAuth as Record<string, unknown>).token)) {
+  if (resolveCodexEntry(auth)) {
     configured.add('codex');
   }
 
@@ -1053,7 +1104,7 @@ const toCodexUsedPercent = (value: number | string | null | undefined): number |
 
 const fetchCodexQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['openai', 'codex', 'chatgpt'])) as Record<string, unknown> | null;
+  const entry = resolveCodexEntry(auth);
   const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
   const accountId = entry?.accountId as string | undefined;
 

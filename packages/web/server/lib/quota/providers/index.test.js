@@ -482,6 +482,65 @@ describe('provider instances', () => {
   });
 });
 
+describe('codex folded instance credentials', () => {
+  const bothInstances = {
+    'openai.main': { instanceOf: 'openai', name: 'OpenAI Main (drewrypope)' },
+    'openai.alternate': { instanceOf: 'openai', name: 'OpenAI Alternate (Student - popesdrew)' },
+  };
+
+  beforeEach(() => {
+    setMergedConfig({ provider: bothInstances });
+    authState.rows = [
+      oauthRow('openai.main', { id: 'cred_main', label: 'OAuth', active: true, access: 'legacy-token', accountId: 'acc_main' }),
+      oauthRow('openai.alternate', { id: 'cred_alt', label: 'OAuth', active: true, access: 'alt-token', accountId: 'acc_alt' }),
+    ];
+    authState.projected = {
+      'openai.main': authState.rows[0].value,
+      'openai.alternate': authState.rows[1].value,
+    };
+  });
+
+  it('folds instance rows into the base Codex answer, one per account', async () => {
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
+    expect(results).toHaveLength(2);
+
+    const [main, alternate] = results;
+    expect(main.providerId).toBe('codex');
+    expect(main.providerName).toBe('OpenAI Main (drewrypope)');
+    expect(main.credentialId).toBe('cred_main');
+    expect(main.accountLabel).toBe('drewrypope@gmail.com');
+    expect(main.ok).toBe(true);
+    expect(main.usage.windows.weekly.usedPercent).toBe(8);
+
+    expect(alternate.providerId).toBe('codex');
+    expect(alternate.providerName).toBe('OpenAI Alternate (Student - popesdrew)');
+    expect(alternate.credentialId).toBe('cred_alt');
+    expect(alternate.accountLabel).toBe('popesdrew@gmail.com');
+    expect(alternate.ok).toBe(true);
+    expect(alternate.usage.windows.weekly.usedPercent).toBe(12);
+  });
+
+  it('lists codex as configured through its instances', async () => {
+    const configured = await listConfiguredQuotaProviders({}, authDeps);
+    expect(configured).toContain('codex');
+    expect(configured).toContain('openai.main');
+    expect(configured).toContain('openai.alternate');
+  });
+
+  it('leaves a disabled instance out of the fold', async () => {
+    setMergedConfig({ disabled_providers: ['openai.alternate'], provider: bothInstances });
+    const results = await fetchQuotaForProviderInstances('codex', authDeps);
+    expect(results).toHaveLength(1);
+    expect(results[0].credentialId).toBe('cred_main');
+  });
+
+  it('keeps the single fetch on the first usable instance credential', async () => {
+    const result = await fetchQuotaForProvider('codex', authDeps);
+    expect(result.ok).toBe(true);
+    expect(result.accountLabel).toBe('drewrypope@gmail.com');
+  });
+});
+
 describe('provider catalogue', () => {
   it('lists every provider with its display name and credential aliases', () => {
     const catalogue = listQuotaProviderCatalogue();
