@@ -1939,11 +1939,67 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     return { skip: true, staleBusy: false };
   };
 
+  // External (skip-start) servers have no spawned process to probe or
+  // restart: the cycle tracks their liveness with the same consecutive-
+  // failure counting as the managed path, but the threshold only flips
+  // readiness — an external process is never restarted from here (#1513).
+  // The threshold is two counted failures, not the managed restart
+  // threshold: readiness is the only signal this path owns, and the
+  // acceptance for #1513 is that an outage shows within roughly two
+  // health intervals.
+  const EXTERNAL_HEALTH_MAX_CONSECUTIVE_FAILURES = 2;
+  const runExternalHealthCheck = async (source) => {
+    const healthy = await probeExternalOpenCode(
+      state.openCodePort ?? env.ENV_EFFECTIVE_PORT,
+      state.openCodeBaseUrl ?? env.ENV_CONFIGURED_OPENCODE_HOST?.origin,
+    );
+    if (healthy) {
+      if (consecutiveHealthFailures) diagnosticJournal.record('health recovered');
+      resetHealthFailureState();
+      if (!state.isOpenCodeReady) {
+        state.isOpenCodeReady = true;
+        state.openCodeNotReadySince = 0;
+        state.lastOpenCodeError = null;
+        diagnosticJournal.record('external connected');
+        syncToHmrState();
+      }
+      return;
+    }
+    const checkedAt = now();
+    if (lastCountedHealthFailureAt && checkedAt - lastCountedHealthFailureAt < healthFailureCountIntervalMs) {
+      return;
+    }
+    lastCountedHealthFailureAt = checkedAt;
+    consecutiveHealthFailures += 1;
+    state.lastOpenCodeHealthFailure = {
+      class: 'error',
+      detail: 'External OpenCode server did not answer its health endpoint',
+      at: new Date(checkedAt).toISOString(),
+      source,
+    };
+    diagnosticJournal.record('health failed', { failureClass: 'error' });
+    console.warn(
+      `[lifecycle] ${source} health check failed (${consecutiveHealthFailures}/${EXTERNAL_HEALTH_MAX_CONSECUTIVE_FAILURES}) class=error`
+    );
+    if (consecutiveHealthFailures < EXTERNAL_HEALTH_MAX_CONSECUTIVE_FAILURES) return;
+    if (state.isOpenCodeReady) {
+      state.isOpenCodeReady = false;
+      state.openCodeNotReadySince = checkedAt;
+      diagnosticJournal.record('external unavailable');
+      syncToHmrState();
+    }
+  };
+
   const runHealthCheckCycle = async (source) => {
-    if (!state.openCodeProcess || state.isShuttingDown || state.isRestartingOpenCode) return;
+    if (state.isShuttingDown || state.isRestartingOpenCode) return;
+    if (!state.openCodeProcess && !state.isExternalOpenCode) return;
     if (healthCheckCyclePromise) return healthCheckCyclePromise;
 
     healthCheckCyclePromise = (async () => {
+      if (state.isExternalOpenCode) {
+        await runExternalHealthCheck(source);
+        return;
+      }
       const healthResult = await probeOpenCodeHealth();
       if (!healthResult.healthy) {
         if (!isManagedOpenCodeProcessAlive()) {

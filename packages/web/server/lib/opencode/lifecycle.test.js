@@ -816,6 +816,45 @@ describe('OpenCode lifecycle', () => {
     expect(terminalEvents).toHaveLength(1);
   });
 
+  it('tracks external server liveness in the health cycle without restarting it (#1513)', async () => {
+    let now = 1;
+    let externalUp = false;
+    globalThis.fetch = vi.fn(async () => {
+      if (!externalUp) throw new Error('connect ECONNREFUSED');
+      return Response.json({ healthy: true, version: '2.0.30' });
+    });
+    const runtime = createRuntime({ now: () => now }, {
+      openCodePort: 4095,
+      openCodeBaseUrl: 'http://seamus:4095',
+      isExternalOpenCode: true,
+      isOpenCodeReady: true,
+    }, {
+      ENV_CONFIGURED_OPENCODE_PORT: null,
+      ENV_CONFIGURED_OPENCODE_HOST: { origin: 'http://seamus:4095', port: 4095 },
+      ENV_EFFECTIVE_PORT: 4095,
+    });
+
+    // One counted failure keeps readiness (transient blips stay invisible);
+    // the second counted failure, one count interval later, flips it.
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    expect(runtime.testState.lastOpenCodeHealthFailure).not.toBeNull();
+    now += 15_000;
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(false);
+    expect(runtime.testState.openCodeNotReadySince).toBe(now);
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    // The remote coming back restores readiness on the next cycle,
+    // without any OpenChamber restart.
+    externalUp = true;
+    now += 15_000;
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    expect(runtime.testState.openCodeNotReadySince).toBe(0);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('does not count rapid transport-triggered checks as independent health failures', async () => {
     const close = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
