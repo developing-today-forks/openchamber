@@ -36,17 +36,27 @@ interface SessionGoalArmStore extends SessionGoalArm {
 
 const DISARMED: SessionGoalArm = { armed: false, objectiveOverride: null, settled: false, briefAgent: false, ignoreLimit: false };
 
+/**
+ * An arm as `setArmed` stores it. A send that brings its own goal passes one
+ * to `sendMessage` (`goalArm`) instead of arming this store.
+ */
+export const createGoalArm = (
+  armed: boolean,
+  objectiveOverride: string | null = null,
+  options: { settled?: boolean; briefAgent?: boolean; ignoreLimit?: boolean } = {},
+): SessionGoalArm => (armed
+  ? {
+      armed,
+      objectiveOverride,
+      settled: options.settled === true,
+      briefAgent: options.briefAgent === true && Boolean(objectiveOverride),
+      ignoreLimit: options.ignoreLimit === true,
+    }
+  : DISARMED);
+
 export const useSessionGoalArmStore = create<SessionGoalArmStore>((set, get) => ({
   ...DISARMED,
-  setArmed: (armed, objectiveOverride = null, options = {}) => set(armed
-    ? {
-        armed,
-        objectiveOverride,
-        settled: options.settled === true,
-        briefAgent: options.briefAgent === true && Boolean(objectiveOverride),
-        ignoreLimit: options.ignoreLimit === true,
-      }
-    : DISARMED),
+  setArmed: (armed, objectiveOverride, options) => set(createGoalArm(armed, objectiveOverride, options)),
   consume: () => {
     const { armed, objectiveOverride, settled, briefAgent, ignoreLimit } = get();
     if (armed) set(DISARMED);
