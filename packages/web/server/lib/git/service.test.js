@@ -2323,7 +2323,13 @@ describe('createWorktree', () => {
       });
 
       await expect.poll(() => fs.existsSync(marker), { timeout: 15_000 }).toBe(true);
-      await expect(getWorktreeBootstrapStatus(created.path)).resolves.toMatchObject({
+      // The bootstrap status lags the marker (it flips to ready/setup-ready
+      // only after the marker lands), so poll the status itself with the
+      // in-file expect.poll pattern instead of asserting it once (#1550).
+      await expect.poll(
+        async () => getWorktreeBootstrapStatus(created.path),
+        { timeout: 15_000 },
+      ).toMatchObject({
         status: 'ready',
         phase: 'setup-ready',
         error: null,
