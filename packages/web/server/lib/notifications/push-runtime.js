@@ -5,19 +5,12 @@ import {
   writeDurableJsonFile,
 } from '../shared/durable-json-store.js';
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
+import { isLoopbackUrl } from '../security/bind-host.js';
 
 const PUSH_SUBSCRIPTIONS_VERSION = 1;
 const UI_VISIBILITY_TTL_MS = 30_000;
 
-const isLoopbackHttpOrigin = (value) => {
-  if (typeof value !== 'string') {
-    return false;
-  }
-
-  return value.startsWith('http://localhost')
-    || value.startsWith('http://127.0.0.1')
-    || value.startsWith('http://[::1]');
-};
+const isLoopbackHttpOrigin = (value) => isLoopbackUrl(value);
 
 export const createPushRuntime = (deps) => {
   const {
