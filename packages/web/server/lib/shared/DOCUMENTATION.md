@@ -308,7 +308,13 @@ per-root counter and a threaded `{ visitedDirs }` object in
 (#1393) migrated the `fs/search.js` and `fs/routes.js`
 `findGitDirectories` walks onto it with their values and behaviour
 unchanged. The `opencode/agents.js` walks keep their spelling until
-their own phase.
+their own phase. The skill walks followed in #1465:
+`opencode/shared.js` `walkSkillMdFiles` (5,000 directories, enumerate)
+and `listSkillSupportingFiles` (5,000 directories and 5,000 files,
+enumerate with the result's `truncated` flag read from the budget)
+consult one budget object each, and their VS Code twins in
+`opencodeConfig.ts` state the same budgets through the hand-mirrored
+copy there.
 
 - `createTraversalBudget({ maxDirs, maxEntries?, maxDepth?, deadlineMs? })`
   returns the one budget object a walk consults. `visitDir(depth?)`

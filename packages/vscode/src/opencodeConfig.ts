@@ -893,20 +893,63 @@ const findWorktreeRoot = (startDir?: string): string | null => {
   }
 };
 
-// At most this many directories one walk visits per root, the root itself
-// included. Past the cap the walk stops opening new directories and returns
-// the SKILL.md paths found so far. The web twin in shared.js uses the same
-// value; the skills tests pin the two together.
-export const SKILL_WALK_MAX_DIRS = 5000;
+// Hand-mirrored from packages/web/server/lib/shared/traversal-budget.js
+// (design #1391 rule 5): the extension cannot import the web module, so
+// its walks consult this copy, which states the same counting contract —
+// consult visitDir() before descending (it counts the directory when
+// allowed) and visitEntry() per counted entry; a refused consultation
+// sets truncated and moves no counter, so repeated consultation after
+// exhaustion keeps answering "stop". Sync walks are bounded by counts
+// alone, so the mirror carries no deadline dimension.
+type TraversalBudget = {
+  visitDir: () => boolean;
+  visitEntry: () => boolean;
+  readonly truncated: boolean;
+};
+
+const createTraversalBudget = (options: { maxDirs: number; maxEntries?: number }): TraversalBudget => {
+  let visitedDirs = 0;
+  let visitedEntries = 0;
+  let dirsStopped = false;
+  let entriesStopped = false;
+  let truncatedFlag = false;
+  return {
+    visitDir: () => {
+      if (dirsStopped || visitedDirs >= options.maxDirs) {
+        dirsStopped = true;
+        truncatedFlag = true;
+        return false;
+      }
+      visitedDirs += 1;
+      return true;
+    },
+    visitEntry: () => {
+      if (entriesStopped || (options.maxEntries !== undefined && visitedEntries >= options.maxEntries)) {
+        entriesStopped = true;
+        truncatedFlag = true;
+        return false;
+      }
+      visitedEntries += 1;
+      return true;
+    },
+    get truncated() {
+      return truncatedFlag;
+    },
+  };
+};
 
 const walkSkillMdFiles = (rootDir?: string | null): string[] => {
   if (!rootDir || !fs.existsSync(rootDir)) return [];
 
+  // The traversal budget states this walk's counting: at most 5,000
+  // directories per root, the root itself included. Past the cap the
+  // walk stops opening new directories and returns the SKILL.md paths
+  // found so far. The web twin in shared.js states the same budget; the
+  // skills tests pin the two together.
+  const budget = createTraversalBudget({ maxDirs: 5000 });
   const results: string[] = [];
-  let visitedDirs = 0;
   const walkDir = (dir: string) => {
-    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return;
-    visitedDirs += 1;
+    if (!budget.visitDir()) return;
     let entries: fs.Dirent[] = [];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -3180,30 +3223,26 @@ type SkillSupportingFilesListing = {
   truncated: boolean;
 };
 
-// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
-// node_modules, generated docs); one detail request must not walk all of it,
-// least of all synchronously on the extension host. Keep these in sync with
-// SKILL_SUPPORTING_FILES_MAX_* in packages/web/server/lib/opencode/shared.js.
-const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
-const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
-
 const listSupportingFiles = (skillDir: string): SkillSupportingFilesListing => {
   if (!fs.existsSync(skillDir)) return { files: [], truncated: false };
 
+  // A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+  // node_modules, generated docs); one detail request must not walk all of
+  // it, least of all synchronously on the extension host. The traversal
+  // budget states this walk's counting: at most 5,000 directories and
+  // 5,000 files. The web twin in shared.js states the same budget.
+  const budget = createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 });
   const files: SupportingFile[] = [];
-  let visitedDirectories = 0;
-  let truncated = false;
 
-  // Returns false once a limit is hit, so every caller unwinds and the walk
-  // stops instead of merely stopping collection. Files and directories seen
-  // before the limit are kept, in the original traversal order; a tree that
-  // ends exactly at a limit is complete, not truncated.
+  // Returns false once the budget is spent, so every caller unwinds and
+  // the walk stops instead of merely stopping collection. Files and
+  // directories seen before the bound are kept, in the original traversal
+  // order; a tree that ends exactly at a bound is complete, not truncated
+  // (the budget flags truncation only when a consultation is refused).
   const walkDir = (dir: string, relativePath: string = ''): boolean => {
-    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
-      truncated = true;
+    if (!budget.visitDir()) {
       return false;
     }
-    visitedDirectories += 1;
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -3215,8 +3254,7 @@ const listSupportingFiles = (skillDir: string): SkillSupportingFilesListing => {
           return false;
         }
       } else if (entry.name !== 'SKILL.md') {
-        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
-          truncated = true;
+        if (!budget.visitEntry()) {
           return false;
         }
         files.push({
@@ -3230,7 +3268,7 @@ const listSupportingFiles = (skillDir: string): SkillSupportingFilesListing => {
   };
 
   walkDir(skillDir);
-  return { files, truncated };
+  return { files, truncated: budget.truncated };
 };
 
 export const discoverSkills = (workingDirectory?: string): DiscoveredSkill[] => {
