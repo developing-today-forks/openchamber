@@ -14,6 +14,7 @@ import {
   mergeDiscoveredSkills,
   parseMdFile,
   SKILL_WALK_MAX_DIRS,
+  updateSkill,
 } from './opencodeConfig';
 
 describe('VS Code skill discovery parity', () => {
@@ -351,5 +352,32 @@ describe('VS Code parseMdFile size gate (#1157)', () => {
       expect(snippets.map((snippet) => snippet.name)).toEqual(['tiny']);
       expect(snippets[0].content).toBe('hello');
     });
+  });
+});
+
+describe('VS Code skill update Markdown cap ordering (#1444)', () => {
+  test('refuses an over-cap Markdown update before touching supporting files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-update-cap-'));
+    try {
+      const skillDir = path.join(dir, '.opencode', 'skills', 'guarded-skill');
+      fs.mkdirSync(path.join(skillDir, 'references'), { recursive: true });
+      const skillMd = '---\nname: guarded-skill\ndescription: Has supporting files\n---\n\nbody\n';
+      fs.writeFileSync(path.join(skillDir, 'SKILL.md'), skillMd, 'utf8');
+      fs.writeFileSync(path.join(skillDir, 'references', 'keep.md'), 'keep me', 'utf8');
+
+      expect(() => updateSkill('guarded-skill', {
+        instructions: 'x'.repeat(MD_FILE_MAX_BYTES + 1),
+        supportingFiles: [
+          { path: 'references/keep.md', delete: true },
+          { path: 'references/new.md', content: 'new' },
+        ],
+      }, dir)).toThrow(expect.objectContaining({ code: 'ERR_MD_FILE_TOO_LARGE' }));
+
+      expect(fs.readFileSync(path.join(skillDir, 'references', 'keep.md'), 'utf8')).toBe('keep me');
+      expect(fs.existsSync(path.join(skillDir, 'references', 'new.md'))).toBe(false);
+      expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')).toBe(skillMd);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

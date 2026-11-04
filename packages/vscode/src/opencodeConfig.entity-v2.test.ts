@@ -158,7 +158,7 @@ describe('VS Code entity modules speak OpenCode 2 shapes', () => {
     const { createAgent, MD_FILE_MAX_BYTES } = await loadConfig();
     assert.throws(
       () => createAgent('huge', { description: 'Huge', system: 'x'.repeat(MD_FILE_MAX_BYTES + 1) }, projectDir, 'project'),
-      (error: unknown) => (error as NodeJS.ErrnoException).code === 'ERR_MD_FILE_TOO_LARGE',
+      (error: NodeJS.ErrnoException) => error.code === 'ERR_MD_FILE_TOO_LARGE',
     );
     assert.equal(fs.existsSync(path.join(projectDir, '.opencode', 'agents', 'huge.md')), false);
   });

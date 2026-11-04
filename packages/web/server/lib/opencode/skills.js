@@ -9,6 +9,7 @@ import {
   parseMdFile,
   parseMdFileAsync,
   writeMdFile,
+  assertMdFileWithinCap,
   readConfigLayers,
   readConfig,
   walkSkillMdFiles,
@@ -640,6 +641,11 @@ async function updateSkillNow(skillName, updates, workingDirectory, targetPath =
   }
 
   let mdModified = false;
+  // Supporting-file changes are collected, not applied, during the field
+  // loop: the serialized Markdown is validated against its cap before
+  // anything on disk changes, so a refused Markdown cannot leave writes
+  // or deletions behind (#1444, Codex review).
+  const supportingOps = [];
 
   for (const [field, value] of Object.entries(updates)) {
     if (field === 'scope' || field === 'source' || field === 'targetPath' || field === 'renameTo') {
@@ -657,9 +663,12 @@ async function updateSkillNow(skillName, updates, workingDirectory, targetPath =
       if (Array.isArray(value)) {
         for (const file of value) {
           if (file.delete && file.path) {
-            deleteSkillSupportingFile(mdDir, file.path);
+            const target = file.path;
+            supportingOps.push(() => deleteSkillSupportingFile(mdDir, target));
           } else if (file.path && file.content !== undefined) {
-            writeSkillSupportingFile(mdDir, file.path, file.content);
+            const target = file.path;
+            const content = file.content;
+            supportingOps.push(() => writeSkillSupportingFile(mdDir, target, content));
           }
         }
       }
@@ -678,6 +687,10 @@ async function updateSkillNow(skillName, updates, workingDirectory, targetPath =
     mdModified = true;
   }
 
+  if (mdModified) {
+    assertMdFileWithinCap(mdPath, mdData.frontmatter, mdData.body);
+  }
+  for (const op of supportingOps) op();
   if (mdModified) {
     writeMdFile(mdPath, mdData.frontmatter, mdData.body);
   }

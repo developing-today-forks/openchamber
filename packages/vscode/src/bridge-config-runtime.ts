@@ -935,6 +935,9 @@ export async function handleConfigBridgeMessage(
         try {
           writeSkillSupportingFile(skillDir, relativePath, content || '');
         } catch (error) {
+          // SAFETY: writeSkillSupportingFile throws codedError values,
+          // which carry a string `code`; anything without the too-large
+          // code is an unexpected failure and is rethrown untouched below.
           const errorCode = (error as NodeJS.ErrnoException | null)?.code;
           if (errorCode === SKILL_SUPPORTING_FILE_TOO_LARGE_CODE) {
             return { id, type, success: false, error: error instanceof Error ? error.message : String(error) };

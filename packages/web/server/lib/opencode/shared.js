@@ -16,6 +16,7 @@ import { readSectionEntry, readMcpEntry } from './config-v2.js';
 import { resolveWorktreeDirectory } from './worktree-directory.js';
 import { writeFileAtomic } from './atomic-write.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
+import { isString } from '../shared/guards.js';
 
 // ============== PATH CONSTANTS ==============
 
@@ -204,18 +205,29 @@ function parseMdContent(rawContent, filePath) {
 
 // `flag: 'wx'` creates the file and fails with EEXIST when it is already
 // there; that error is passed on as is so a caller can tell it apart.
+const serializeMdContent = (frontmatter, body) => {
+  const cleanedFrontmatter = Object.fromEntries(
+    Object.entries(frontmatter).filter(([, value]) => value != null)
+  );
+  const yamlStr = yaml.stringify(cleanedFrontmatter);
+  return `---\n${yamlStr}---\n\n${body}`;
+};
+
+// The write side of the parse cap (#1444): refuse a serialized result
+// parseMdFile would refuse, so a save cannot strand the file. Callers
+// that must not change anything else first (skill update applies
+// supporting-file changes in the same request) assert through this
+// before touching the disk at all.
+function assertMdFileWithinCap(filePath, frontmatter, body) {
+  if (Buffer.byteLength(serializeMdContent(frontmatter, body), 'utf8') > MD_FILE_MAX_BYTES) {
+    throw mdFileTooLargeError(filePath);
+  }
+}
+
 function writeMdFile(filePath, frontmatter, body, { flag = 'w' } = {}) {
   try {
-    const cleanedFrontmatter = Object.fromEntries(
-      Object.entries(frontmatter).filter(([, value]) => value != null)
-    );
-    const yamlStr = yaml.stringify(cleanedFrontmatter);
-    const content = `---\n${yamlStr}---\n\n${body}`;
-    // The write side of the parse cap (#1444): refuse a serialized result
-    // parseMdFile would refuse, so a save cannot strand the file.
-    if (Buffer.byteLength(content, 'utf8') > MD_FILE_MAX_BYTES) {
-      throw mdFileTooLargeError(filePath);
-    }
+    const content = serializeMdContent(frontmatter, body);
+    assertMdFileWithinCap(filePath, frontmatter, body);
     if (flag === 'wx') {
       fs.writeFileSync(filePath, content, { encoding: 'utf8', flag });
     } else {
@@ -1235,7 +1247,7 @@ function readSkillSupportingFile(skillDir, relativePath) {
 // that write several files as one operation (skill create/update)
 // assert every file up front, so a refusal cannot leave a partial set.
 function assertSkillSupportingFileWithinCap(relativePath, content) {
-  if (typeof content === 'string' && Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
+  if (isString(content) && Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
     throw Object.assign(
       new Error(`Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`),
       { code: SKILL_SUPPORTING_FILE_TOO_LARGE_CODE },
@@ -1287,6 +1299,7 @@ export {
   parseMdFileAsync,
   MD_FILE_MAX_BYTES,
   writeMdFile,
+  assertMdFileWithinCap,
   MAX_CONFIG_FILE_BYTES,
   readConfigFile,
   readConfigLayer,

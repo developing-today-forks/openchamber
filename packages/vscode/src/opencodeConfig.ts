@@ -2115,21 +2115,32 @@ export const parseMdFile = (filePath: string): { frontmatter: Record<string, unk
   return { frontmatter, body: (match[2] || '').trim() };
 };
 
-const writeMdFile = (filePath: string, frontmatter: Record<string, unknown>, body: string) => {
+const serializeMdContent = (frontmatter: Parameters<typeof writeMdFile>[1], body: string): string => {
   // Filter out null/undefined values - OpenCode expects keys to be omitted rather than set to null
   const cleanedFrontmatter = Object.fromEntries(
     Object.entries(frontmatter ?? {}).filter(([, value]) => value != null)
   );
   const yamlStr = yaml.stringify(cleanedFrontmatter);
-  const content = `${`---\n${yamlStr}---\n\n${body ?? ''}`.trimEnd()}\n`;
-  // The write side of the parse cap (#1444): refuse a serialized result
-  // parseMdFile would refuse, so a save cannot strand the file.
+  return `${`---\n${yamlStr}---\n\n${body ?? ''}`.trimEnd()}\n`;
+};
+
+// The write side of the parse cap (#1444): refuse a serialized result
+// parseMdFile would refuse, so a save cannot strand the file. Callers
+// that must not change anything else first (skill update applies
+// supporting-file changes in the same request) assert through this
+// before touching the disk at all.
+const assertMdContentWithinCap = (filePath: string, content: string): void => {
   if (Buffer.byteLength(content, 'utf8') > MD_FILE_MAX_BYTES) {
     throw codedError(
       `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${filePath}`,
       'ERR_MD_FILE_TOO_LARGE',
     );
   }
+};
+
+const writeMdFile = (filePath: string, frontmatter: Record<string, unknown>, body: string) => {
+  const content = serializeMdContent(frontmatter, body);
+  assertMdContentWithinCap(filePath, content);
   writeFileAtomic(filePath, content);
 };
 
@@ -3681,6 +3692,8 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
   // Refuse an over-cap supporting file before any field is applied, so a
   // failed update leaves the skill exactly as it was (#1444).
   if (Array.isArray(updates.supportingFiles)) {
+    // SAFETY: the Array.isArray check above establishes the element
+    // shape this loop reads; each entry's fields are re-checked before use.
     for (const file of updates.supportingFiles as Array<{ delete?: boolean; path?: string; content?: string }>) {
       if (!file.delete && file.path && file.content !== undefined) {
         assertSkillSupportingFileWithinCap(file.path, file.content);
@@ -3689,6 +3702,11 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
   }
 
   let mdModified = false;
+  // Supporting-file changes are collected, not applied, during the field
+  // loop: the serialized Markdown is validated against its cap before
+  // anything on disk changes, so a refused Markdown cannot leave writes
+  // or deletions behind (#1444, Codex review).
+  const supportingOps: Array<() => void> = [];
   
   for (const [field, value] of Object.entries(updates || {})) {
     if (field === 'scope' || field === 'source' || field === 'targetPath' || field === 'renameTo') continue;
@@ -3703,9 +3721,12 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
     if (field === 'supportingFiles' && Array.isArray(value)) {
       for (const file of value as Array<{ delete?: boolean; path?: string; content?: string }>) {
         if (file.delete && file.path) {
-          deleteSkillSupportingFile(mdDir, file.path);
+          const target = file.path;
+          supportingOps.push(() => deleteSkillSupportingFile(mdDir, target));
         } else if (file.path && file.content !== undefined) {
-          writeSkillSupportingFile(mdDir, file.path, file.content);
+          const target = file.path;
+          const content = file.content;
+          supportingOps.push(() => writeSkillSupportingFile(mdDir, target, content));
         }
       }
       continue;
@@ -3723,6 +3744,10 @@ export const updateSkill = (skillName: string, updates: Record<string, unknown>,
     mdModified = true;
   }
   
+  if (mdModified) {
+    assertMdContentWithinCap(mdPath, serializeMdContent(mdData.frontmatter, mdData.body));
+  }
+  for (const op of supportingOps) op();
   if (mdModified) {
     writeMdFile(mdPath, mdData.frontmatter, mdData.body);
   }

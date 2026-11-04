@@ -209,6 +209,32 @@ describe('skills', () => {
       }
     });
 
+    it('refuses an update whose Markdown is over the cap before touching supporting files (#1444)', async () => {
+      const { tempRoot, projectRoot } = await makeProject();
+      try {
+        await createSkill('guarded-skill', {
+          description: 'Has supporting files',
+          supportingFiles: [{ path: 'references/keep.md', content: 'keep me' }],
+        }, projectRoot, 'project');
+        const before = await fsPromises.readFile(skillPath(projectRoot, 'guarded-skill'), 'utf8');
+
+        await expect(updateSkill('guarded-skill', {
+          instructions: 'x'.repeat(4 * 1024 * 1024 + 1),
+          supportingFiles: [
+            { path: 'references/keep.md', delete: true },
+            { path: 'references/new.md', content: 'new' },
+          ],
+        }, projectRoot)).rejects.toMatchObject({ code: 'ERR_MD_FILE_TOO_LARGE' });
+
+        const skillDir = path.dirname(skillPath(projectRoot, 'guarded-skill'));
+        expect(await fsPromises.readFile(path.join(skillDir, 'references', 'keep.md'), 'utf8')).toBe('keep me');
+        expect(fs.existsSync(path.join(skillDir, 'references', 'new.md'))).toBe(false);
+        expect(await fsPromises.readFile(skillPath(projectRoot, 'guarded-skill'), 'utf8')).toBe(before);
+      } finally {
+        await fsPromises.rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+
     it('does not write an edit into the folder of a skill renamed meanwhile', async () => {
       const { tempRoot, projectRoot } = await makeProject();
       const oldDir = path.dirname(skillPath(projectRoot, 'moving-skill'));
