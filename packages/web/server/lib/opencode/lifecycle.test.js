@@ -935,6 +935,42 @@ describe('OpenCode lifecycle', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it('does not wedge external health checks when the info body stalls', async () => {
+    // Headers arrive at once; the body never does. The probe's abort
+    // deadline must still fire while the body is being read — a real
+    // fetch errors the body stream when its signal aborts — or the
+    // health-check cycle promise stays pending and every later check
+    // reuses it, leaving readiness frozen at its previous value.
+    const stallingFetch = vi.fn(async (_url, init) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    globalThis.fetch = stallingFetch;
+    const runtime = createRuntime({}, {
+      openCodePort: 45678,
+      isExternalOpenCode: true,
+      isOpenCodeReady: true,
+    });
+
+    await runtime.triggerHealthCheck();
+
+    expect(runtime.testState.isOpenCodeReady).toBe(false);
+    expect(stallingFetch).toHaveBeenCalledTimes(1);
+
+    // The cycle is not wedged: the next check issues a fresh probe and
+    // readiness recovers when the server answers.
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      Response.json({ version: '2.0.20', pid: 1, urls: [], paths: { tmp: '/tmp' } }),
+    );
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  }, 20_000);
+
   it('does not mistake a live managed process wrapper for an exited child', async () => {
     const close = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

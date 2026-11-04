@@ -979,9 +979,9 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
       return false;
     }
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3000);
       const base = origin ?? `http://127.0.0.1:${port}`;
       const response = await fetch(`${base}${OPENCODE_HEALTH_PATH}`, {
         method: 'GET',
@@ -991,11 +991,16 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         },
         signal: controller.signal,
       });
-      clearTimeout(timeout);
+      // The deadline stays active until the body is consumed: a server
+      // that sends 200 headers and then stalls the body would otherwise
+      // wedge this probe — and every health-check cycle sharing its
+      // promise — forever.
       const info = await readOpenCodeInfo(response);
       return info !== null && isSupportedOpenCodeVersion(info.version);
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   };
 
