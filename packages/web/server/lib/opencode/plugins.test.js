@@ -221,6 +221,22 @@ describe('opencode plugins data layer', () => {
     expect(plugins.readPluginDirFile(file.id, projectDir)).toEqual({ fileName: 'at-limit.js', scope: 'project', content });
   });
 
+  test('refuses an over-cap plugin write and leaves any existing file byte-identical (#1444)', () => {
+    const dirPath = path.join(projectDir, '.opencode', 'plugins');
+    fs.mkdirSync(dirPath, { recursive: true });
+    const overCap = 'x'.repeat(MAX_PLUGIN_FILE_BYTES + 1);
+
+    const createError = thrownBy(() => plugins.writePluginDirFile({ fileName: 'new-over.js', content: overCap, scope: 'project' }, projectDir));
+    expect(createError.code).toBe('PLUGIN_FILE_TOO_LARGE');
+    expect(fs.existsSync(path.join(dirPath, 'new-over.js'))).toBe(false);
+
+    const existingPath = path.join(dirPath, 'existing.js');
+    fs.writeFileSync(existingPath, 'original', 'utf8');
+    const updateError = thrownBy(() => plugins.writePluginDirFile({ fileName: 'existing.js', content: overCap, scope: 'project' }, projectDir, { overwrite: true }));
+    expect(updateError.code).toBe('PLUGIN_FILE_TOO_LARGE');
+    expect(fs.readFileSync(existingPath, 'utf8')).toBe('original');
+  });
+
   test('refuses an oversized plugin file before reading it', () => {
     const fileName = 'over-limit.js';
     const filePath = path.join(projectDir, '.opencode', 'plugins', fileName);

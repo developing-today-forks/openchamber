@@ -166,6 +166,30 @@ describe('parseMdFile size gate (#1143)', () => {
 });
 
 describe('writeMdFile', () => {
+  it('refuses a serialized result over the parse cap and leaves the file unchanged (#1444)', () => {
+    const file = writeFixture('over-cap.md', STANDARD_MD);
+    const before = fs.readFileSync(file, 'utf8');
+    let error;
+    try {
+      writeMdFile(file, { description: 'My build agent' }, 'x'.repeat(MD_FILE_MAX_BYTES));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error?.code).toBe('ERR_MD_FILE_TOO_LARGE');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('writes a serialized result exactly at the parse cap and reads it back (#1444)', () => {
+    const file = writeFixture('at-cap-write.md', STANDARD_MD);
+    const frontmatter = { description: 'My build agent' };
+    writeMdFile(file, frontmatter, 'x');
+    const overhead = fs.statSync(file).size - 1;
+    const body = 'x'.repeat(MD_FILE_MAX_BYTES - overhead);
+    writeMdFile(file, frontmatter, body);
+    expect(fs.statSync(file).size).toBe(MD_FILE_MAX_BYTES);
+    expect(parseMdFile(file).body).toBe(body);
+  });
+
   beforeEach(() => {
     fs.rmSync(FIXTURE_DIR, { recursive: true, force: true });
     fs.mkdirSync(FIXTURE_DIR, { recursive: true });

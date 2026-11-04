@@ -217,6 +217,81 @@ describe('VS Code config bridge plugin parity', () => {
     expect(read?.data).toEqual({ fileName: 'demo-plugin.ts', scope: 'project', content: 'export default {}' });
   });
 
+  test('refuses over-cap plugin file writes and leaves any existing file unchanged (#1444)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-write-cap-'));
+    tempRoots.push(root);
+    const ctx = createCtx(root);
+    const overCap = 'x'.repeat(MAX_PLUGIN_FILE_BYTES + 1);
+
+    const created = await handleConfigBridgeMessage({
+      id: 'create-over-cap-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'POST',
+        target: 'file',
+        directory: root,
+        body: { scope: 'project', fileName: 'over-cap.ts', content: overCap },
+      },
+    }, ctx, deps);
+    expect(created?.success).toBe(false);
+    expect(created?.code).toBe('PLUGIN_FILE_TOO_LARGE');
+    expect(fs.existsSync(path.join(root, '.opencode', 'plugins', 'over-cap.ts'))).toBe(false);
+
+    const small = await handleConfigBridgeMessage({
+      id: 'create-small-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'POST',
+        target: 'file',
+        directory: root,
+        body: { scope: 'project', fileName: 'small.ts', content: 'original' },
+      },
+    }, ctx, deps);
+    expect(small?.success).toBe(true);
+
+    const listed = await handleConfigBridgeMessage({
+      id: 'list-write-cap',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'list', directory: root },
+    }, ctx, deps);
+    const file = listed?.data?.files?.find((candidate) => candidate.fileName === 'small.ts');
+
+    const updated = await handleConfigBridgeMessage({
+      id: 'update-over-cap-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'PUT',
+        target: 'file',
+        directory: root,
+        pluginId: file?.id,
+        body: { content: overCap },
+      },
+    }, ctx, deps);
+    expect(updated?.success).toBe(false);
+    expect(updated?.code).toBe('PLUGIN_FILE_TOO_LARGE');
+    expect(fs.readFileSync(path.join(root, '.opencode', 'plugins', 'small.ts'), 'utf8')).toBe('original');
+
+    const atCap = 'x'.repeat(MAX_PLUGIN_FILE_BYTES);
+    const updatedAtCap = await handleConfigBridgeMessage({
+      id: 'update-at-cap-file',
+      type: 'api:config/plugins',
+      payload: {
+        method: 'PUT',
+        target: 'file',
+        directory: root,
+        pluginId: file?.id,
+        body: { content: atCap },
+      },
+    }, ctx, deps);
+    expect(updatedAtCap?.success).toBe(true);
+    const read = await handleConfigBridgeMessage({
+      id: 'read-at-cap-file',
+      type: 'api:config/plugins',
+      payload: { method: 'GET', target: 'file', directory: root, pluginId: file?.id },
+    }, ctx, deps);
+    expect(read?.data?.content).toBe(atCap);
+  });
+
   test('refuses over-limit plugin files on GET and PUT without reading or overwriting them', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-plugin-file-limit-'));
     tempRoots.push(root);
@@ -705,6 +780,27 @@ describe('VS Code config bridge skill supporting-file size gate (#1158)', () => 
     const small = await getSupportingFile(root, 'small.txt');
     expect(small?.success).toBe(true);
     expect(small?.data).toEqual({ content: 'hello' });
+  });
+
+  test('refuses an over-cap supporting-file PUT and leaves the file unchanged (#1444)', async () => {
+    const root = createProjectSkill({ 'doc.txt': 'original' });
+
+    const mutateSupportingFile = (method, filePath, content) => handleConfigBridgeMessage({
+      id: 'skill-file-mutate',
+      type: 'api:config/skills/files',
+      payload: { method, name: 'cap-test-skill', filePath, content },
+    }, createCtx(root), deps);
+
+    const refused = await mutateSupportingFile('PUT', 'doc.txt', 'a'.repeat(SKILL_FILE_CAP + 1));
+    expect(refused?.success).toBe(false);
+    expect(refused?.error).toContain('too large');
+    expect(fs.readFileSync(path.join(root, '.opencode', 'skills', 'cap-test-skill', 'doc.txt'), 'utf8')).toBe('original');
+
+    const atCap = 'a'.repeat(SKILL_FILE_CAP);
+    const written = await mutateSupportingFile('PUT', 'doc.txt', atCap);
+    expect(written?.success).toBe(true);
+    const readBack = await getSupportingFile(root, 'doc.txt');
+    expect(readBack?.data).toEqual({ content: atCap });
   });
 
   test('preserves supporting-file PUT and DELETE behavior', async () => {

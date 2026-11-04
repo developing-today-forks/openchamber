@@ -68,6 +68,39 @@ test('global CRUD uses XDG while project writes stay in the project', () => {
   }
 });
 
+test('a refused over-cap skill create leaves no skill directory behind (#1444)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-overcap-'));
+  const configHome = path.join(root, 'config');
+  const project = path.join(root, 'project');
+  try {
+    const result = spawnSync(process.execPath, ['--eval', `
+      const fs = await import('node:fs');
+      const path = await import('node:path');
+      const { createSkill } = await import(${JSON.stringify(configUrl)});
+      const project = ${JSON.stringify(project)};
+      let code = '';
+      try {
+        createSkill('overcap-skill', {
+          description: 'Has an oversized supporting file',
+          instructions: 'Do the thing.',
+          supportingFiles: [{ path: 'references/big.md', content: 'x'.repeat(1024 * 1024 + 1) }],
+        }, project, 'project');
+      } catch (error) {
+        code = error?.code ?? '';
+      }
+      const dir = path.join(project, '.opencode', 'skills', 'overcap-skill');
+      process.stdout.write(code + '|' + String(fs.existsSync(dir)));
+    `], {
+      env: { ...process.env, XDG_CONFIG_HOME: configHome, OPENCODE_CONFIG: '', OPENCODE_CONFIG_DIR: '' },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'skill_supporting_file_too_large|false');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a global opencode.jsonc beside opencode.json overrides it when reading', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-jsonc-'));
   const configHome = path.join(root, 'config');

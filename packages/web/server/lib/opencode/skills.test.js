@@ -196,6 +196,48 @@ describe('skills', () => {
       }
     });
 
+    it('refuses a create whose supporting file is over the cap and leaves no partial skill (#1444)', async () => {
+      const { tempRoot, projectRoot } = await makeProject();
+      try {
+        await expect(createSkill('overcap-skill', {
+          description: 'Has an oversized supporting file',
+          supportingFiles: [{ path: 'references/big.md', content: 'x'.repeat(1024 * 1024 + 1) }],
+        }, projectRoot, 'project')).rejects.toMatchObject({ code: 'skill_supporting_file_too_large' });
+        expect(fs.existsSync(skillPath(projectRoot, 'overcap-skill'))).toBe(false);
+        // The refusal happens before the skill directory is created, so no
+        // empty directory is left behind either (CodeRabbit review, #1444).
+        expect(fs.existsSync(path.dirname(skillPath(projectRoot, 'overcap-skill')))).toBe(false);
+      } finally {
+        await fsPromises.rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses an update whose Markdown is over the cap before touching supporting files (#1444)', async () => {
+      const { tempRoot, projectRoot } = await makeProject();
+      try {
+        await createSkill('guarded-skill', {
+          description: 'Has supporting files',
+          supportingFiles: [{ path: 'references/keep.md', content: 'keep me' }],
+        }, projectRoot, 'project');
+        const before = await fsPromises.readFile(skillPath(projectRoot, 'guarded-skill'), 'utf8');
+
+        await expect(updateSkill('guarded-skill', {
+          instructions: 'x'.repeat(4 * 1024 * 1024 + 1),
+          supportingFiles: [
+            { path: 'references/keep.md', delete: true },
+            { path: 'references/new.md', content: 'new' },
+          ],
+        }, projectRoot)).rejects.toMatchObject({ code: 'ERR_MD_FILE_TOO_LARGE' });
+
+        const skillDir = path.dirname(skillPath(projectRoot, 'guarded-skill'));
+        expect(await fsPromises.readFile(path.join(skillDir, 'references', 'keep.md'), 'utf8')).toBe('keep me');
+        expect(fs.existsSync(path.join(skillDir, 'references', 'new.md'))).toBe(false);
+        expect(await fsPromises.readFile(skillPath(projectRoot, 'guarded-skill'), 'utf8')).toBe(before);
+      } finally {
+        await fsPromises.rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+
     it('does not write an edit into the folder of a skill renamed meanwhile', async () => {
       const { tempRoot, projectRoot } = await makeProject();
       const oldDir = path.dirname(skillPath(projectRoot, 'moving-skill'));

@@ -604,7 +604,14 @@ export async function handleConfigBridgeMessage(
           return { id, type, success: true, data: file };
         }
         if (normalizedMethod === 'POST') {
-          writePluginDirFile(body || {}, workingDirectory);
+          try {
+            writePluginDirFile(body || {}, workingDirectory);
+          } catch (error) {
+            if (error instanceof Error && 'code' in error && error.code === 'PLUGIN_FILE_TOO_LARGE') {
+              return { id, type, success: false, error: error.message, code: 'PLUGIN_FILE_TOO_LARGE' };
+            }
+            throw error;
+          }
         } else if (normalizedMethod === 'PUT') {
           if (!pluginId) return { id, type, success: false, error: 'Plugin file id is required' };
           let existing: ReturnType<typeof readPluginDirFile>;
@@ -617,7 +624,14 @@ export async function handleConfigBridgeMessage(
             throw error;
           }
           if (!existing) return { id, type, success: false, error: 'Plugin file not found' };
-          writePluginDirFile({ fileName: existing.fileName, scope: existing.scope, content: body?.content }, workingDirectory, { overwrite: true });
+          try {
+            writePluginDirFile({ fileName: existing.fileName, scope: existing.scope, content: body?.content }, workingDirectory, { overwrite: true });
+          } catch (error) {
+            if (error instanceof Error && 'code' in error && error.code === 'PLUGIN_FILE_TOO_LARGE') {
+              return { id, type, success: false, error: error.message, code: 'PLUGIN_FILE_TOO_LARGE' };
+            }
+            throw error;
+          }
         } else if (normalizedMethod === 'DELETE') {
           if (!pluginId) return { id, type, success: false, error: 'Plugin file id is required' };
           deletePluginDirFile(pluginId, workingDirectory);
@@ -918,7 +932,18 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'PUT') {
-        writeSkillSupportingFile(skillDir, relativePath, content || '');
+        try {
+          writeSkillSupportingFile(skillDir, relativePath, content || '');
+        } catch (error) {
+          // SAFETY: writeSkillSupportingFile throws codedError values,
+          // which carry a string `code`; anything without the too-large
+          // code is an unexpected failure and is rethrown untouched below.
+          const errorCode = (error as NodeJS.ErrnoException | null)?.code;
+          if (errorCode === SKILL_SUPPORTING_FILE_TOO_LARGE_CODE) {
+            return { id, type, success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+          throw error;
+        }
         return { id, type, success: true, data: { success: true } };
       }
 
