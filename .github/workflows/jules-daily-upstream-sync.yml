@@ -1,7 +1,7 @@
 name: Jules Daily Upstream Sync (OpenChamber)
 
 # Daily automated upstream sync, conflict resolution, feature-opportunity triage,
-# and safe merging for developing-today/openchamber, run by an OpenCode
+# and safe merging for developing-today-forks/openchamber, run by an OpenCode
 # session launched through pm-dispatch (developing-today/code#2672).
 
 on:
@@ -67,7 +67,7 @@ jobs:
             ### 3. FEATURE OPPORTUNITY TRIAGE & ISSUE CREATION
             - Inspect the newly merged upstream commits (`git log ... --grep="^feat"`).
             - Identify if any new upstream capabilities, refactors, or UI surfaces could be adopted or built upon by our fork's additions (such as interactive render pages, project knowledge plans, model routing tiers, or plan cost tracking).
-            - For each identified high-value synergy, create a comprehensive GitHub issue using `gh issue create --repo developing-today/openchamber` containing:
+            - For each identified high-value synergy, create a comprehensive GitHub issue using `gh issue create --repo developing-today-forks/openchamber` containing:
               - Clear title and summary
               - Upstream commit references
               - Architectural context and user story

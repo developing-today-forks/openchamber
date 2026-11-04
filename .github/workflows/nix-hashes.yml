@@ -18,7 +18,7 @@ concurrency:
 jobs:
   rehash:
     # This fork keeps its own flake (aarch64-darwin app, dev shells, the
-    # developing-today/opencode input), which has none of the outputs this job
+    # developing-today-forks/opencode input), which has none of the outputs this job
     # evaluates or re-bakes. Runs only upstream until the flakes are reconciled.
     if: github.repository == 'openchamber/openchamber'
     runs-on: ubuntu-latest

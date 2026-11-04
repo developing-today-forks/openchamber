@@ -26,7 +26,7 @@ concurrency:
 jobs:
   stale:
     timeout-minutes: 10
-    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today/openchamber' }}
+    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today-forks/openchamber' }}
     runs-on: ubuntu-latest
     steps:
       # The bot app token is preferred, but a repository that has not

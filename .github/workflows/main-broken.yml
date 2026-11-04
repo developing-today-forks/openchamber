@@ -60,7 +60,7 @@ jobs:
       issues: write
       id-token: write
     if: >-
-      github.repository == 'developing-today/openchamber' &&
+      github.repository == 'developing-today-forks/openchamber' &&
       (github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'failure' &&
       (github.event.workflow_run.event == 'push' ||

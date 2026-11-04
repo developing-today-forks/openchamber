@@ -57,7 +57,7 @@ jobs:
     concurrency:
       group: repo-sweeper-pr-intake
       cancel-in-progress: true
-    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today/openchamber' }}
+    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today-forks/openchamber' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -274,7 +274,7 @@ jobs:
     concurrency:
       group: repo-sweeper-merge-conflict
       cancel-in-progress: true
-    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today/openchamber' }}
+    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today-forks/openchamber' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -313,7 +313,7 @@ jobs:
     concurrency:
       group: repo-sweeper-issue-collect
       cancel-in-progress: true
-    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today/openchamber' }}
+    if: ${{ github.repository == 'openchamber/openchamber' || github.repository == 'developing-today-forks/openchamber' }}
     runs-on: ubuntu-latest
     permissions: {}
     outputs:

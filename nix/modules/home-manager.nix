@@ -2,7 +2,7 @@
 #
 # openchamber module — home-manager.
 #
-# Canonical home: developing-today/openchamber, nix/modules
+# Canonical home: developing-today-forks/openchamber, nix/modules
 # (openchamber#1440). The Linux branch installs the same systemd
 # user service + socket as nixos.nix (see it for the
 # socket/KillMode/NotifyAccess rationale). The darwin branch
