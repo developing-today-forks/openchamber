@@ -22,6 +22,8 @@ import { buildGoalIntroText, createSessionGoal } from '../session-goal/create.js
 import { OpenChamberControlError, asControlError } from '../openchamber-control/error.js';
 import { readObjective, writeObjective } from '../session-goal/objectives.js';
 import { createArchiveStore } from './archive-store.js';
+import { createIdleSessionReaper } from './idle-session-reaper.js';
+import { createSessionActivityProbe } from '../opencode/session-activity.js';
 import { applyForkInheritance } from './fork-inheritance.js';
 import { createOpenCodeClient as defaultCreateOpenCodeClient } from './opencode-client.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './session-metadata-store.js';
@@ -471,6 +473,15 @@ export const createOpenChamberSessionService = (dependencies) => {
     createChangeRequestWorktree = null,
     dataDir = null,
     archiveStore: injectedArchiveStore = null,
+    idleSessionReaper: injectedIdleSessionReaper = null,
+    // Resolves the session ids enabled scheduled tasks target, so the idle
+    // reaper never archives a session out from under its schedule (#791).
+    // Null where scheduled tasks are not wired in; the reaper then reaps
+    // without that protection rather than not at all.
+    listScheduledTaskTargetIds = null,
+    // Only the real server enables the periodic idle-session sweep (#791);
+    // module tests construct the service without it.
+    enableIdleSessionReaper = false,
     sessionMetadataStore: injectedSessionMetadataStore = null,
     // Injected by the server so every metadata write takes the same path:
     // store, broadcast, and tell the goal loop. Falls back to store+broadcast
@@ -524,6 +535,72 @@ export const createOpenChamberSessionService = (dependencies) => {
     headers: getOpenCodeAuthHeaders(),
     directory,
   });
+
+  // Idle finished-session reaper (#791): bounds the live set dispatch counts
+  // by archiving, through the archive store, the sessions OpenCode reports
+  // finished (absent from /api/session/active) whose last activity is older
+  // than the reaper threshold. A parent with a working descendant counts as
+  // busy, and an unreadable active set reaps nothing.
+  const activityProbe = createSessionActivityProbe({ buildOpenCodeUrl, getOpenCodeAuthHeaders });
+  let activeStatuses = null;
+  // Bounded sweeps rotate through the full session history: archiving does
+  // not remove a record from the upstream list, so a sweep that always
+  // started at the newest page would re-examine the same first pages
+  // forever and never reach older live sessions beyond them. Each listing
+  // resumes where the previous one stopped; reaching the end wraps around.
+  let listContinuationCursor;
+  // Where the most recent fresh batch started. A sweep reads its batch
+  // twice — once to select candidates, once to revalidate them — and the
+  // revalidation must re-read the same batch, not advance into the next
+  // one; the continuation moves only on a fresh read.
+  let lastBatchStartCursor;
+  const idleSessionReaper = injectedIdleSessionReaper || createIdleSessionReaper({
+    archiveStore,
+    listSessions: async ({ revalidate = false } = {}) => {
+      const client = clientFor(undefined);
+      const sessions = [];
+      const seenCursors = new Set();
+      let cursor = revalidate ? lastBatchStartCursor : listContinuationCursor;
+      if (!revalidate) lastBatchStartCursor = cursor;
+      let exhausted = false;
+      for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+        const page = await client.session.list({ limit: 100, ...(cursor ? { cursor } : { order: 'desc' }) });
+        if (!Array.isArray(page?.data)) throw new Error('OpenCode session list returned no data page');
+        sessions.push(...page.data);
+        const next = page.cursor?.next;
+        if (!next || page.data.length === 0) {
+          exhausted = true;
+          break;
+        }
+        if (seenCursors.has(next)) break;
+        seenCursors.add(next);
+        cursor = next;
+      }
+      if (!revalidate) listContinuationCursor = exhausted ? undefined : cursor;
+      return sessions;
+    },
+    getProtectedSessionIds: listScheduledTaskTargetIds
+      ? async () => {
+          const ids = await listScheduledTaskTargetIds();
+          return ids instanceof Set ? ids : null;
+        }
+      : null,
+    onArchived: (archived) => {
+      for (const entry of archived) broadcastArchived(entry.id, entry.archivedAt);
+    },
+    getSessionStatuses: async (sessions) => {
+      activeStatuses = await activityProbe.fetchActiveSessionStatuses();
+      if (!activeStatuses) return null;
+      return new Map(
+        sessions.map((session) => [session?.id, activeStatuses[session?.id] ? { type: 'busy' } : { type: 'idle' }]),
+      );
+    },
+    hasPendingWork: async (session) => {
+      if (!activeStatuses) return null;
+      return activityProbe.hasWorkingDescendants(session.id, activeStatuses);
+    },
+  });
+  if (enableIdleSessionReaper && !injectedIdleSessionReaper) idleSessionReaper.start();
 
   const resolveStartDirectory = createStartDirectoryResolver({ resolveWorktreeTopLevel, validateWorktreeDirectory });
 
@@ -1360,6 +1437,7 @@ export const createOpenChamberSessionService = (dependencies) => {
     archive,
     unarchive,
     archiveStore,
+    idleSessionReaper,
     sessionMetadataStore,
     setMetadata,
     getMetadata,
