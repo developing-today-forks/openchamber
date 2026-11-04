@@ -21,7 +21,7 @@
     fleet.url = "github:dezren39/fleet";
     nixpkgs.follows = "fleet/nixpkgs";
     opencode = {
-      url = "github:developing-today/opencode";
+      url = "github:developing-today-forks/opencode";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
