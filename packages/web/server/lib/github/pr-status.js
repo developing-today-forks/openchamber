@@ -404,16 +404,18 @@ export const invalidateRepoPullsCache = (owner, repo, octokitOrCacheIdentity = n
     }
   }
   // A just-created PR must also clear remembered search misses for this repo.
-  const repoNameLower = normalizeText(repo).toLowerCase();
+  // Search-miss keys carry comma-separated owner/repo entries (the #1496
+  // owner-qualified search scope), so match on the full owner/repo ref.
+  const repoRefLower = normalizeLower(`${owner}/${repo}`);
   for (const key of _searchMissCache.keys()) {
     const [repoPart] = key.split('::');
-    if (repoPart && repoPart.split(',').includes(repoNameLower) && matchesIdentity(key)) {
+    if (repoPart && repoPart.split(',').includes(repoRefLower) && matchesIdentity(key)) {
       _searchMissCache.delete(key);
     }
   }
   for (const [token, key] of pendingSearchMissWrites) {
     const [repoPart] = key.split('::');
-    if (repoPart && repoPart.split(',').includes(repoNameLower) && matchesIdentity(key)) {
+    if (repoPart && repoPart.split(',').includes(repoRefLower) && matchesIdentity(key)) {
       pendingSearchMissWrites.delete(token);
     }
   }

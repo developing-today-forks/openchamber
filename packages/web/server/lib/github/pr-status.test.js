@@ -883,6 +883,23 @@ describe('pr-status search fallback scoping (#1496)', () => {
     expect(searchMock.mock.calls[0][0].q).toContain('repo:acme/app');
   });
 
+  test('invalidating the repo clears its remembered search miss', async () => {
+    const { client, searchMock } = fallbackClient('fallback-invalidate-token', [], {});
+
+    await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: false });
+    expect(searchMock.mock.calls.length).toBe(1);
+
+    // The miss is remembered: a later resolve does not spend search again.
+    await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: false });
+    expect(searchMock.mock.calls.length).toBe(1);
+
+    // A mutation on the repo invalidates the owner-qualified miss key, so
+    // the next resolve searches again instead of trusting the stale miss.
+    invalidateRepoPullsCache('acme', 'app', client);
+    await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: false });
+    expect(searchMock.mock.calls.length).toBe(2);
+  });
+
   test('finds the real PR behind same-named results from other owners', async () => {
     const { client, getMock } = fallbackClient('fallback-order-token', [searchItem('stranger', 100), searchItem('acme', 42)], {
       'stranger/app#100': branchPr(100),
