@@ -270,6 +270,49 @@ describe('apns runtime relay mode (default)', () => {
     expect(plain).toMatchObject({ title: 'Agent response is ready', body: 'Fix the login bug' });
   });
 
+  it('sends every token past 100 in chunks and acts on drop results from later chunks (#1500)', async () => {
+    const fetchMock = vi.fn(async (url, init) => {
+      if (isRegister([url])) return jsonResponse({ ok: true });
+      const sentTokens = JSON.parse(init.body).tokens;
+      // tok109 rides in the second chunk; the relay marks it dead there.
+      return jsonResponse({
+        results: sentTokens.includes('tok109') ? [{ token: 'tok109', ok: false, drop: true }] : [],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+
+    const runtime = createApnsRuntime(makeDeps());
+    const allTokens = [];
+    for (let session = 0; session < 11; session += 1) {
+      for (let i = 0; i < 10; i += 1) {
+        const token = `tok${session * 10 + i}`;
+        allTokens.push(token);
+        await runtime.addOrUpdateApnsToken(`s${session}`, token);
+      }
+    }
+
+    fetchMock.mockClear();
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b' }, {});
+
+    const sends = fetchMock.mock.calls.filter(isSend).map(([, init]) => JSON.parse(init.body));
+    expect(sends.map((send) => send.tokens.length)).toEqual([100, 10]);
+    expect(new Set(sends.flatMap((send) => send.tokens))).toEqual(new Set(allTokens));
+    for (const sent of sends) {
+      const sendMessage = `${sent.ts}.${[...sent.tokens].sort().join(',')}.${sent.title}`;
+      expect(await verifyRelaySignature(sent.publicKeyJwk, sendMessage, sent.sig)).toBe(true);
+    }
+
+    // The drop result from the second chunk removed tok109: the next send
+    // targets the remaining 109 tokens and never includes it.
+    fetchMock.mockClear();
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b' }, {});
+    const resends = fetchMock.mock.calls.filter(isSend).map(([, init]) => JSON.parse(init.body));
+    const resentTokens = resends.flatMap((send) => send.tokens);
+    expect(resentTokens).toHaveLength(109);
+    expect(resentTokens).not.toContain('tok109');
+  });
+
   it('no-ops (no relay call) when no tokens are registered', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
