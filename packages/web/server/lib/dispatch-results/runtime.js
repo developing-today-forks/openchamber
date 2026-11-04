@@ -518,6 +518,21 @@ export function createDispatchResultsRuntime({
    * and delivers its result to `parentSessionId`. Resolves once the entry is
    * on disk, so a restart right after the tool answers still delivers.
    */
+  // Registrations are serialized with their writes and rollbacks. Two
+  // overlapping registrations otherwise interleave badly in both
+  // directions: a queued snapshot can carry an entry whose own write
+  // later fails and rolls back (leaving it on disk), and an earlier write
+  // executing late can commit an entry before its own write fails (same
+  // leak, mirrored). With one registration in flight at a time, the only
+  // write that can contain a new entry is its own, so a failed write plus
+  // the in-memory rollback fully undoes the registration (#1503).
+  let registrationChain = Promise.resolve();
+  const serializeRegistration = (task) => {
+    const run = registrationChain.then(task);
+    registrationChain = run.catch(() => {});
+    return run;
+  };
+
   const register = async ({ parentSessionId, sessionId, dispatchedAt, afterIdleId }) => {
     const parent = parse(sessionIdSchema, parentSessionId);
     const watched = parse(sessionIdSchema, sessionId);
@@ -526,6 +541,7 @@ export function createDispatchResultsRuntime({
     const at = parse(timeSchema, dispatchedAt);
     if (at === null) throw new TypeError('dispatchedAt must be a timestamp');
     await load();
+    return serializeRegistration(async () => {
     const entry = { id: `dispatch-${now()}-${Math.random().toString(36).slice(2, 9)}`, parentSessionId: parent, sessionId: watched, dispatchedAt: at };
     // Kept only when it is a real baseline (an id, or null for "none yet").
     const baseline = afterIdleSchema.safeParse(afterIdleId);
@@ -549,12 +565,17 @@ export function createDispatchResultsRuntime({
       // would strand the caller waiting for a result that can never
       // arrive (#1503). Drop it and let the caller see the failure.
       entries.delete(entry.id);
+      // A write outside this registration (a delivery's persist, say)
+      // may already have committed the entry before this write failed;
+      // persist the rollback so the disk converges back to memory.
+      void persist();
       throw error;
     }
     // The session may already be done: a short turn can end before this
     // entry existed, and its idle event would then have found nothing to arm.
     arm(watched);
     return { id: entry.id };
+    });
   };
 
   const processPayload = (payload) => {
