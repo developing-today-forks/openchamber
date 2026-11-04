@@ -128,6 +128,20 @@
           services.openchamber.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.openchamber;
         };
 
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+        in
+        lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          # Regression test for the start wrapper's single-instance
+          # guard (developing-today/code#2562): builds the wrapper
+          # from nix/modules/common.nix and pins the generated tr
+          # line plus the guard's reaping of a NUL-separated leftover.
+          start-wrapper-guard = pkgs.callPackage ./nix/start-wrapper-test.nix { };
+        }
+      );
+
       # `nix run .#update-hashes` re-bakes the current system's
       # node_modules hash in nix/hashes.json (see nix/update-hashes.sh).
       apps = forAllSystems (system: {
