@@ -17,6 +17,7 @@ import { resolveWorktreeDirectory } from './worktree-directory.js';
 import { writeFileAtomic } from './atomic-write.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 import { isString } from '../shared/guards.js';
+import { createTraversalBudget } from '../shared/traversal-budget.js';
 
 // ============== PATH CONSTANTS ==============
 
@@ -964,12 +965,6 @@ async function pathExists(target) {
 // At most this many file-system calls of one walk are in flight at once.
 const SKILL_WALK_CONCURRENCY = 8;
 
-// At most this many directories one walk visits per root, the root itself
-// included. A skills root is project-controlled, and a link inside it can
-// point at a tree with tens of thousands of directories; past the cap the
-// walk stops opening new directories and returns the SKILL.md paths found
-// so far. The VS Code twin in opencodeConfig.ts uses the same value.
-const SKILL_WALK_MAX_DIRS = 5000;
 
 // Async so a skills tree with tens of thousands of entries (a bundled `.venv`
 // or `node_modules`) does not hold the server's event loop for seconds.
@@ -993,18 +988,24 @@ async function walkSkillMdFiles(rootDir) {
     }
   };
 
+  // The shared traversal budget (design #1391) owns this walk's counting:
+  // at most 5,000 directories per root, the root itself included, consulted
+  // on entry in the walk's deterministic depth-first order, so the total
+  // never passes the cap and the same tree always allocates the cap to the
+  // same directories. A skills root is project-controlled, and a link
+  // inside it can point at a tree with tens of thousands of directories;
+  // past the cap the walk stops opening new directories and returns the
+  // SKILL.md paths found so far (enumerate disposition). The VS Code twin
+  // in opencodeConfig.ts states the same budget.
+  const budget = createTraversalBudget({ maxDirs: 5000 });
+
   // `ancestors` holds the real paths of the directories on the path to `dir`.
   // Links (symlinks and Windows junctions) are followed at any depth; a link
   // back to one of its own ancestors is skipped instead of recursing forever.
   // Two links to the same target elsewhere in the tree are both walked, as the
   // top level always did.
-  let visitedDirs = 0;
   const walk = async (dir, ancestors) => {
-    // Counted on entry, in the walk's deterministic depth-first order, so
-    // the total never passes the cap and the same tree always allocates the
-    // cap to the same directories.
-    if (visitedDirs >= SKILL_WALK_MAX_DIRS) return [];
-    visitedDirs += 1;
+    if (!budget.visitDir()) return [];
 
     let realDir;
     try {
@@ -1112,32 +1113,28 @@ function resolveSkillSearchDirectories(workingDirectory) {
   return directories;
 }
 
-// A skill folder can bundle an arbitrarily large tree (a vendored .venv,
-// node_modules, generated docs); one detail request must not walk all of it.
-// Keep these in sync with SKILL_SUPPORTING_FILES_MAX_* in
-// packages/vscode/src/opencodeConfig.ts.
-const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
-const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
-
 async function listSkillSupportingFiles(skillDir) {
   if (!(await pathExists(skillDir))) {
     return { files: [], truncated: false };
   }
 
+  // A skill folder can bundle an arbitrarily large tree (a vendored .venv,
+  // node_modules, generated docs); one detail request must not walk all of
+  // it. The shared traversal budget (design #1391) owns this walk's
+  // counting: at most 5,000 directories and 5,000 files. The VS Code twin
+  // in opencodeConfig.ts states the same budget.
+  const budget = createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 });
   const files = [];
-  let visitedDirectories = 0;
-  let truncated = false;
 
-  // Returns false once a limit is hit, so every caller unwinds and the walk
-  // stops instead of merely stopping collection. Files and directories seen
-  // before the limit are kept, in the original traversal order; a tree that
-  // ends exactly at a limit is complete, not truncated.
+  // Returns false once the budget is spent, so every caller unwinds and
+  // the walk stops instead of merely stopping collection. Files and
+  // directories seen before the bound are kept, in the original traversal
+  // order; a tree that ends exactly at a bound is complete, not truncated
+  // (the budget flags truncation only when a consultation is refused).
   async function walkDir(dir, relativePath = '') {
-    if (visitedDirectories >= SKILL_SUPPORTING_FILES_MAX_DIRECTORIES) {
-      truncated = true;
+    if (!budget.visitDir()) {
       return false;
     }
-    visitedDirectories += 1;
 
     const entries = await fs.promises.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -1149,8 +1146,7 @@ async function listSkillSupportingFiles(skillDir) {
           return false;
         }
       } else if (entry.name !== 'SKILL.md') {
-        if (files.length >= SKILL_SUPPORTING_FILES_MAX_FILES) {
-          truncated = true;
+        if (!budget.visitEntry()) {
           return false;
         }
         files.push({
@@ -1164,7 +1160,7 @@ async function listSkillSupportingFiles(skillDir) {
   }
 
   await walkDir(skillDir);
-  return { files, truncated };
+  return { files, truncated: budget.truncated };
 }
 
 function assertPathWithinSkillDir(skillDir, relativePath) {
@@ -1319,14 +1315,11 @@ export {
   resolvePromptFilePath,
   writePromptFile,
   walkSkillMdFiles,
-  SKILL_WALK_MAX_DIRS,
   addSkillFromMdFile,
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
   SKILL_SUPPORTING_FILE_MAX_BYTES,
   assertSkillSupportingFileWithinCap,
-  SKILL_SUPPORTING_FILES_MAX_DIRECTORIES,
-  SKILL_SUPPORTING_FILES_MAX_FILES,
   SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
   readSkillSupportingFile,
   writeSkillSupportingFile,

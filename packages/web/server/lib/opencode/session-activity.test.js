@@ -54,6 +54,22 @@ describe('queue descendant activity', () => {
     expect(reads).toHaveLength(103);
   });
 
+  it('shares lineage reads across checks made against the same active snapshot', async () => {
+    const sessions = {
+      first: { id: 'first', parentID: 'other' },
+      second: { id: 'second', parentID: 'other' },
+      other: { id: 'other' },
+    };
+    const statuses = { first: running, second: running };
+    const { probe, reads } = createProbe(sessions);
+    expect(await probe.hasWorkingDescendants('root-a', statuses)).toBe(false);
+    expect(reads).toEqual(['first', 'other', 'second']);
+    // A second candidate checked against the same snapshot reuses the
+    // lineage the first check fetched instead of reading it all again.
+    expect(await probe.hasWorkingDescendants('root-b', statuses)).toBe(false);
+    expect(reads).toHaveLength(3);
+  });
+
   it('keeps unreadable lineage unknown and allows a later successful read', async () => {
     const sessions = { grandchild: { id: 'grandchild', parentID: 'child' }, child: { id: 'child', parentID: 'root' } };
     const { probe } = createProbe(sessions, { failureId: 'child' });

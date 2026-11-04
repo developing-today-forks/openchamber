@@ -13,9 +13,13 @@ import {
   MD_FILE_MAX_BYTES,
   mergeDiscoveredSkills,
   parseMdFile,
-  SKILL_WALK_MAX_DIRS,
   updateSkill,
 } from './opencodeConfig';
+
+// The skill walks state this value at their budget creation in
+// opencodeConfig.ts (design #1391); the cap tests below exercise the
+// walks at exactly this value.
+const SKILL_WALK_MAX_DIRS = 5000;
 
 describe('VS Code skill discovery parity', () => {
   test('merges OpenCode API skills with locally discovered fallback skills', () => {
@@ -77,13 +81,14 @@ describe('VS Code skill walk directory cap (#1357)', () => {
     }
   };
 
-  test('exports the same cap value as the web twin in shared.js', () => {
-    expect(SKILL_WALK_MAX_DIRS).toBe(5000);
+  test('states the same walk budget as the web twin in shared.js', () => {
     const webSource = fs.readFileSync(
       new URL('../../web/server/lib/opencode/shared.js', import.meta.url),
       'utf8',
     );
-    expect(webSource).toContain('SKILL_WALK_MAX_DIRS = 5000');
+    expect(webSource).toContain('createTraversalBudget({ maxDirs: 5000 })');
+    const ownSource = fs.readFileSync(new URL('./opencodeConfig.ts', import.meta.url), 'utf8');
+    expect(ownSource).toContain('createTraversalBudget({ maxDirs: 5000 })');
   });
 
   test('discovery stops at the directory cap and keeps the partial results', () => {
@@ -155,11 +160,9 @@ describe('VS Code skill supporting-files caps (#1365)', () => {
       new URL('../../web/server/lib/opencode/shared.js', import.meta.url),
       'utf8',
     );
-    expect(webSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
-    expect(webSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+    expect(webSource).toContain('createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 })');
     const ownSource = fs.readFileSync(new URL('./opencodeConfig.ts', import.meta.url), 'utf8');
-    expect(ownSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
-    expect(ownSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+    expect(ownSource).toContain('createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 })');
   });
 
   test('lists supporting files under the caps without truncation', () => {

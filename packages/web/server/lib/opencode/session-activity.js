@@ -85,8 +85,20 @@ export const createSessionActivityProbe = ({ buildOpenCodeUrl, getOpenCodeAuthHe
    * `experimental.subagent_depth` has no upper bound, and the visited set
    * ends a walk whose parent links form a cycle.
    */
+  // Parent links fetched for one active-status snapshot, shared by every
+  // descendant check made against that snapshot: a sweep asking about
+  // hundreds of candidates against the same active set would otherwise
+  // re-fetch the same lineage records for every candidate. The cache is
+  // keyed by the statuses object itself, so a fresh snapshot starts fresh
+  // and the old one is collected with it.
+  const lineageCaches = new WeakMap();
+
   const hasWorkingDescendants = async (sessionId, statuses) => {
-    const parents = new Map();
+    let parents = lineageCaches.get(statuses);
+    if (!parents) {
+      parents = new Map();
+      lineageCaches.set(statuses, parents);
+    }
     const signal = AbortSignal.timeout(timeoutMs);
     let unknown = false;
     for (const activeId of Object.keys(statuses)) {

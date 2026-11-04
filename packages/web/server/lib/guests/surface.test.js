@@ -193,6 +193,28 @@ describe('guest surface runtime', () => {
     expect(rejected[0]).toMatchObject({ status: 404 });
   });
 
+  test('closes an over-cap viewer frame with 1009 in the handler and still processes an at-cap frame', async () => {
+    // This suite runs under bun:test, where the bundled ws does not enforce
+    // maxPayload (#1464): the oversized frame reaches the handler whole, so
+    // the 1009 below can only come from the handler-side check.
+    const { port } = await createHarness();
+    const overCap = await openViewer(port);
+    await overCap.next();
+    await overCap.next();
+    overCap.ws.send('a'.repeat(256 * 1024 + 1));
+    await expect(overCap.closed).resolves.toBe(1009);
+
+    const atCap = await openViewer(port);
+    await atCap.next();
+    await atCap.next();
+    const ack = JSON.stringify({ type: 'ack', seq: 0 });
+    atCap.ws.send(ack + ' '.repeat(256 * 1024 - ack.length));
+    await settle();
+    expect(atCap.ws.readyState).toBe(1);
+    atCap.ws.close();
+    await atCap.closed;
+  });
+
   test('refuses an upgrade without a UI session', async () => {
     const { port, rejected } = await createHarness({ rejectUpgradeAuth: true });
     await expect(openViewer(port)).rejects.toThrow('upgrade 401');

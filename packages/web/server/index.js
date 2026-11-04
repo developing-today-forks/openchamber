@@ -1837,6 +1837,10 @@ const openChamberSessionService = createOpenChamberSessionService({
   // OpenCode 2.x has no archive route, so the state is OpenChamber's own and
   // lives beside the instance it describes.
   dataDir: OPENCHAMBER_DATA_DIR,
+  enableIdleSessionReaper: true,
+  // Sessions an enabled scheduled task targets are never idle-reaped: the
+  // task's next run refuses an archived target (#791).
+  listScheduledTaskTargetIds: () => scheduledTaskService.existingSessionTargetIds(),
   sessionMetadataStore,
   persistSessionMetadata: persistSessionMetadataPatch,
   updateSessionMetadata: updateSessionMetadataWith,
@@ -2055,7 +2059,7 @@ const ensureGlobalWatcherStarted = async () => {
 const bootstrapOpenCodeAtStartup = async (...args) => {
   await openCodeLifecycleRuntime.bootstrapOpenCodeAtStartup(...args);
   scheduleOpenCodeApiDetection();
-  if (openCodeLifecycleState.openCodeProcess && !openCodeLifecycleState.isExternalOpenCode) {
+  if (openCodeLifecycleState.openCodeProcess || openCodeLifecycleState.isExternalOpenCode) {
     startHealthMonitoring();
   }
   // The global watcher used to start only for desktop notifications; the

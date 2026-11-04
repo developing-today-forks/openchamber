@@ -24,6 +24,7 @@ import {
 } from '../enterprise-mode.js';
 import { discoverProviderModels } from './model-discovery.js';
 import { readDisabledProviders, readProviderOffState, setProviderDisabled } from './providers.js';
+import { getModelsMetadata, peekModelsMetadata } from './models-metadata.js';
 import { vcsInitRefusal, vcsInitRefusalBody } from '../git/repository-root.js';
 
 // The local /api/info probes share one named 3s deadline: a stalled
@@ -339,8 +340,21 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       // set (#218): providers OpenCode refuses through a `provider.use`
       // deny policy or an `enabled_providers` omission, with the binding
       // reason per provider so the UI can render them read-only-off.
-      const offState = readProviderOffState(null);
+      // Allowlist omissions and wildcard policy denies can only be
+      // enumerated against known provider ids, so the models.dev catalog
+      // ids form the universe; when the catalog is unavailable the read
+      // keeps its config-only universe, as before. The catalog comes from
+      // the in-process cache only: provider loading awaits this route, so
+      // a cold or stalled models.dev fetch must not sit on its critical
+      // path. A background refresh warms the cache for later reads.
+      const cachedCatalog = peekModelsMetadata();
+      if (!cachedCatalog) {
+        void getModelsMetadata().catch(() => {});
+      }
+      const knownProviderIds = cachedCatalog ? Object.keys(cachedCatalog) : [];
+      const offState = readProviderOffState(null, knownProviderIds);
       return res.json({
+        catalogReady: Boolean(cachedCatalog),
         providers: readDisabledProviders(null),
         offProviders: offState.providers,
         offReasons: offState.reasons,

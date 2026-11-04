@@ -297,28 +297,44 @@ export function createDispatchResultsRuntime({
     return loadPromise;
   };
 
+  // One write to the store. The returned promise rejects when the write
+  // is refused or fails, for callers that must know whether their write
+  // landed (register, #1503); the shared chain in writePromise never
+  // rejects — its catch warns and keeps later writes and flush() usable,
+  // which is the contract persist() below has always offered.
+  const persistWrite = () => {
+    const write = writePromise.then(async () => {
+      // Preserve before replacing, fail-closed (the primitive's
+      // contract): the load gate has normally judged the file already,
+      // but the write refuses on its own rather than trust that — a
+      // file that turned malformed since the load keeps its bytes.
+      // The thrown error lands in the chain's catch below, so the write
+      // is skipped and warned about, never forced through.
+      const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
+      if (preservation.outcome === 'failed') {
+        throw new Error('failed to preserve the unreadable dispatch-results file; refusing to overwrite it');
+      }
+      if (preservation.preserved) {
+        console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
+      }
+      // The snapshot is taken here, when the write runs — not when it was
+      // queued. A registration whose queued write fails rolls its entry
+      // back before the next write in the chain runs, and a payload
+      // captured at queue time would still carry that rejected entry:
+      // the next write to succeed would put it back on disk, and a
+      // restart would restore a registration its caller was told had
+      // been refused (#1503, Codex review of #1511).
+      const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
+      await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
+    });
+    writePromise = write.catch((error) => {
+      console.warn('[dispatch-results] failed to persist pending results:', error?.message ?? error);
+    });
+    return write;
+  };
+
   const persist = () => {
-    const payload = JSON.stringify({ version: FILE_VERSION, entries: Array.from(entries.values()) });
-    writePromise = writePromise
-      .then(async () => {
-        // Preserve before replacing, fail-closed (the primitive's
-        // contract): the load gate has normally judged the file already,
-        // but the write refuses on its own rather than trust that — a
-        // file that turned malformed since the load keeps its bytes.
-        // The thrown error lands in the catch below, so the write is
-        // skipped and warned about, never forced through.
-        const preservation = await preserveMalformedJsonFile(filePath, durableOptions());
-        if (preservation.outcome === 'failed') {
-          throw new Error('failed to preserve the unreadable dispatch-results file; refusing to overwrite it');
-        }
-        if (preservation.preserved) {
-          console.warn(`[dispatch-results] file was unreadable and moved to ${preservation.preservedPath}`);
-        }
-        await writeDurableJsonFile(filePath, payload, { fs: fsPromises, mode: 0o600 });
-      })
-      .catch((error) => {
-        console.warn('[dispatch-results] failed to persist pending results:', error?.message ?? error);
-      });
+    persistWrite();
     return writePromise;
   };
 
@@ -502,6 +518,21 @@ export function createDispatchResultsRuntime({
    * and delivers its result to `parentSessionId`. Resolves once the entry is
    * on disk, so a restart right after the tool answers still delivers.
    */
+  // Registrations are serialized with their writes and rollbacks. Two
+  // overlapping registrations otherwise interleave badly in both
+  // directions: a queued snapshot can carry an entry whose own write
+  // later fails and rolls back (leaving it on disk), and an earlier write
+  // executing late can commit an entry before its own write fails (same
+  // leak, mirrored). With one registration in flight at a time, the only
+  // write that can contain a new entry is its own, so a failed write plus
+  // the in-memory rollback fully undoes the registration (#1503).
+  let registrationChain = Promise.resolve();
+  const serializeRegistration = (task) => {
+    const run = registrationChain.then(task);
+    registrationChain = run.catch(() => {});
+    return run;
+  };
+
   const register = async ({ parentSessionId, sessionId, dispatchedAt, afterIdleId }) => {
     const parent = parse(sessionIdSchema, parentSessionId);
     const watched = parse(sessionIdSchema, sessionId);
@@ -510,6 +541,7 @@ export function createDispatchResultsRuntime({
     const at = parse(timeSchema, dispatchedAt);
     if (at === null) throw new TypeError('dispatchedAt must be a timestamp');
     await load();
+    return serializeRegistration(async () => {
     const entry = { id: `dispatch-${now()}-${Math.random().toString(36).slice(2, 9)}`, parentSessionId: parent, sessionId: watched, dispatchedAt: at };
     // Kept only when it is a real baseline (an id, or null for "none yet").
     const baseline = afterIdleSchema.safeParse(afterIdleId);
@@ -525,11 +557,25 @@ export function createDispatchResultsRuntime({
         console.warn(`[dispatch-results] too many pending results; no longer waiting on ${stale.sessionId} for ${stale.parentSessionId}`);
       }
     }
-    await persist();
+    try {
+      await persistWrite();
+    } catch (error) {
+      // The write was refused or failed, so the entry exists only in
+      // memory and a restart would drop it: reporting it as pending
+      // would strand the caller waiting for a result that can never
+      // arrive (#1503). Drop it and let the caller see the failure.
+      entries.delete(entry.id);
+      // A write outside this registration (a delivery's persist, say)
+      // may already have committed the entry before this write failed;
+      // persist the rollback so the disk converges back to memory.
+      void persist();
+      throw error;
+    }
     // The session may already be done: a short turn can end before this
     // entry existed, and its idle event would then have found nothing to arm.
     arm(watched);
     return { id: entry.id };
+    });
   };
 
   const processPayload = (payload) => {

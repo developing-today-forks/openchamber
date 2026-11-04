@@ -3,7 +3,14 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, SKILL_WALK_MAX_DIRS, listSkillSupportingFiles, SKILL_SUPPORTING_FILES_MAX_DIRECTORIES, SKILL_SUPPORTING_FILES_MAX_FILES, MAX_CONFIG_FILE_BYTES } from './shared.js';
+import { parseMdFile, parseMdFileAsync, MD_FILE_MAX_BYTES, writeMdFile, readConfigFile, readConfigLayer, readConfigLayers, writeConfig, walkSkillMdFiles, listSkillSupportingFiles, MAX_CONFIG_FILE_BYTES } from './shared.js';
+
+// The skill walks state these values at their budget creation in shared.js
+// (design #1391: values live with the walk, not in exported constants);
+// the cap tests below exercise the walks at exactly these values.
+const SKILL_WALK_MAX_DIRS = 5000;
+const SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000;
+const SKILL_SUPPORTING_FILES_MAX_FILES = 5000;
 import { updateAgent } from './agents.js';
 import { updateMcpConfig, createMcpConfig, deleteMcpConfig } from './mcp.js';
 
@@ -647,7 +654,13 @@ describe('walkSkillMdFiles', () => {
   });
 
   it('pins the directory-visit cap the VS Code twin shares', () => {
-    expect(SKILL_WALK_MAX_DIRS).toBe(5000);
+    const source = fs.readFileSync(new URL('./shared.js', import.meta.url), 'utf8');
+    expect(source).toContain('createTraversalBudget({ maxDirs: 5000 })');
+    const vscodeSource = fs.readFileSync(
+      new URL('../../../../vscode/src/opencodeConfig.ts', import.meta.url),
+      'utf8',
+    );
+    expect(vscodeSource).toContain('createTraversalBudget({ maxDirs: 5000 })');
   });
 
   it('stops at the directory cap and returns the partial results found so far', async () => {
@@ -1060,14 +1073,13 @@ describe('listSkillSupportingFiles caps (#1365)', () => {
   };
 
   it('pins the caps the VS Code twin shares', () => {
-    expect(SKILL_SUPPORTING_FILES_MAX_DIRECTORIES).toBe(5000);
-    expect(SKILL_SUPPORTING_FILES_MAX_FILES).toBe(5000);
+    const source = fs.readFileSync(new URL('./shared.js', import.meta.url), 'utf8');
+    expect(source).toContain('createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 })');
     const vscodeSource = fs.readFileSync(
       new URL('../../../../vscode/src/opencodeConfig.ts', import.meta.url),
       'utf8',
     );
-    expect(vscodeSource).toContain('SKILL_SUPPORTING_FILES_MAX_DIRECTORIES = 5000');
-    expect(vscodeSource).toContain('SKILL_SUPPORTING_FILES_MAX_FILES = 5000');
+    expect(vscodeSource).toContain('createTraversalBudget({ maxDirs: 5000, maxEntries: 5000 })');
   });
 
   it('lists supporting files under the caps, excluding SKILL.md, without truncation', async () => {

@@ -143,6 +143,77 @@ describe('client auth pairing runtime', () => {
     expect(ids).not.toContain(expired.pairing.id);
     expect(ids).toHaveLength(1);
   });
+
+  it('treats sessions with missing or unparseable expiresAt as expired everywhere', async () => {
+    const { dir, runtime, remoteClientAuthRuntime } = await makeRuntime();
+    const storePath = path.join(dir, 'pairing.json');
+    const seedSession = (id, secret, extra) => ({
+      id,
+      secretHash: crypto.createHash('sha256').update(secret).digest('hex'),
+      createdAt: new Date().toISOString(),
+      usedAt: null,
+      cancelledAt: null,
+      clientId: null,
+      label: null,
+      fingerprint: 'ABCD-1234',
+      allowedClientKinds: ['mobile', 'desktop'],
+      createdByClientId: null,
+      usesRelay: true,
+      ...extra,
+    });
+    await fs.writeFile(storePath, JSON.stringify({
+      version: 1,
+      sessions: [
+        seedSession('pair_missing_expiry', 'missing-secret', {}),
+        seedSession('pair_garbage_expiry', 'garbage-secret', { expiresAt: 'not-a-date' }),
+      ],
+    }, null, 2), 'utf8');
+
+    // Not pending, and the relay-flagged seeds create no relay demand.
+    expect(await runtime.listPendingSessions()).toEqual([]);
+    expect(await runtime.hasActiveRelaySession()).toBe(false);
+
+    // Redeem rejects both shapes with the generic error and issues no client.
+    for (const [pairingId, secret] of [['pair_missing_expiry', 'missing-secret'], ['pair_garbage_expiry', 'garbage-secret']]) {
+      await expect(runtime.redeemPairingSession({ pairingId, secret, clientKind: 'mobile' }))
+        .rejects.toThrow('Invalid or expired pairing session');
+    }
+    expect(remoteClientAuthRuntime.createClient).not.toHaveBeenCalled();
+
+    // The sweep drops both: a missing/unparseable expiry is expired, not immortal.
+    await expect(runtime.sweepExpiredSessions()).resolves.toEqual({ purged: 2 });
+    expect(JSON.parse(await fs.readFile(storePath, 'utf8')).sessions).toEqual([]);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('never persists a fabricated expiry for a session whose expiresAt is missing', async () => {
+    const { dir, runtime } = await makeRuntime();
+    const storePath = path.join(dir, 'pairing.json');
+    await fs.writeFile(storePath, JSON.stringify({
+      version: 1,
+      sessions: [{
+        id: 'pair_no_expiry_stamp',
+        secretHash: crypto.createHash('sha256').update('some-secret').digest('hex'),
+        createdAt: new Date().toISOString(),
+        usedAt: null,
+        cancelledAt: null,
+        clientId: null,
+        label: null,
+        fingerprint: 'ABCD-1234',
+        allowedClientKinds: ['mobile', 'desktop'],
+        createdByClientId: null,
+        usesRelay: false,
+      }],
+    }, null, 2), 'utf8');
+
+    // Cancelling rewrites the whole store through normalizeStore; the
+    // session's expiresAt must round-trip as null, not a fresh TTL stamp.
+    await runtime.cancelPairingSession('pair_no_expiry_stamp');
+    const stored = JSON.parse(await fs.readFile(storePath, 'utf8'));
+    expect(stored.sessions).toHaveLength(1);
+    expect(stored.sessions[0].expiresAt).toBeNull();
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });
 
 describe('client auth pairing store durability', () => {

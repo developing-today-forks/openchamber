@@ -114,3 +114,28 @@ describe('getModelsMetadata byte cap', () => {
     expect(result.metadata).toEqual(catalog);
   });
 });
+
+describe('peekModelsMetadata', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('is null before any fetch and never triggers one', async () => {
+    const { peekModelsMetadata } = await import('./models-metadata.js');
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify(catalog), { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    expect(peekModelsMetadata()).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns the catalog a completed fetch cached', async () => {
+    const { getModelsMetadata, peekModelsMetadata } = await import('./models-metadata.js');
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify(catalog), { status: 200 }));
+    await getModelsMetadata({ url: 'https://example.test/catalog.json', ttlMs: 0 });
+    expect(peekModelsMetadata()).toEqual(catalog);
+  });
+});
