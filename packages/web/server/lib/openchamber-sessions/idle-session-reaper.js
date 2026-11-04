@@ -21,6 +21,9 @@
  * - A session the user pinned (`metadata.openchamber.pinned`) or marked
  *   In work (`metadata.openchamber.work.state === 'open'`) is never reaped:
  *   the same persisted protections the UI's own retention applies.
+ * - A btw/review fork with an original-session link, or a parent with an active
+ *   btw/review fork link, is never reaped. The reaper cannot unlink its partner,
+ *   so linked sessions stay on the UI-owned per-session archive path.
  * - A session an enabled scheduled task targets is never reaped: the task's
  *   next run validates its target and refuses an archived session, so
  *   reaping one would silently break the schedule. When the protected set
@@ -45,13 +48,18 @@ const statusTypeOf = (status) => asNonEmptyString(status) ?? asNonEmptyString(st
 const lastActivityAt = (session) => asTimestamp(session?.time?.updated) ?? asTimestamp(session?.time?.created);
 
 /**
- * The persisted keep protections, mirroring the UI's retention rules
- * (`isSessionPinnedInMetadata`, `isSessionInWork`): a pin stamped in the
- * session metadata, or work the user has open and not closed.
+ * The persisted keep protections: a pin stamped in the session metadata, work
+ * the user has open and not closed, or a linked btw/review session. A fork's
+ * `kind` and non-empty `originalSessionID` identify its parent; a parent's
+ * non-empty `btwSessionID` or `reviewSessionID` identifies its fork. The reaper
+ * cannot unlink either side, so linked sessions stay on the UI-owned path.
  */
 const isKeptByUser = (session) => {
   const openchamber = session?.metadata?.openchamber;
   if (!isRecord(openchamber)) return false;
+  const kind = openchamber.kind;
+  if ((kind === 'btw' || kind === 'review') && asNonEmptyString(openchamber.originalSessionID) !== null) return true;
+  if (asNonEmptyString(openchamber.btwSessionID) !== null || asNonEmptyString(openchamber.reviewSessionID) !== null) return true;
   if (asTimestamp(openchamber.pinned?.at) !== null) return true;
   return openchamber.work?.state === 'open';
 };

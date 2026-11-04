@@ -66,6 +66,29 @@ describe('createIdleSessionReaper', () => {
     expect(store.archived.has('ses_work')).toBe(false);
   });
 
+  it('keeps linked btw and review sessions live while reaping a plain idle session', async () => {
+    const store = makeArchiveStore();
+    const btwFork = session('ses_btw_fork');
+    btwFork.metadata = { openchamber: { kind: 'btw', originalSessionID: 'ses_btw_parent' } };
+    const btwParent = session('ses_btw_parent');
+    btwParent.metadata = { openchamber: { btwSessionID: 'ses_btw_fork' } };
+    const reviewFork = session('ses_review_fork');
+    reviewFork.metadata = { openchamber: { kind: 'review', originalSessionID: 'ses_review_parent' } };
+    const reviewParent = session('ses_review_parent');
+    reviewParent.metadata = { openchamber: { reviewSessionID: 'ses_review_fork' } };
+    const plain = session('ses_plain');
+    const reaper = makeReaper({ sessions: [btwFork, btwParent, reviewFork, reviewParent, plain], store });
+
+    const result = await reaper.sweep();
+
+    expect(result.reaped).toEqual(['ses_plain']);
+    expect(store.archived.has('ses_btw_fork')).toBe(false);
+    expect(store.archived.has('ses_btw_parent')).toBe(false);
+    expect(store.archived.has('ses_review_fork')).toBe(false);
+    expect(store.archived.has('ses_review_parent')).toBe(false);
+    expect(store.archived.has('ses_plain')).toBe(true);
+  });
+
   it('never reaps a session an enabled scheduled task targets', async () => {
     const store = makeArchiveStore();
     const reaper = makeReaper({
