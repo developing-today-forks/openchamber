@@ -3,18 +3,19 @@ name: pr checks
 # CI policy: .github/ci-policy.md (fleet design developing-today/code#1779
 # sec.3.3/sec.3.4; Phase 2, developing-today/code#1781). This workflow is
 # openchamber's designated main-gate for the Phase 3 remediation chain.
-# Main-only triggers (4478502bb, Drew 2026-10-30): push to main, the
-# nightly schedule below, and workflow_dispatch. There is no PR tier:
-# this workflow does not run on pull_request, so nothing here gates a
-# merge. All four jobs (lint, type-check, tests, build) run on every
-# trigger. Dedup: push is restricted to branches: [main] and there is
-# no pull_request trigger, so a commit never runs the same suite twice.
+# Main-gate triggers (Drew 2026-11-04): the nightly schedule below
+# and workflow_dispatch only. There is no push or pull_request
+# trigger and no PR tier: this workflow does not run on pull_request,
+# so nothing here gates a merge. All four jobs (lint, type-check,
+# tests, build) run on every trigger. Merged code is verified by the
+# next nightly run, or sooner by a manual dispatch on the exact SHA.
 # The workflow name stays
 # "pr checks" because the Phase 3 watcher (main-broken.yml) references
 # it by that name.
 on:
-  # Merged code gets the same verification on main itself: without this, a
-  # merge that breaks main is only discovered by the next PR's run.
+  # The nightly run is the automatic verification for merged code:
+  # without it, a merge that breaks main would only be discovered by
+  # a manual dispatch.
   schedule:
     # Nightly backstop for the main tier: the full suite (including the
     # tests and build jobs that no longer run on PRs) re-runs even on
@@ -22,9 +23,9 @@ on:
     - cron: '37 5 * * *'
   workflow_dispatch:
 
-# Every trigger is main-scoped, scheduled, or manual, so each run is
-# keyed by its unique run_id: every merge keeps its own run instead of
-# sharing one group that a newer merge would cancel.
+# Every trigger is scheduled or manual, so each run is keyed by its
+# unique run_id: each nightly or dispatched run keeps its own run
+# instead of sharing one group that a newer run would cancel.
 concurrency:
   group: pr-checks-${{ github.run_id }}
   cancel-in-progress: true
@@ -71,8 +72,8 @@ jobs:
       - name: Changelog outputs match their sources
         run: bun run changelog:check
 
-  # Runs on push to main, on the nightly schedule, and on manual
-  # dispatch -- the workflow's only triggers.
+  # Runs on the nightly schedule and on manual dispatch -- the
+  # workflow's only triggers.
   tests:
     name: "full (main tier): tests"
     timeout-minutes: 20
@@ -94,8 +95,8 @@ jobs:
           bun run test:updater
           bun run test:linux-desktop
 
-  # Runs on push to main, on the nightly schedule, and on manual
-  # dispatch -- the workflow's only triggers.
+  # Runs on the nightly schedule and on manual dispatch -- the
+  # workflow's only triggers.
   # Catches what type-check cannot: bundling, Vite-only syntax, the web
   # build's memory ceiling. The packages whose `build` is only a type-check (`tsc -b`)
   # (ui) or a no-op (electron) are covered by the type-check job.
