@@ -80,11 +80,11 @@ describe('installed skill provenance registry', () => {
 
   it('refuses to overwrite a file with an unrecognized shape on append', () => {
     const file = path.join(dataDir, 'skills-installed-sources.json');
-    const wrongShape = JSON.stringify({ version: 99, entries: [entry()] });
-    fs.writeFileSync(file, wrongShape);
+    const unrecognizedFileContents = JSON.stringify({ version: 99, entries: [entry()] });
+    fs.writeFileSync(file, unrecognizedFileContents);
 
     expect(() => appendInstalledSources([entry({ skillName: 'other' })])).toThrow(/malformed/);
-    expect(fs.readFileSync(file, 'utf8')).toBe(wrongShape);
+    expect(fs.readFileSync(file, 'utf8')).toBe(unrecognizedFileContents);
   });
 
   it('creates the file on append when it is missing', () => {

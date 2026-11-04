@@ -6,6 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { configureOpenCodeCredentials, credentialSourceUsesLocalStore, getProviderAuth, getStoredLogin, listStoredCredentials, openCodeCredentialSource, openCodeLocalCredentialSource, projectCredentialEntries, projectCredentialRows, projectEnvironmentKeys, readLocalOpenCodeCredentials, readOpenCodeCredentials, renewStoredLogin } from './auth.js';
+import { OpenCodeUpstreamAuthError, isOpenCodeUpstreamAuthRejection } from './credential-auth-error.js';
 
 const entry = (integrationID, active, value) => ({ id: `cred_${integrationID}_${active}`, integrationID, label: 'default', active, value });
 
@@ -352,6 +353,85 @@ describe('renewStoredLogin', () => {
     await expect(renewStoredLogin('openai', async () => ({}))).rejects.toThrow('not connected');
     configureOpenCodeCredentials({ list: async () => rows });
     await expect(renewStoredLogin('openai', async () => ({}))).rejects.toThrow('cannot write');
+  });
+});
+
+describe('shared upstream-auth provenance (#1129)', () => {
+  afterEach(() => {
+    configureOpenCodeCredentials(null);
+  });
+
+  it('marks a 401 rejection from the credential source as the shared credential path', async () => {
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw Object.assign(new Error('Authentication required'), { status: 401 });
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(OpenCodeUpstreamAuthError);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(true);
+    expect(error.origin).toBe('opencode-credential-source');
+    expect(error.message).toBe('Authentication required');
+  });
+
+  it('marks the bare 401 body when the client error carries no status', async () => {
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw new Error('  Authentication required  ');
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(true);
+  });
+
+  it('leaves a credential-source failure that is not an auth rejection unmarked', async () => {
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw Object.assign(new Error('OpenCode is unreachable'), { status: 503 });
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(false);
+    expect(error.message).toBe('OpenCode is unreachable');
+  });
+
+  it('does not treat a provider-worded failure as a shared-path rejection', async () => {
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw Object.assign(new Error('Authentication required'), { status: 403 });
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(false);
+  });
+
+  it('marks an auth rejection from the environment-key read when it arrives first', async () => {
+    configureOpenCodeCredentials({
+      list: async () => [],
+      listEnvironmentKeys: async () => {
+        throw Object.assign(new Error('Authentication required'), { status: 401 });
+      },
+    });
+
+    const error = await readOpenCodeCredentials().catch((thrown) => thrown);
+    expect(error).toBeInstanceOf(OpenCodeUpstreamAuthError);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(true);
+    expect(error.message).toBe('Authentication required');
+  });
+
+  it('marks the credential-row read the same way', async () => {
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw Object.assign(new Error('Authentication required'), { status: 401 });
+      },
+    });
+
+    const error = await listStoredCredentials().catch((thrown) => thrown);
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(true);
   });
 });
 

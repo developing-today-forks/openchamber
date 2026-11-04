@@ -30,6 +30,7 @@ const resolveAuthCandidates = async () => {
     candidates.push({ ...fileAuth, origin: 'file' });
   }
   let storeReadFailed = false;
+  let storeReadError = null;
   const pushStoreAuth = (auth) => {
     const storeAuth = resolveAntigravityStoreAuth(auth);
     if (storeAuth && !candidates.some((candidate) => candidate.refreshToken === storeAuth.refreshToken)) {
@@ -38,11 +39,15 @@ const resolveAuthCandidates = async () => {
   };
   try {
     pushStoreAuth(await readOpenCodeCredentials());
-  } catch {
+  } catch (error) {
     // Credential store unwired or unreachable: the accounts file alone
     // decides, but the failure is kept — when it leaves no candidates it
-    // must surface as its own error, not as "no login exists".
+    // must surface as its own error, not as "no login exists". The error
+    // itself is kept too: when the running OpenCode rejected the read
+    // (the shared upstream-auth failure), fetchQuota marks the result so
+    // the dispatcher classifies it with the other providers (#1128).
     storeReadFailed = true;
+    storeReadError = error;
   }
   if (!candidates.length && credentialSourceUsesLocalStore()) {
     // The projection the running OpenCode serves can withhold the refresh
@@ -64,20 +69,33 @@ const resolveAuthCandidates = async () => {
       // No readable local credential store: the candidates above stand.
     }
   }
-  return { candidates, storeReadFailed };
+  return { candidates, storeReadFailed, storeReadError };
 };
 
+// The running OpenCode rejects a credential read it will not serve with
+// the bare body `Authentication required` — the same text the quota
+// dispatcher matches in providers/index.js (UPSTREAM_AUTH_ERROR_PATTERN).
+const isUpstreamAuthReadError = (error) =>
+  String(error instanceof Error ? error.message : error ?? '').trim().toLowerCase() === 'authentication required';
+
 export const fetchQuota = async () => {
-  const { candidates, storeReadFailed } = await resolveAuthCandidates();
+  const { candidates, storeReadFailed, storeReadError } = await resolveAuthCandidates();
   if (!candidates.length) {
     if (storeReadFailed) {
-      return buildResult({
+      const result = buildResult({
         providerId,
         providerName,
         ok: false,
         configured: true,
         error: 'Failed to read OpenCode credential store'
       });
+      // The read failed because the running OpenCode rejected the shared
+      // credential path, not because of anything Antigravity-specific:
+      // mark the result for the dispatcher's shared upstream-auth
+      // classification, the marker xAI uses (#1131). The generic error
+      // text stays — only a read the upstream itself rejected is marked,
+      // so an unwired or unreachable store keeps its own meaning.
+      return isUpstreamAuthReadError(storeReadError) ? { ...result, credentialReadFailure: true } : result;
     }
     return buildResult({
       providerId,

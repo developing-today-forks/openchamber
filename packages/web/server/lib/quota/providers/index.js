@@ -6,6 +6,7 @@
  */
 
 import { listStoredCredentials, readOpenCodeCredentials } from '../../opencode/auth.js';
+import { isOpenCodeUpstreamAuthRejection } from '../../opencode/credential-auth-error.js';
 import { readConfigLayers } from '../../opencode/shared.js';
 import { isRecord } from '../../opencode/config-v2.js';
 import { asNonEmptyString, buildResult } from '../utils/index.js';
@@ -278,23 +279,21 @@ const registry = {
 const pendingFetches = new Map();
 
 /**
- * The running OpenCode answers a rejected credential read with the bare
- * string `Authentication required` (its 401 body), and every provider that
- * reads credentials through `../opencode/auth.js` surfaces that one shared
- * failure as its own error (#894). The dispatcher rewrites that exact error
- * wherever a quota result leaves this module, so consumers see the one
- * credential-path failure — OpenChamber's upstream password for the
- * running OpenCode, not the provider's own credential — instead of N
- * identical provider errors that invite per-provider fixes.
+ * Every provider that reads credentials through `../opencode/auth.js` fails
+ * the same way when the running OpenCode rejects the credentials OpenChamber
+ * presented (#894). That read marks the failure with its origin (see
+ * `../opencode/credential-auth-error.js`), so this module can name the one
+ * credential-path failure — OpenChamber's upstream password for the running
+ * OpenCode, not the provider's own credential — instead of N identical
+ * provider errors that invite per-provider fixes.
+ *
+ * Classification keys on that marker, never on the error text: a provider's
+ * own API can reject its credential with the very same words (#1129), and
+ * that failure must pass through untouched.
  */
 export const OPENCODE_UPSTREAM_AUTH_ERROR = 'OpenCode upstream authentication failed: the running OpenCode rejected the credentials OpenChamber presented (shared credential path, not this provider’s own credential). Check the OpenCode server password OpenChamber connects with.';
 
-const UPSTREAM_AUTH_ERROR_PATTERN = /^authentication required$/i;
-
-export const isOpenCodeUpstreamAuthError = (error) => {
-  const message = error instanceof Error ? error.message : error;
-  return UPSTREAM_AUTH_ERROR_PATTERN.test(String(message ?? '').trim());
-};
+export const isOpenCodeUpstreamAuthError = (error) => isOpenCodeUpstreamAuthRejection(error);
 
 const upstreamAuthFailureResult = (providerId, providerName) => ({
   ...buildResult({
@@ -307,6 +306,12 @@ const upstreamAuthFailureResult = (providerId, providerName) => ({
   errorKind: 'opencode_upstream_auth'
 });
 
+/**
+ * A result that already carries the shared classification (its error is the
+ * marked failure rather than the provider's own) is normalized to the one
+ * consumer-facing message. A plain string — from any provider — is left
+ * alone, so a provider's own `Authentication required` stays its own.
+ */
 const surfaceSharedUpstreamAuthFailure = (result) => {
   if (!result || result.ok) return result;
   // A provider whose credential wrapper replaces the shared store-read error
@@ -317,6 +322,7 @@ const surfaceSharedUpstreamAuthFailure = (result) => {
     const { credentialReadFailure, ...rest } = result;
     return { ...rest, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
   }
+  if (result.errorKind === 'opencode_upstream_auth') return result;
   if (!isOpenCodeUpstreamAuthError(result.error)) return result;
   return { ...result, error: OPENCODE_UPSTREAM_AUTH_ERROR, errorKind: 'opencode_upstream_auth' };
 };
@@ -593,14 +599,18 @@ const fetchQuotaForProviderUncoalesced = async (providerId, deps = {}) => {
   try {
     return surfaceSharedUpstreamAuthFailure(await provider.fetchQuota({ readAuth, readCredentials: readAuth }));
   } catch (error) {
-    return surfaceSharedUpstreamAuthFailure(buildResult({
+    // A provider that could not read the shared credential store reports the
+    // one marked upstream-auth failure; its own API's errors stay its own,
+    // even when they say the same words.
+    if (isOpenCodeUpstreamAuthError(error)) return upstreamAuthFailureResult(provider.providerId, provider.providerName);
+    return buildResult({
       providerId: provider.providerId,
       providerName: provider.providerName,
       aliases: provider.aliases,
       ok: false,
       configured: true,
       error: error instanceof Error ? error.message : 'Request failed'
-    }));
+    });
   }
 };
 
