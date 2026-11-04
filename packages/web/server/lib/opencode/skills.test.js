@@ -204,6 +204,9 @@ describe('skills', () => {
           supportingFiles: [{ path: 'references/big.md', content: 'x'.repeat(1024 * 1024 + 1) }],
         }, projectRoot, 'project')).rejects.toMatchObject({ code: 'skill_supporting_file_too_large' });
         expect(fs.existsSync(skillPath(projectRoot, 'overcap-skill'))).toBe(false);
+        // The refusal happens before the skill directory is created, so no
+        // empty directory is left behind either (CodeRabbit review, #1444).
+        expect(fs.existsSync(path.dirname(skillPath(projectRoot, 'overcap-skill')))).toBe(false);
       } finally {
         await fsPromises.rm(tempRoot, { recursive: true, force: true });
       }

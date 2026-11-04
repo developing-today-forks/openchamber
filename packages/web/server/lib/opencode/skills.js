@@ -547,8 +547,6 @@ async function createSkillNow(skillName, config, workingDirectory, scope) {
     targetScope = SKILL_SCOPE.USER;
   }
 
-  fs.mkdirSync(targetDir, { recursive: true });
-
   const {
     instructions,
     scope: _scopeFromConfig,
@@ -579,6 +577,12 @@ async function createSkillNow(skillName, config, workingDirectory, scope) {
       }
     }
   }
+
+  // Every refusal above (missing description, over-cap Markdown, over-cap
+  // supporting file) happens before the directory exists, so a failed create
+  // leaves nothing behind (CodeRabbit review, #1444).
+  assertMdFileWithinCap(targetPath, frontmatter, instructions || '');
+  fs.mkdirSync(targetDir, { recursive: true });
 
   // `wx` fails if SKILL.md appeared since the check above, from another
   // process or a client racing this one, instead of overwriting it.

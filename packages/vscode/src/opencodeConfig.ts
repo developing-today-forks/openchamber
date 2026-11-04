@@ -3625,7 +3625,6 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
       : getUserSkillDir(skillName);
   }
   
-  fs.mkdirSync(targetDir, { recursive: true });
   const targetPath = path.join(targetDir, 'SKILL.md');
   
   // Extract fields
@@ -3666,6 +3665,12 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
       }
     }
   }
+
+  // Every refusal above (missing description, over-cap Markdown, over-cap
+  // supporting file) happens before the directory exists, so a failed create
+  // leaves nothing behind (CodeRabbit review, #1444).
+  assertMdContentWithinCap(targetPath, serializeMdContent(frontmatter, typeof instructions === 'string' ? instructions : ''));
+  fs.mkdirSync(targetDir, { recursive: true });
 
   writeMdFile(targetPath, frontmatter, typeof instructions === 'string' ? instructions : '');
 

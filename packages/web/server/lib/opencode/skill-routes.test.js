@@ -91,6 +91,62 @@ const startSkillsApp = ({ projectRoot, overrides = {} }) => {
   };
 };
 
+describe('skill-routes update size errors (#1444)', () => {
+  let projectRoot = null;
+  let appHandle = null;
+
+  afterEach(async () => {
+    if (appHandle) {
+      await appHandle.close();
+      appHandle = null;
+    }
+    if (projectRoot) {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      projectRoot = null;
+    }
+  });
+
+  it('maps an over-cap Markdown update to 413, like create does', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({
+      projectRoot,
+      overrides: {
+        updateSkill: async () => {
+          throw Object.assign(new Error('Skill file too large'), { code: 'ERR_MD_FILE_TOO_LARGE' });
+        },
+      },
+    });
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/some-skill`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions: 'too large' }),
+    });
+    expect(response.status).toBe(413);
+    expect((await response.json()).error).toBe('Skill file too large to write');
+  });
+
+  it('maps an over-cap supporting-file update to 413, like create does', async () => {
+    projectRoot = createTempProject();
+    appHandle = startSkillsApp({
+      projectRoot,
+      overrides: {
+        updateSkill: async () => {
+          throw Object.assign(new Error('File too large'), { code: 'skill_supporting_file_too_large' });
+        },
+      },
+    });
+
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/some-skill`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supportingFiles: [{ path: 'references/big.md', content: 'too large' }] }),
+    });
+    expect(response.status).toBe(413);
+    expect((await response.json()).error).toBe('File too large to write');
+  });
+});
+
 describe('skill-routes directory soft fallback', () => {
   /** @type {string | null} */
   let projectRoot = null;

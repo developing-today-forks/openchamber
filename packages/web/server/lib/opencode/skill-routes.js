@@ -792,6 +792,12 @@ export const registerSkillRoutes = (app, dependencies) => {
         `Skill ${skillName} updated successfully.`,
       ));
     } catch (error) {
+      if (error?.code === 'ERR_MD_FILE_TOO_LARGE') {
+        return res.status(413).json({ error: 'Skill file too large to write' });
+      }
+      if (error?.code === 'skill_supporting_file_too_large') {
+        return res.status(413).json({ error: 'File too large to write' });
+      }
       console.error('[Server] Failed to update skill:', error);
       res.status(500).json({ error: error.message || 'Failed to update skill' });
     }
