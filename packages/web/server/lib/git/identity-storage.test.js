@@ -204,3 +204,32 @@ describe('atomic write rename retry', () => {
     expect(fsSync.readdirSync(path.dirname(filePath)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 });
+
+describe('size gate (#1635)', () => {
+  it('refuses an over-cap store file as invalid without reading it whole', async () => {
+    const { filePath } = await setup();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const bloated = { profiles: [{ ...profile('big'), userName: 'x'.repeat(5 * 1024 * 1024) }] };
+    await fs.writeFile(filePath, JSON.stringify(bloated), { mode: 0o600 });
+    const store = createGitIdentityStore({ filePath });
+    expect(() => store.getProfiles()).toThrow(expect.objectContaining({ code: 'GIT_IDENTITY_STORE_INVALID' }));
+  });
+
+  it('refuses a stored field past the public 512 cap even when the file is small', async () => {
+    const { filePath } = await setup();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const overField = { profiles: [{ ...profile('long'), userName: 'x'.repeat(513) }] };
+    await fs.writeFile(filePath, JSON.stringify(overField), { mode: 0o600 });
+    const store = createGitIdentityStore({ filePath });
+    expect(() => store.getProfiles()).toThrow(expect.objectContaining({ code: 'GIT_IDENTITY_STORE_INVALID' }));
+  });
+
+  it('reads a valid store whose fields sit at the caps', async () => {
+    const { filePath } = await setup();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    const atCap = { ...profile('capped'), name: 'n'.repeat(512), userName: 'u'.repeat(512), userEmail: 'e'.repeat(512) };
+    await fs.writeFile(filePath, JSON.stringify({ profiles: [atCap] }), { mode: 0o600 });
+    const store = createGitIdentityStore({ filePath });
+    expect(store.getProfiles()).toEqual([atCap]);
+  });
+});
