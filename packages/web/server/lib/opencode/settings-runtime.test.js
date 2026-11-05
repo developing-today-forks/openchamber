@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { createProjectIdFromPath, projectConfigFileStemOf } from '../projects/project-id.js';
 import { createSettingsRuntime } from './settings-runtime.js';
+import { execFileSync } from 'node:child_process';
 
 const createRuntime = async ({
   mergePersistedSettings = (_current, changes) => changes,
@@ -901,5 +902,50 @@ describe('settings runtime: per-surface profile keys', () => {
     } finally {
       await cleanup();
     }
+  });
+});
+
+describe('bounded settings reads (#1653)', () => {
+  const EIGHT_MIB = 8 * 1024 * 1024;
+
+  it('strict read over the 8 MiB cap throws the bounded refusal, never {}', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ pad: 'x'.repeat(EIGHT_MIB) }));
+      await expect(runtime.readSettingsFromDiskStrict()).rejects.toMatchObject({ code: 'BOUNDED_FILE_TOO_LARGE' });
+    } finally { await cleanup(); }
+  });
+
+  it('strict read of a FIFO throws promptly, never {}', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      execFileSync('mkfifo', [settingsFilePath]);
+      await expect(runtime.readSettingsFromDiskStrict()).rejects.toMatchObject({ code: 'BOUNDED_FILE_NOT_REGULAR' });
+    } finally { await cleanup(); }
+  });
+
+  it('lenient read over the cap answers {} like any other read failure', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ pad: 'x'.repeat(EIGHT_MIB) }));
+      await expect(runtime.readSettingsFromDisk()).resolves.toEqual({});
+    } finally { await cleanup(); }
+  });
+
+  it('preferences over the cap reads as failed: the merged document is the instance alone', async () => {
+    const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ theme: 'dark' }));
+      await fsPromises.writeFile(path.join(tempRoot, 'preferences.json'), 'x'.repeat(EIGHT_MIB + 1));
+      await expect(runtime.readSettingsFromDisk()).resolves.toEqual({ theme: 'dark' });
+    } finally { await cleanup(); }
+  });
+
+  it('within-cap settings and strict reads behave as before', async () => {
+    const { runtime, settingsFilePath, cleanup } = await createRuntime();
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ theme: 'light' }));
+      await expect(runtime.readSettingsFromDiskStrict()).resolves.toEqual({ theme: 'light' });
+    } finally { await cleanup(); }
   });
 });
