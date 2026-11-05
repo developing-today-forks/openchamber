@@ -122,6 +122,16 @@ describe('readBoundedFile / readBoundedFileSync', () => {
     expect(comparable(readBoundedFileSync(linkPath, 16))).toEqual({ ok: true, size: 6, content: 'linked' });
   });
 
+  it.skipIf(isWindows)('with noFollow, refuses a symlink at open (ELOOP) in both spellings', async () => {
+    const target = writeFile('nofollow-target.txt', 'linked');
+    const linkPath = path.join(dir, 'nofollow-link');
+    fs.symlinkSync(target, linkPath);
+    await expect(readBoundedFile(linkPath, 16, { noFollow: true })).rejects.toMatchObject({ code: 'ELOOP' });
+    expect(() => readBoundedFileSync(linkPath, 16, { noFollow: true })).toThrow(expect.objectContaining({ code: 'ELOOP' }));
+    // The same path without the option still reads through, as before.
+    expect(comparable(await readBoundedFile(linkPath, 16))).toEqual({ ok: true, size: 6, content: 'linked' });
+  });
+
   it('rejects an invalid cap in both spellings', async () => {
     const filePath = writeFile('any.txt', 'data');
     await expect(readBoundedFile(filePath, -1)).rejects.toThrow(RangeError);
