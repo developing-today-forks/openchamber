@@ -47,6 +47,7 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `github-copilot-addon` | GitHub Copilot Add-on | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `kimi-for-coding` | Kimi for Coding | `providers/kimi.js` | `kimi-code-plan-cn`, `kimi-for-coding`, `kimi`, `kimi-code-plan-global` (first match wins) |
 | `meta` | Meta Model API | `providers/meta.js` | `meta` (OpenCode credential; plan usage also reads the Muse CLI OAuth store, see below) |
+| `mistral` | Mistral AI | `providers/mistral.js` | `mistral` (API key under `key` or `token`) — key-validity class: usage/balance are not API-readable on a standard key (#1619) |
 | `nano-gpt` | NanoGPT | `providers/nanogpt.js` | `nano-gpt`, `nanogpt`, `nano_gpt` |
 | `openrouter` | OpenRouter | `providers/openrouter.js` | `openrouter` |
 | `zai-coding-plan` | z.ai | `providers/zai.js` | `zai-coding-plan`, `zai`, `z.ai` |

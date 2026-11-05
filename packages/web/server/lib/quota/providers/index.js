@@ -25,6 +25,7 @@ import * as antigravity from './antigravity/index.js';
 import * as hyper from './hyper.js';
 import * as kimi from './kimi.js';
 import * as meta from './meta.js';
+import * as mistral from './mistral.js';
 import * as nanogpt from './nanogpt.js';
 import * as openai from './openai.js';
 import * as openrouter from './openrouter.js';
@@ -169,6 +170,15 @@ const registry = {
     aliases: meta.aliases,
     isConfigured: meta.isConfigured,
     fetchQuota: meta.fetchQuota
+  },
+  mistral: {
+    providerId: mistral.providerId,
+    providerName: mistral.providerName,
+    aliases: mistral.aliases,
+    isConfigured: mistral.isConfigured,
+    fetchQuota: mistral.fetchQuota,
+    credentialAliases: ['mistral'],
+    fetchQuotaForCredential: mistral.fetchQuotaForCredential
   },
   openrouter: {
     providerId: openrouter.providerId,
