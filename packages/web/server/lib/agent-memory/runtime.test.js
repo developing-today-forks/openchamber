@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createProjectIdFromPath, projectConfigFileStemOf } from '../projects/project-id.js';
-import { createAgentMemoryRuntime } from './runtime.js';
+import { createAgentMemoryRuntime, MEMORY_FILE_READ_MAX_BYTES } from './runtime.js';
 
 const PROJECT_ID = 'path_dGVzdA';
 const GLOBAL = { scope: 'global' };
@@ -92,6 +93,36 @@ describe('read', () => {
   test('malformed storage fails instead of reading as empty', async () => {
     await fsPromises.mkdir(path.dirname(globalPath()), { recursive: true });
     await fsPromises.writeFile(globalPath(), '{ not json', 'utf8');
+
+    await expect(runtime.read(GLOBAL)).rejects.toThrow('malformed');
+  });
+
+  test('oversized storage fails as malformed instead of being buffered whole', async () => {
+    await fsPromises.mkdir(path.dirname(globalPath()), { recursive: true });
+    // Valid JSON padded past the read cap: the bounded read refuses it
+    // before any parse, so it lands on the malformed path, not on empty.
+    await fsPromises.writeFile(
+      globalPath(),
+      `{"version":1,"entries":[],"pad":"${'x'.repeat(MEMORY_FILE_READ_MAX_BYTES)}"}`,
+      'utf8',
+    );
+
+    await expect(runtime.read(GLOBAL)).rejects.toThrow('malformed');
+  });
+
+  test('a file under the read cap reads unchanged', async () => {
+    await writeJson(globalPath(), {
+      version: 1,
+      entries: [{ id: 'm1', title: 'Uses bun', body: 'Tests run with bun test.', createdAt: 1, updatedAt: 1 }],
+      pad: 'x'.repeat(1024 * 1024),
+    });
+
+    expect((await runtime.read(GLOBAL)).entries.map((e) => e.title)).toEqual(['Uses bun']);
+  });
+
+  test.skipIf(process.platform === 'win32')('a FIFO at the storage path fails as malformed without blocking', async () => {
+    await fsPromises.mkdir(path.dirname(globalPath()), { recursive: true });
+    execFileSync('mkfifo', [globalPath()]);
 
     await expect(runtime.read(GLOBAL)).rejects.toThrow('malformed');
   });

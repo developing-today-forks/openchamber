@@ -49,6 +49,18 @@ const GLOBAL_MEMORY_MAX_ITEMS = 60;
 const PROJECT_MEMORY_MAX_ITEMS = 200;
 
 /**
+ * Read cap for the on-disk store. A legitimate file is bounded by the
+ * write-side clamps above: at most 200 entries (project scope; global
+ * allows 60), each with a title of at most 60 chars and a body of at
+ * most 2,000 chars, plus ids, timestamps, and JSON overhead - roughly
+ * 0.45M chars in total. At UTF-8's widest (4 bytes per char) that is
+ * a worst-case legitimate file of ~1.8 MB. 4 MiB gives over 2x headroom
+ * over that worst case while keeping one oversized file from being
+ * buffered whole.
+ */
+export const MEMORY_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
  * `fact` — something true about the project or the user.
  * `preference` — how the user wants work done.
  * `reference` — a pointer to a resource that is hard to rediscover.
@@ -56,6 +68,7 @@ const PROJECT_MEMORY_MAX_ITEMS = 200;
 const MEMORY_TYPES = new Set(['fact', 'preference', 'reference']);
 
 import { renameWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
 import { findThreatPattern } from './threat-patterns.js';
@@ -229,15 +242,17 @@ export const createAgentMemoryRuntime = (deps) => {
   };
 
   const readJson = async (filePath) => {
-    let raw;
-    try {
-      raw = await fsPromises.readFile(filePath, 'utf8');
-    } catch (error) {
-      if (error && error.code === 'ENOENT') return { missing: true, value: null };
-      throw error;
+    const result = await readBoundedFile(filePath, MEMORY_FILE_READ_MAX_BYTES);
+    if (!result.ok) {
+      // Missing stays authoritative empty. An over-cap or non-regular
+      // target follows the malformed path (value null, not missing):
+      // it must never silently read as empty.
+      return result.reason === 'missing'
+        ? { missing: true, value: null }
+        : { missing: false, value: null };
     }
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(result.buffer.toString('utf8'));
       return { missing: false, value: isObjectRecord(parsed) ? parsed : null };
     } catch {
       return { missing: false, value: null };
