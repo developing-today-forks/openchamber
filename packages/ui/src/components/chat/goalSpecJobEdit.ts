@@ -2,7 +2,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useGoalSpecJobStore, type GoalSpecJob } from '@/stores/goalSpecJobStore';
 import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
-import { useInputStore } from '@/sync/input-store';
+import { useInputStore, type ComposerEditTarget } from '@/sync/input-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getSyncMessages } from '@/sync/sync-refs';
 
@@ -17,10 +17,10 @@ import { getSyncMessages } from '@/sync/sync-refs';
 export async function takeGoalSpecJobBack(job: GoalSpecJob): Promise<void> {
     const runtimeKey = getRuntimeKey();
     const message = await useGoalSpecJobStore.getState().editJob(job);
-    const draftId = job.newSession ? await replaceEmptySessionWithDraft(job, runtimeKey) : null;
+    const target = job.newSession ? await replaceEmptySessionWithDraft(job, runtimeKey) : null;
     useInputStore.getState().requestComposerEdit({
         runtimeKey,
-        target: draftId === null ? { kind: 'session', sessionId: job.sessionId } : { kind: 'draft', draftId },
+        target: target ?? { kind: 'session', sessionId: job.sessionId },
         content: message.content,
         attachments: message.attachments,
         context: message.context,
@@ -31,15 +31,14 @@ export async function takeGoalSpecJobBack(job: GoalSpecJob): Promise<void> {
 }
 
 /**
- * Removes the session a new chat's job was made in and opens a new-session
- * draft in its place. Answers the draft's id, or null when the session
- * stays: it is not the one on screen, it has a message (in this window or on
- * the server), OpenCode could not say, or the removal failed. A session with
- * any message is never removed. The window is checked again once OpenCode
- * answers, since a message sent from it or a switch to another session or
- * runtime during that read keeps the session too.
+ * Removes the session a new chat's job was made in. If the user is still on
+ * that session, opens a new-session draft in its place. If they switch sessions
+ * while removal is pending, returns the selected session or draft as the
+ * message's composer target. Returns null when the session stays because it is
+ * not on screen, has a message (in this window or on the server), OpenCode
+ * could not say, removal failed, or the runtime changed.
  */
-async function replaceEmptySessionWithDraft(job: GoalSpecJob, runtimeKey: string): Promise<number | null> {
+async function replaceEmptySessionWithDraft(job: GoalSpecJob, runtimeKey: string): Promise<ComposerEditTarget | null> {
     const emptyOnScreen = () => useSessionUIStore.getState().currentSessionId === job.sessionId
         && getSyncMessages(job.sessionId, job.directory).length === 0;
     if (!emptyOnScreen()) return null;
@@ -52,8 +51,22 @@ async function replaceEmptySessionWithDraft(job: GoalSpecJob, runtimeKey: string
         return null;
     }
     if (!empty || runtimeKey !== getRuntimeKey() || !emptyOnScreen()) return null;
+    const draftIdBeforeDelete = useSessionUIStore.getState().newSessionDraft.draftId;
     if (!(await useSessionUIStore.getState().deleteSession(job.sessionId, { expectedRuntimeKey: runtimeKey }))) return null;
+    if (runtimeKey !== getRuntimeKey()) return null;
+    const sessionUI = useSessionUIStore.getState();
+    if (sessionUI.currentSessionId && sessionUI.currentSessionId !== job.sessionId) {
+        return { kind: 'session', sessionId: sessionUI.currentSessionId };
+    }
+    if (sessionUI.currentSessionId === null
+        && sessionUI.newSessionDraft.open
+        && sessionUI.newSessionDraft.draftId !== draftIdBeforeDelete) {
+        return { kind: 'draft', draftId: sessionUI.newSessionDraft.draftId };
+    }
+    const deletionClearedSelection = sessionUI.currentSessionId === null
+        && sessionUI.newSessionDraft.draftId === draftIdBeforeDelete;
+    if (sessionUI.currentSessionId !== job.sessionId && !deletionClearedSelection) return null;
     // A chat's directory names no project, so it opens another chat.
-    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: job.directory });
-    return useSessionUIStore.getState().newSessionDraft.draftId;
+    sessionUI.openNewSessionDraft({ directoryOverride: job.directory });
+    return { kind: 'draft', draftId: useSessionUIStore.getState().newSessionDraft.draftId };
 }

@@ -33,12 +33,12 @@ for (const [name, descriptor] of previousImportGlobals) {
 }
 void importWindow.happyDOM.close();
 
-const DOM_GLOBAL_NAMES = ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'localStorage', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT'] as const;
+const DOM_GLOBAL_NAMES = ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'CustomEvent', 'localStorage', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT'] as const;
 const installDom = () => {
   const win = new Window({ url: 'http://localhost' });
   const previous = DOM_GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const values = { window: win, document: win.document, navigator: win.navigator, Node: win.Node, Element: win.Element,
-    HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event, localStorage: win.localStorage,
+    HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event, CustomEvent: win.CustomEvent, localStorage: win.localStorage,
     getComputedStyle: win.getComputedStyle.bind(win), requestAnimationFrame: win.requestAnimationFrame.bind(win),
     cancelAnimationFrame: win.cancelAnimationFrame.bind(win), IS_REACT_ACT_ENVIRONMENT: true };
   for (const name of DOM_GLOBAL_NAMES) Object.defineProperty(globalThis, name, { value: values[name], configurable: true, writable: true });
@@ -399,6 +399,62 @@ describe('GoalSpecJobCard', () => {
       expect(deleted).toEqual([]);
       expect(opened).toEqual([]);
       expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+    });
+
+    test('a switch to another session while it is being removed keeps that session and gives it the message', async () => {
+      let finishDelete = () => {};
+      let deleteStarted = () => {};
+      const started = new Promise<void>((resolve) => { deleteStarted = resolve; });
+      const deletion = new Promise<void>((resolve) => { finishDelete = resolve; });
+      useSessionUIStore.setState({
+        deleteSession: async (id) => {
+          deleted.push(id);
+          deleteStarted();
+          await deletion;
+          return true;
+        },
+      });
+      show(job({ newSession: true }));
+
+      const returning = takeGoalSpecJobBack(job({ newSession: true }));
+      await started;
+      useSessionUIStore.setState({ currentSessionId: 'ses_other' });
+      finishDelete();
+      await returning;
+
+      expect(deleted).toEqual(['ses_card']);
+      expect(useSessionUIStore.getState().currentSessionId).toBe('ses_other');
+      expect(opened).toEqual([]);
+      const [edit] = useInputStore.getState().pendingComposerEdits;
+      expect(edit?.target).toEqual({ kind: 'session', sessionId: 'ses_other' });
+      expect(edit?.content).toBe('Add dark mode');
+    });
+
+    test('a runtime switch while removal finishes does not open a draft on the new runtime', async () => {
+      const originalBase = getRuntimeApiBaseUrl();
+      const originalRuntime = getRuntimeKey();
+      useSessionUIStore.setState({
+        deleteSession: async (id) => {
+          deleted.push(id);
+          switchRuntimeEndpoint({ apiBaseUrl: 'http://other-goal-card.test', runtimeKey: 'goal-card-other' });
+          return true;
+        },
+      });
+      show(job({ newSession: true }));
+
+      try {
+        await takeGoalSpecJobBack(job({ newSession: true }));
+
+        expect(deleted).toEqual(['ses_card']);
+        expect(opened).toEqual([]);
+        const [edit] = useInputStore.getState().pendingComposerEdits;
+        expect(edit?.runtimeKey).toBe(originalRuntime);
+        expect(edit?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      } finally {
+        if (getRuntimeKey() !== originalRuntime) {
+          switchRuntimeEndpoint({ apiBaseUrl: originalBase, runtimeKey: originalRuntime });
+        }
+      }
     });
 
     test('a new chat\'s session in a side column stays; only the one on screen in the main chat makes way', async () => {

@@ -143,7 +143,10 @@ rules are in `packages/web/server/lib/session-goal/DOCUMENTATION.md`, *Goal
 writer in the UI*. A goal writer job taken back for editing returns through
 `input-store.pendingComposerEdits`, addressed to a session's composer or, for
 a new chat whose empty session was removed, to one new-session draft by its
-id. The composer showing that session or draft takes it
+id. If the user switches sessions while the empty session is being removed,
+the message goes to the newly selected session's composer and the selection
+stays there. If they open another draft during removal, the message goes to
+that draft. The composer showing that session or draft takes it
 (a `/btw` composer leaves it waiting), appends its text after anything typed
 since (`restoreDraft`), restores its files and puts its attached chips back,
 as editing a queued message does.
