@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import os from 'os';
 import path from 'path';
 import {
@@ -279,6 +280,64 @@ describe('Linear auth storage', () => {
     expect(getLinearStorageState().settingsFile).toBe('malformed');
     expect(() => setLinearSessionCommentsEnabled(true)).toThrow(/not valid JSON/);
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(torn);
+  });
+
+  it('refuses an oversized auth file as MALFORMED, leaving its bytes untouched', () => {
+    const filePath = getLinearAuthFilePath();
+    const oversized = JSON.stringify({ accessToken: 'x'.repeat(4 * 1024 * 1024) });
+    fs.writeFileSync(filePath, oversized, 'utf8');
+    expect(fs.statSync(filePath).size).toBeGreaterThan(4 * 1024 * 1024);
+
+    expect(getLinearAuth()).toBeNull();
+    expect(getLinearStorageState().authFile).toBe('malformed');
+
+    let thrown = null;
+    try {
+      setLinearAuth({ accessToken: 'access-new' });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(LinearAuthError);
+    expect(thrown.code).toBe('MALFORMED');
+    expect(thrown.message).not.toContain('xxxx');
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(oversized);
+  });
+
+  it('still reads a settings file between the auth cap and the settings cap', () => {
+    const settingsPath = path.join(dataDir, 'settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      linearClientId: 'settings-client',
+      pad: 'y'.repeat(5 * 1024 * 1024),
+    }), 'utf8');
+    expect(getLinearClientId()).toBe('settings-client');
+    expect(getLinearStorageState().settingsFile).toBe('valid');
+  });
+
+  it('refuses an oversized settings file as MALFORMED, leaving it untouched', () => {
+    const settingsPath = path.join(dataDir, 'settings.json');
+    const oversized = JSON.stringify({ pad: 'y'.repeat(8 * 1024 * 1024) });
+    fs.writeFileSync(settingsPath, oversized, 'utf8');
+    expect(fs.statSync(settingsPath).size).toBeGreaterThan(8 * 1024 * 1024);
+
+    expect(getLinearSessionCommentsEnabled()).toBe(false);
+    expect(getLinearStorageState().settingsFile).toBe('malformed');
+    expect(() => setLinearSessionCommentsEnabled(true)).toThrow(/not valid JSON/);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(oversized);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO at the auth path as MALFORMED without blocking', () => {
+    execFileSync('mkfifo', [getLinearAuthFilePath()]);
+    expect(getLinearStorageState().authFile).toBe('malformed');
+    expect(getLinearAuth()).toBeNull();
+    expect(() => setLinearAuth({ accessToken: 'access-1' })).toThrow(/not valid JSON/);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO at the settings path as MALFORMED without blocking', () => {
+    const settingsPath = path.join(dataDir, 'settings.json');
+    execFileSync('mkfifo', [settingsPath]);
+    expect(getLinearStorageState().settingsFile).toBe('malformed');
+    expect(getLinearSessionCommentsEnabled()).toBe(false);
+    expect(() => setLinearSessionCommentsEnabled(true)).toThrow(/not valid JSON/);
   });
 
   it('changes only its own key when toggling session comments on a healthy settings file', () => {
