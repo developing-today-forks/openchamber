@@ -2,7 +2,7 @@
 #
 # openchamber module — shared options and the start wrapper.
 #
-# Canonical home: developing-today/openchamber, nix/modules
+# Canonical home: developing-today-forks/openchamber, nix/modules
 # (openchamber#1440 — the top layer of the cascade Drew specified
 # 2026-11-03: each level offers an option that handles its service
 # creation as a single enable switch). Imported by every platform

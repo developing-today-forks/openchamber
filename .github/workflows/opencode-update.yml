@@ -1,4 +1,4 @@
-# Keeps the flake's opencode input current with developing-today/opencode.
+# Keeps the flake's opencode input current with developing-today-forks/opencode.
 #
 # Daily (and on demand): update the opencode input, build the openchamber
 # package, and run the full test suite. If everything passes and flake.lock

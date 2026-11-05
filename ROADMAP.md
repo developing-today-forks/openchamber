@@ -51,7 +51,7 @@ Subagents can launch subagents. Asks from any depth reach the root session, and 
 
 ## Routing, knowledge and cost
 
-These ask for features that sit on top of the OpenCode fork's routing and plan tracking. See `developing-today/opencode`'s roadmap.
+These ask for features that sit on top of the OpenCode fork's routing and plan tracking. See `developing-today-forks/opencode`'s roadmap.
 
 | Title                                              | Horizon | Status   | Intent                                                 | Links |
 | -------------------------------------------------- | ------- | -------- | ------------------------------------------------------ | ----- |

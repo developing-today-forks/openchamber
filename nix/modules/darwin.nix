@@ -2,7 +2,7 @@
 #
 # openchamber module — nix-darwin.
 #
-# Canonical home: developing-today/openchamber, nix/modules
+# Canonical home: developing-today-forks/openchamber, nix/modules
 # (openchamber#1440). Installs the OpenChamber server as a
 # launchd user agent running the shared start wrapper (see
 # common.nix for the attach contract it enforces). No socket

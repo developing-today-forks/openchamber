@@ -51,7 +51,7 @@ describe('compareReleaseVersions', () => {
 
 const releaseJson = () => ({
   tag_name: 'v2.4.0',
-  html_url: 'https://github.com/developing-today/openchamber/releases/tag/v2.4.0',
+  html_url: 'https://github.com/developing-today-forks/openchamber/releases/tag/v2.4.0',
   assets: [
     {
       name: 'OpenChamber-2.4.0-7-android.aab',
@@ -75,14 +75,14 @@ describe('fetchLatestMobileRelease', () => {
     expect(info?.available).toBe(true);
     expect(info?.version).toBe('2.4.0');
     expect(info?.currentVersion).toBe('2.3.3');
-    expect(info?.releaseUrl).toBe('https://github.com/developing-today/openchamber/releases/tag/v2.4.0');
+    expect(info?.releaseUrl).toBe('https://github.com/developing-today-forks/openchamber/releases/tag/v2.4.0');
     expect(info?.downloadUrl).toBe('https://example.com/app.apk');
   });
 
   test('falls back to any APK asset when the canonical name is absent', async () => {
     const body = {
       tag_name: 'v2.4.0',
-      html_url: 'https://github.com/developing-today/openchamber/releases/tag/v2.4.0',
+      html_url: 'https://github.com/developing-today-forks/openchamber/releases/tag/v2.4.0',
       assets: [{ name: 'openchamber.apk', browser_download_url: 'https://example.com/plain.apk' }],
     };
     const info = await fetchLatestMobileRelease('2.3.3', fetchReturning(JSON.stringify(body)));
