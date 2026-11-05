@@ -41,6 +41,7 @@ import { z } from 'zod';
 
 import { asNonEmptyString } from '../shared/guards.js';
 import { OpenCodeUpstreamAuthError, isOpenCodeUpstreamAuthRejection } from './credential-auth-error.js';
+import { isLoopbackUrl } from '../security/bind-host.js';
 
 // Wired once per runtime: `server/index.js` on the web server, the extension
 // entry point in VS Code. Until then every read throws.
@@ -51,14 +52,7 @@ export function configureOpenCodeCredentials(next) {
   source = next ?? null;
 }
 
-const isLoopbackOpenCodeUrl = (raw) => {
-  try {
-    const hostname = new URL(raw).hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    return hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '::1';
-  } catch {
-    return false;
-  }
-};
+const isLoopbackOpenCodeUrl = (raw) => isLoopbackUrl(raw);
 
 /**
  * Whether the wired credential source is known to read the credential

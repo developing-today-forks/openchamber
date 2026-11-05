@@ -14,6 +14,10 @@ export const GOAL_OBJECTIVE_CHAR_LIMIT = 5_000;
 // whose limit the user switched off, so one file stays readable.
 const MIN_CHAR_LIMIT = 1_000;
 export const GOAL_OBJECTIVE_HARD_CAP = 1_000_000;
+// The most bytes a bounded objective read may buffer: the hard cap's chars
+// at UTF-8's widest (4 bytes a char), plus one char of slack so a read that
+// stops at the bound never splits the sequence of the cap's last char.
+const GOAL_OBJECTIVE_MAX_READ_BYTES = GOAL_OBJECTIVE_HARD_CAP * 4 + 4;
 // How much of the objective the progress check reads. Above the goal limit by
 // default, so a goal within its limit reaches the check whole.
 const GOAL_CHECK_OBJECTIVE_CHAR_LIMIT = 20_000;
@@ -70,11 +74,35 @@ export const writeObjective = async (sessionId, content) => {
 /** Returns the objective text, or null when missing/invalid. */
 export const readObjective = async (sessionId) => {
   if (!isValidObjectiveKey(sessionId)) return null;
+  let handle;
   try {
-    const raw = await fs.promises.readFile(objectiveFilePath(sessionId), 'utf8');
-    return clampContent(raw);
+    // The objective file lives in the user's data dir, outside the server's
+    // control between writes: it can be far larger than the hard cap, or not
+    // a regular file at all (#1582). Open non-blocking (POSIX) so a FIFO
+    // with no writer cannot wedge the open, judge the handle's stat, and
+    // read at most the byte bound the clamped result can ever need - the
+    // cap is enforced during the read, in the shared bounded-read shape
+    // (lib/shared/bounded-file-read.js), not after a whole-file buffer.
+    const flags = process.platform === 'win32' || fs.constants.O_NONBLOCK === undefined
+      ? 'r'
+      : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+    handle = await fs.promises.open(objectiveFilePath(sessionId), flags);
+    const stat = await handle.stat();
+    if (!stat.isFile()) return null;
+    const chunks = [];
+    let total = 0;
+    while (total <= GOAL_OBJECTIVE_MAX_READ_BYTES) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, GOAL_OBJECTIVE_MAX_READ_BYTES + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    return clampContent(Buffer.concat(chunks, total).toString('utf8'));
   } catch {
     return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 };
 

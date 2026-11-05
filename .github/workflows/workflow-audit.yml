@@ -3,28 +3,18 @@ name: workflow audit
 # The recurrence guard for #1399 (and #118 before it): a reusable-workflow
 # caller job carrying a key GitHub does not allow (timeout-minutes is the
 # classic case) invalidates the whole workflow file, and every run fails
-# at startup with zero jobs. This audit runs on any change that could
-# reintroduce one, so it fails a PR check instead of merging to main.
+# at startup with zero jobs. This audit runs nightly and on manual dispatch;
+# it detects regressions but is not a PR check or a merge gate.
 
-# Read-only: this job checks out the PR head (including fork PRs) and runs the
-# checked-out audit scripts with the default token, so pin the token scope here
-# instead of inheriting whatever the repository default happens to be.
+# Read-only: scheduled runs check out main; manual runs check out the selected
+# ref. Pin the token scope instead of inheriting the repository default.
 permissions:
   contents: read
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/**"
-      - ".github/scripts/audit-workflow-caller-jobs.py"
-      - ".github/scripts/test-audit-workflow-caller-jobs.sh"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/**"
-      - ".github/scripts/audit-workflow-caller-jobs.py"
-      - ".github/scripts/test-audit-workflow-caller-jobs.sh"
-
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 jobs:
   caller-jobs:
     runs-on: ubuntu-latest

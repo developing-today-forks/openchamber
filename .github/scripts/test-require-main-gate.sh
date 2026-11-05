@@ -42,7 +42,7 @@ assert_result() {
 
   if env \
     PATH="$tmp_dir:$PATH" \
-    GH_REPO=developing-today/openchamber \
+    GH_REPO=developing-today-forks/openchamber \
     RELEASE_SHA="$sha" \
     MOCK_GH_RESPONSE="$response" \
     bash "$script" >"$tmp_dir/output" 2>&1; then

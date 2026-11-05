@@ -582,6 +582,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingBtwComposerRequest = useInputStore((s) => s.pendingBtwComposerRequest);
     const pendingPresetSubmit = useInputStore((s) => s.pendingPresetSubmit);
     const pendingDraftSubmit = useInputStore((s) => s.pendingDraftSubmit);
+    const pendingSessionSubmits = useInputStore((s) => s.pendingSessionSubmits);
     const setPendingInputText = useInputStore((s) => s.setPendingInputText);
     const pendingGuestIssue = useInputStore((s) => s.pendingGuestIssue);
     const consumePendingGuestIssue = useInputStore((s) => s.consumePendingGuestIssue);
@@ -2605,6 +2606,35 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         messageRef.current = text;
         void handleSubmitRef.current({ presetText: text });
     }, [columnPinned, configCatalogLoaded, currentModelId, currentProviderId, draftSubmitDraftId, getCurrentInputSnapshot, mailboxTarget, pendingDraftSubmit]);
+
+    // Text this chat's transcript asked to send (answers to an agent's
+    // question, given from its tool row) goes out like a typed message, so a
+    // busy session queues or steers it as usual. It waits while a BTW holds
+    // the composer, which would send it to the side question instead. A
+    // composer that already holds something gets the text appended and sends
+    // nothing. Shell mode never sends the answers as a shell command: with
+    // text in the box the request waits, and with an empty box the mode is
+    // switched back to normal first and the effect runs again to send.
+    React.useEffect(() => {
+        if (pendingSessionSubmits.length === 0 || isBtwActive) return;
+        if (inputMode === 'shell') {
+            if (message.trim().length > 0) return;
+            setInputMode('normal');
+            return;
+        }
+        const text = useInputStore.getState().consumePendingSessionSubmit(mailboxTarget, currentSessionId);
+        if (!text) return;
+        const composerHolds = getCurrentInputSnapshot().hasContent
+            || (useInputStore.getState().getPendingSyntheticParts(mailboxTarget)?.length ?? 0) > 0;
+        if (composerHolds) {
+            setMessage((prev) => appendWithLineBreaks(prev, text));
+            toast.info(t('chat.questionAnswers.addedToDraft'));
+            return;
+        }
+        setMessage(text);
+        messageRef.current = text;
+        void handleSubmitRef.current({ presetText: text });
+    }, [currentSessionId, getCurrentInputSnapshot, inputMode, isBtwActive, mailboxTarget, message, pendingSessionSubmits, t]);
 
     const handleKeyDown = (e: KeyboardEvent) => {
         // Early return during IME composition to prevent interference with autocomplete.

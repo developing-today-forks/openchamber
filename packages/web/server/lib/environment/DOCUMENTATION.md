@@ -23,7 +23,12 @@ worktree setup commands and `/api/fs/exec`. There are two layers:
 - `store.js`: `<dataDir>/environment.json`, mode 0600, written atomically and
   by one writer at a time in this process. A file that exists but cannot be
   read or parsed throws `EnvironmentStoreError`; it never reads as empty,
-  because a write on top would erase every stored value. Patches: a string
+  because a write on top would erase every stored value. Reads go through the
+  shared bounded reader under a 64 MiB cap (`MAX_ENVIRONMENT_FILE_BYTES`):
+  the write side clamps each entry to roughly 6.5 MB at worst and the project
+  count is unbounded, so the cap sits at about ten worst-case entries. An
+  over-cap file or a non-regular file at the path throws the same
+  `EnvironmentStoreError`, and a FIFO cannot block the synchronous read. Patches: a string
   sets, `null` removes, an absent name stays.
 - `runtime.js`: `createEnvironmentRuntime` decides what each spawn gets.
   `forDirectory(dir)` finds the project (a configured project containing the

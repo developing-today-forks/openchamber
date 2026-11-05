@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fsPromises from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createProjectIdFromPath, projectConfigFileStemOf } from '../projects/project-id.js';
-import { createProjectContextRuntime, parsePlanMarkdown } from './runtime.js';
+import { CONTEXT_FILE_READ_MAX_BYTES, createProjectContextRuntime, parsePlanMarkdown } from './runtime.js';
 import { PLAN_FILE_READ_MAX_BYTES } from './plan-progress.js';
 
 const PROJECT_ID = 'path_dGVzdA';
@@ -234,6 +235,35 @@ describe('readContext', () => {
   test('malformed stored context fails instead of reading as empty', async () => {
     await fsPromises.mkdir(path.dirname(contextPath()), { recursive: true });
     await fsPromises.writeFile(contextPath(), '{ not json', 'utf8');
+    await expect(runtime.readContext(PROJECT_ID)).rejects.toThrow('malformed');
+  });
+
+  test('oversized stored context fails as malformed instead of being buffered whole', async () => {
+    await fsPromises.mkdir(path.dirname(contextPath()), { recursive: true });
+    // Valid JSON padded past the read cap: the bounded read refuses it
+    // before any parse, so it lands on the malformed path, not on empty.
+    await fsPromises.writeFile(
+      contextPath(),
+      `{"version":2,"notes":[],"todos":[],"plans":[],"pad":"${'x'.repeat(CONTEXT_FILE_READ_MAX_BYTES)}"}`,
+      'utf8',
+    );
+    await expect(runtime.readContext(PROJECT_ID)).rejects.toThrow('malformed');
+  });
+
+  test('a context file under the read cap reads unchanged', async () => {
+    await writeJson(contextPath(), {
+      version: 2,
+      notes: [{ id: 'n1', body: 'kept', createdAt: 1, updatedAt: 1, source: 'manual' }],
+      todos: [],
+      plans: [],
+      pad: 'x'.repeat(1024 * 1024),
+    });
+    expect((await runtime.readContext(PROJECT_ID)).notes.map((n) => n.body)).toEqual(['kept']);
+  });
+
+  test.skipIf(process.platform === 'win32')('a FIFO at the context path fails as malformed without blocking', async () => {
+    await fsPromises.mkdir(path.dirname(contextPath()), { recursive: true });
+    execFileSync('mkfifo', [contextPath()]);
     await expect(runtime.readContext(PROJECT_ID)).rejects.toThrow('malformed');
   });
 

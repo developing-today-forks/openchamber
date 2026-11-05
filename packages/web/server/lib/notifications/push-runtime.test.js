@@ -240,3 +240,55 @@ describe('push runtime store durability', () => {
     expect(await fsReal.readFile(filePath, 'utf8')).toBe(before);
   });
 });
+
+describe('push runtime VAPID subject loopback judgement', () => {
+  const savedOrigin = process.env.OPENCHAMBER_PUBLIC_ORIGIN;
+  const savedSubject = process.env.OPENCHAMBER_VAPID_SUBJECT;
+
+  afterEach(() => {
+    if (savedOrigin === undefined) delete process.env.OPENCHAMBER_PUBLIC_ORIGIN;
+    else process.env.OPENCHAMBER_PUBLIC_ORIGIN = savedOrigin;
+    if (savedSubject === undefined) delete process.env.OPENCHAMBER_VAPID_SUBJECT;
+    else process.env.OPENCHAMBER_VAPID_SUBJECT = savedSubject;
+  });
+
+  const subjectForOrigin = async (origin) => {
+    delete process.env.OPENCHAMBER_VAPID_SUBJECT;
+    process.env.OPENCHAMBER_PUBLIC_ORIGIN = origin;
+    const setVapidDetails = vi.fn();
+    const runtime = createPushRuntime({
+      fsPromises: {
+        mkdir: vi.fn(async () => {}),
+        readFile: vi.fn(async () => JSON.stringify({ version: 1, subscriptionsBySession: {} })),
+        writeFile: vi.fn(async () => {}),
+        rename: vi.fn(async () => {}),
+        rm: vi.fn(async () => {}),
+      },
+      path: { dirname: () => '/tmp' },
+      loadWebPush: async () => ({
+        generateVAPIDKeys: vi.fn(() => ({ publicKey: 'public', privateKey: 'private' })),
+        sendNotification: vi.fn(async () => {}),
+        setVapidDetails,
+      }),
+      PUSH_SUBSCRIPTIONS_FILE_PATH: '/tmp/push-subscriptions.json',
+      readSettingsFromDiskMigrated: vi.fn(async () => ({})),
+      writeSettingsToDisk: vi.fn(async () => {}),
+    });
+    await runtime.ensurePushInitialized();
+    expect(setVapidDetails).toHaveBeenCalledOnce();
+    return setVapidDetails.mock.calls[0][0];
+  };
+
+  it('keeps public origins that merely start with a loopback prefix', async () => {
+    for (const origin of ['http://localhost.evil.example:3000', 'http://localhost@evil.example', 'http://127.0.0.1.evil.example']) {
+      expect(await subjectForOrigin(origin), origin).toBe(origin);
+    }
+    expect(await subjectForOrigin('https://chamber.example.com')).toBe('https://chamber.example.com');
+  });
+
+  it('swaps genuine loopback origins for the mailto subject', async () => {
+    for (const origin of ['http://localhost:3000', 'http://127.0.0.2:3000', 'http://[::1]:3000']) {
+      expect(await subjectForOrigin(origin), origin).toBe('mailto:openchamber@localhost');
+    }
+  });
+});

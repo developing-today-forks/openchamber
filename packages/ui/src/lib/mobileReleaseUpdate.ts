@@ -14,7 +14,7 @@ import { getClientPlatform, isCapacitorApp } from '@/lib/platform';
  * falls back to the server check.
  */
 
-const LATEST_RELEASE_URL = 'https://api.github.com/repos/developing-today/openchamber/releases/latest';
+const LATEST_RELEASE_URL = 'https://api.github.com/repos/developing-today-forks/openchamber/releases/latest';
 
 // One deadline for the whole release fetch, body read included: a stalled
 // GitHub answer must settle as null within the bound so the caller can run

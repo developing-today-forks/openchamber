@@ -2,6 +2,7 @@
 // What is under test is all-or-nothing, the order of the import, what a space may not claim, and
 // that an archived chat cannot be run through any route that acts on a session.
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { SpaceError } from './errors.js';
-import { ARCHIVE_MAX_CHATS, createSpaceArchive } from './space-archive.js';
+import { ARCHIVE_ENTRY_MAX_BYTES, ARCHIVE_MAX_CHATS, createSpaceArchive } from './space-archive.js';
 
 const SPACE = 'a1b2c3d4e5f6';
 const PARENT = 'ses_parent1';
@@ -213,5 +214,74 @@ describe('an archived chat is read-only', () => {
     expect(second.archive.isArchivedChat(PARENT)).toBe(true);
     expect(through(second.archive, 'POST', `/api/session/${PARENT}/prompt`)).toMatchObject({ code: 409 });
     expect(second.archive.listArchives()).toHaveLength(1);
+  });
+});
+
+describe('reading archive entries at startup', () => {
+  const entryOf = (chats = [PARENT]) => ({
+    version: 1,
+    spaceId: SPACE,
+    name: 'Fix login',
+    projectDirectory: '/home/me/project',
+    archivedAt: 1234,
+    chats,
+  });
+
+  const dataDirWith = (files) => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-archive-'));
+    folders.push(dataDir);
+    const root = path.join(dataDir, 'spaces', 'archive');
+    fs.mkdirSync(root, { recursive: true });
+    for (const [name, contents] of Object.entries(files)) {
+      fs.writeFileSync(path.join(root, name), contents);
+    }
+    return dataDir;
+  };
+
+  it('loads an ordinary entry and locks its chats', () => {
+    const dataDir = dataDirWith({ [`${SPACE}.json`]: JSON.stringify(entryOf()) });
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toHaveLength(1);
+    expect(archive.isArchivedChat(PARENT)).toBe(true);
+  });
+
+  it('answers empty when the archive directory is missing', () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-archive-'));
+    folders.push(dataDir);
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toEqual([]);
+  });
+
+  it('skips a malformed entry and still loads the valid ones beside it', () => {
+    const dataDir = dataDirWith({
+      'broken.json': 'this is not json',
+      [`${SPACE}.json`]: JSON.stringify(entryOf()),
+    });
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toHaveLength(1);
+    expect(archive.isArchivedChat(PARENT)).toBe(true);
+  });
+
+  it('skips an entry over the archive-entry byte cap without buffering it whole', () => {
+    const oversized = `${JSON.stringify(entryOf())}${' '.repeat(ARCHIVE_ENTRY_MAX_BYTES)}`;
+    const dataDir = dataDirWith({ [`${SPACE}.json`]: oversized });
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toEqual([]);
+    expect(archive.isArchivedChat(PARENT)).toBe(false);
+  });
+
+  it('skips a valid-shaped entry whose chat count is over the write cap', () => {
+    const chats = Array.from({ length: ARCHIVE_MAX_CHATS + 1 }, (_, index) => `ses_n${index}`);
+    const dataDir = dataDirWith({ [`${SPACE}.json`]: JSON.stringify(entryOf(chats)) });
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not block startup on a FIFO entry and still loads the valid ones beside it', () => {
+    const dataDir = dataDirWith({ [`${SPACE}.json`]: JSON.stringify(entryOf()) });
+    execFileSync('mkfifo', [path.join(dataDir, 'spaces', 'archive', 'ffffffffffff.json')]);
+    const { archive } = archiveWith({ chats: [], dataDir });
+    expect(archive.listArchives()).toHaveLength(1);
+    expect(archive.isArchivedChat(PARENT)).toBe(true);
   });
 });

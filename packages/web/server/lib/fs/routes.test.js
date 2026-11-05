@@ -3088,6 +3088,86 @@ describe('fs exec output cap (#737)', () => {
   });
 });
 
+describe('fs exec UTF-8 chunk boundaries (#1567)', () => {
+  const createChunkSpawn = ({ stdoutChunks = [], stderrChunks = [] } = {}) => {
+    const kills = [];
+    const spawn = vi.fn(() => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = (signal) => { kills.push(signal); };
+      queueMicrotask(() => {
+        for (const chunk of stdoutChunks) child.stdout.emit('data', chunk);
+        for (const chunk of stderrChunks) child.stderr.emit('data', chunk);
+        child.emit('close', 0, null);
+      });
+      return child;
+    });
+    return { spawn, kills };
+  };
+
+  // Cut in the middle of a character so its bytes land in two pipe chunks.
+  const splitInsideCharacter = (text, character) => {
+    const buffer = Buffer.from(text);
+    const characterBuffer = Buffer.from(character);
+    const start = buffer.indexOf(characterBuffer);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const cut = start + Math.floor(characterBuffer.length / 2);
+    return [buffer.subarray(0, cut), buffer.subarray(cut)];
+  };
+
+  const run = async ({ stdoutChunks = [], stderrChunks = [] } = {}) => {
+    const { spawn, kills } = createChunkSpawn({ stdoutChunks, stderrChunks });
+    const handler = registerExec({ spawn });
+    const res = await callExec(handler, { commands: ['echo unicode'], cwd: '/repo' });
+    return { res, kills };
+  };
+
+  it('keeps a multi-byte result delivered in one chunk intact', async () => {
+    const text = 'before éclat 🔑 after\n';
+    const { res } = await run({ stdoutChunks: [Buffer.from(text)], stderrChunks: [Buffer.from(text)] });
+
+    expect(res.body.results[0].stdout).toBe('before éclat 🔑 after');
+    expect(res.body.results[0].stderr).toBe('before éclat 🔑 after');
+  });
+
+  it.each([
+    ['2-byte', 'é'],
+    ['4-byte', '🔑'],
+  ])('round-trips a %s character split across stdout and stderr chunks', async (_label, character) => {
+    const text = `before ${character} after\n`;
+    const control = await run({ stdoutChunks: [Buffer.from(text)], stderrChunks: [Buffer.from(text)] });
+    const [first, second] = splitInsideCharacter(text, character);
+    const split = await run({ stdoutChunks: [first, second], stderrChunks: [first, second] });
+
+    expect(control.res.body.results[0].stdout).toBe(`before ${character} after`);
+    expect(split.res.body.results[0].stdout).toBe(control.res.body.results[0].stdout);
+    expect(split.res.body.results[0].stderr).toBe(control.res.body.results[0].stderr);
+    expect(split.kills).toEqual([]);
+  });
+
+  it('truncates a split character at the byte cap without a replacement', async () => {
+    process.env.OPENCHAMBER_FS_EXEC_OUTPUT_MAX_BYTES = '16';
+    try {
+      const prefix = 'a'.repeat(15);
+      const characterBytes = Buffer.from('é');
+      const { res, kills } = await run({
+        stdoutChunks: [
+          Buffer.concat([Buffer.from(prefix), characterBytes.subarray(0, 1)]),
+          Buffer.concat([characterBytes.subarray(1), Buffer.from('tail')]),
+        ],
+      });
+
+      expect(res.body.results[0].success).toBe(false);
+      expect(res.body.results[0].error).toContain('output-too-large');
+      expect(res.body.results[0].stdout).toBe(prefix);
+      expect(kills).toEqual(['SIGKILL']);
+    } finally {
+      delete process.env.OPENCHAMBER_FS_EXEC_OUTPUT_MAX_BYTES;
+    }
+  });
+});
+
 describe('fs exec tree kill (#913)', () => {
   // Real shell, real processes: a descendant that inherits the pipes
   // must not keep a capped or timed-out result from settling, and the

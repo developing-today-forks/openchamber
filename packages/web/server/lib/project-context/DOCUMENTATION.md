@@ -86,6 +86,14 @@ Plans tab re-reads the list while it is on screen. Listing therefore costs one
 `stat` per plan: a file is read and parsed again only when its modification
 time or size changed. Clients receive the counts, never the text.
 
+The summary cache is one server-lifetime instance shared by every project, so
+it is bounded: at most 500 entries (`PLAN_SUMMARY_CACHE_MAX_ENTRIES`), with a
+cache hit refreshing recency and insertion evicting the least recently used
+entry. The list flow only ever queries paths a listing just returned, so
+without the bound an entry for a deleted or renamed plan would never be
+queried again and could never leave; with it, those untouched entries are
+exactly the ones that age out first.
+
 `planSessions` records the session a plan was last sent to with Implement or
 Improve (`PUT .../plans/:planId/session`), so its card leads there. It is a map
 beside the manifest because a plan that only lives in the team's folder has no

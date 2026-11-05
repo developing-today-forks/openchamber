@@ -12,7 +12,7 @@
 
 import { readBoundedResponseText } from '../shared/response-body.js';
 
-const CHANGELOG_INDEX_URL = 'https://raw.githubusercontent.com/developing-today/openchamber/main/changelog/index.json';
+const CHANGELOG_INDEX_URL = 'https://raw.githubusercontent.com/developing-today-forks/openchamber/main/changelog/index.json';
 
 // The index is a small JSON file; 1 MiB is generous. The deadline bounds time,
 // the cap bounds memory. Over-cap returns null like any other failure.

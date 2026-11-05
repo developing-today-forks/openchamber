@@ -539,8 +539,15 @@ const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, 
     let stderr = '';
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timedOut = false;
     let outputTooLarge = false;
+    // Decode incrementally per stream: a multi-byte character split across
+    // pipe chunks has to survive, and chunk.toString() would turn each half
+    // into U+FFFD in output the exec route returns verbatim (#1567).
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
 
     // Overflow and timeout must end the whole command, not just the
     // shell: a descendant that inherited the pipes keeps them open after
@@ -600,18 +607,25 @@ const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, 
     };
 
     // Append at most the bytes left under the cap and report overflow, so a
-    // capped stream is truncated to the cap and never grows past it.
-    const appendCapped = (current, currentBytes, chunk) => {
+    // capped stream is truncated to the cap and never grows past it. Bytes go
+    // to the stream's decoder, which holds a split character until the rest
+    // arrives; on truncation the held tail is dropped rather than flushed as
+    // a replacement character the cap did not ask for.
+    const appendCapped = (current, currentBytes, chunk, decoder) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
       if (currentBytes >= execOutputMaxBytes) {
         return { value: current, bytes: currentBytes, exceeded: true };
       }
       const remaining = execOutputMaxBytes - currentBytes;
       if (buffer.length <= remaining) {
-        return { value: current + buffer.toString(), bytes: currentBytes + buffer.length, exceeded: false };
+        return { value: current + decoder.write(buffer), bytes: currentBytes + buffer.length, exceeded: false };
       }
-      return { value: current + buffer.subarray(0, remaining).toString(), bytes: execOutputMaxBytes, exceeded: true };
+      return { value: current + decoder.write(buffer.subarray(0, remaining)), bytes: execOutputMaxBytes, exceeded: true };
     };
+
+    // A stream that ended on its own flushes the decoder's tail; a truncated
+    // one keeps its last whole character and drops the cut sequence.
+    const flushDecoded = (value, decoder, truncated) => (truncated ? value : value + decoder.end());
 
     const child = spawn(shell, [shellFlag, command], {
       cwd: resolvedCwd,
@@ -630,17 +644,19 @@ const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, 
 
     child.stdout?.on('data', (chunk) => {
       if (outputTooLarge) return;
-      const appended = appendCapped(stdout, stdoutBytes, chunk);
+      const appended = appendCapped(stdout, stdoutBytes, chunk, stdoutDecoder);
       stdout = appended.value;
       stdoutBytes = appended.bytes;
+      stdoutTruncated = stdoutTruncated || appended.exceeded;
       if (appended.exceeded) killForOutputLimit();
     });
 
     child.stderr?.on('data', (chunk) => {
       if (outputTooLarge) return;
-      const appended = appendCapped(stderr, stderrBytes, chunk);
+      const appended = appendCapped(stderr, stderrBytes, chunk, stderrDecoder);
       stderr = appended.value;
       stderrBytes = appended.bytes;
+      stderrTruncated = stderrTruncated || appended.exceeded;
       if (appended.exceeded) killForOutputLimit();
     });
 
@@ -650,8 +666,8 @@ const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, 
         command,
         success: false,
         exitCode: undefined,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
+        stdout: flushDecoded(stdout, stdoutDecoder, stdoutTruncated).trim(),
+        stderr: flushDecoded(stderr, stderrDecoder, stderrTruncated).trim(),
         error: (error && error.message) || 'Command execution failed',
       });
     });
@@ -663,8 +679,8 @@ const runCommandInDirectory = ({ shell, shellFlag, command, resolvedCwd, spawn, 
         command,
         success: exitCode === 0 && !timedOut,
         exitCode,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
+        stdout: flushDecoded(stdout, stdoutDecoder, stdoutTruncated).trim(),
+        stderr: flushDecoded(stderr, stderrDecoder, stderrTruncated).trim(),
       };
 
       if (outputTooLarge) {

@@ -1208,6 +1208,21 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['thinking', 'variant', 'reasoning', 'effort', 'model', 'project metadata'],
   },
   {
+    id: 'projects.sidebar.work',
+    page: 'projects',
+    titleKey: 'settings.projects.sidebar.showInWork',
+    keywords: ['work', 'hide', 'visibility', 'sidebar', 'project metadata'],
+    // ProjectGeneralTab leaves both visibility switches out in VS Code.
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    id: 'projects.sidebar.all',
+    page: 'projects',
+    titleKey: 'settings.projects.sidebar.showInAllSessions',
+    keywords: ['all sessions', 'hide', 'visibility', 'sidebar', 'project metadata'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'projects.icon',
     page: 'projects',
     titleKey: 'settings.projects.page.field.projectIcon',
