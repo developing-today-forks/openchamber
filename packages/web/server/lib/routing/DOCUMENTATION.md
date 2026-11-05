@@ -64,6 +64,19 @@ Auto. There is no env gate — the feature shipped dark behind
   DELETE), `/api/routing/classifier/test` (POST) and
   `registerRoutingPromptRewrite`.
 
+## Plan information
+
+`plans.js` reads and writes OpenCode's `plans.json` and append-only
+`plan-notes.jsonl` in the data directory. `readNotes` reads the complete notes
+file through `readBoundedFileSync` with an 8 MiB cap. A missing file remains an
+empty result; an over-cap file returns 413 `PLAN_NOTES_TOO_LARGE`, and a
+non-regular file returns 409 `PLAN_NOTES_NOT_REGULAR`.
+
+Filters run before the newest-`limit` slice, and `skipped` counts damaged lines
+across the full file. A tail read would return incomplete filter results and
+counts, so the reader refuses an over-cap file rather than returning partial
+history. `addNote` stays append-only; the read cap is the visible growth bound.
+
 ## Invariants
 
 - The sentinel never reaches OpenCode. OpenCode 2.x holds the model and agent
