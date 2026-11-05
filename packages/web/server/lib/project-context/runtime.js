@@ -13,6 +13,7 @@
  */
 
 import { renameWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import { asNonEmptyString, isRecord as isObjectRecord } from '../shared/guards.js';
 import { projectConfigFileStemOf } from '../projects/project-id.js';
 import { createPlanSummaryCache, readBoundedUtf8, PLAN_FILE_READ_MAX_BYTES } from './plan-progress.js';
@@ -29,6 +30,18 @@ const PROJECT_PLAN_TITLE_MAX_LENGTH = 160;
 const PROJECT_PLAN_BODY_MAX_LENGTH = 200_000;
 const PROJECT_TODO_MAX_ITEMS = 500;
 const PROJECT_PLAN_MAX_ITEMS = 500;
+
+/**
+ * Read cap for context.json (and the legacy <stem>.json read through
+ * the same helper). A legitimate file is bounded by the write-side
+ * clamps above: notes at most 200 x 3,000 chars, todos at most
+ * 500 x 1,000 chars, plan links at most 500 x (title at most 160
+ * chars plus a file name and ids) - roughly 1.3M chars in total.
+ * 4 MiB leaves headroom over that even with multi-byte UTF-8 and
+ * JSON overhead, while keeping one oversized file from being
+ * buffered whole.
+ */
+export const CONTEXT_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
 
 const PROJECT_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 const PLAN_FILE_PATTERN = /^[a-zA-Z0-9._-]+\.md$/;
@@ -282,15 +295,17 @@ export const createProjectContextRuntime = (deps) => {
   const legacyConfigPathFor = (projectId) => path.join(projectsDirPath, `${storageStemFor(projectId)}.json`);
 
   const readJson = async (filePath) => {
-    let raw;
-    try {
-      raw = await fsPromises.readFile(filePath, 'utf8');
-    } catch (error) {
-      if (error && error.code === 'ENOENT') return { missing: true, value: null };
-      throw error;
+    const result = await readBoundedFile(filePath, CONTEXT_FILE_READ_MAX_BYTES);
+    if (!result.ok) {
+      // Missing stays authoritative empty. An over-cap or non-regular
+      // target follows the malformed path (value null, not missing):
+      // it must never silently read as empty.
+      return result.reason === 'missing'
+        ? { missing: true, value: null }
+        : { missing: false, value: null };
     }
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(result.buffer.toString('utf8'));
       return { missing: false, value: isObjectRecord(parsed) ? parsed : null };
     } catch {
       return { missing: false, value: null };
