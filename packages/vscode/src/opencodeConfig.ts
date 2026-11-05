@@ -650,7 +650,7 @@ const isConfigReadError = (error: unknown): error is Error & { code: string } =>
 const isConfigFileTooLargeError = (error: unknown): error is Error & { code: string } =>
   Boolean(error && typeof error === 'object' && 'code' in error && error.code === CONFIG_FILE_TOO_LARGE);
 
-type CappedFileErrors = {
+export type CappedFileErrors = {
   tooLarge: (filePath: string) => Error;
   notRegular: (filePath: string) => Error;
 };
@@ -662,7 +662,7 @@ type CappedFileErrors = {
 // growth past the cap is refused, never buffered. A missing file throws the
 // ENOENT the old stat would have thrown, so existsSync-guarded callers keep
 // their behaviour.
-const readCappedFileSync = (filePath: string, maxBytes: number, errors: CappedFileErrors): string => {
+export const readCappedFileSync = (filePath: string, maxBytes: number, errors: CappedFileErrors): string => {
   // O_NONBLOCK (POSIX only): open() must not block on a FIFO with no writer
   // before fstatSync can reject it as non-regular. Regular files ignore it.
   const openFlags = process.platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
