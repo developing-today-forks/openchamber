@@ -416,6 +416,7 @@ export function registerLinearRoutes(app) {
       status: 200,
       body: {
         connected: true,
+        teamsMore: teamsResult.teamsMore === true,
         ...mergeLinearMappingView(stored, teamsResult.teams),
       },
     };
@@ -458,6 +459,7 @@ export function registerLinearRoutes(app) {
         status: 200,
         body: {
           connected: true,
+          teamsMore: teamsResult.teamsMore === true,
           ...mergeLinearMappingView(stored, []),
         },
       };
@@ -466,6 +468,7 @@ export function registerLinearRoutes(app) {
       status: 200,
       body: {
         connected: true,
+        teamsMore: teamsResult.teamsMore === true,
         ...mergeLinearMappingView(stored, teamsResult.teams),
       },
     };

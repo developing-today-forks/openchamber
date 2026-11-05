@@ -34,6 +34,7 @@ export async function listLinearTeams() {
     }
 
     const teams = [];
+    let teamsMore = false;
     let after = null;
     for (let page = 0; page < MAX_PAGES; page += 1) {
       const variables = { first: PAGE_SIZE };
@@ -57,11 +58,15 @@ export async function listLinearTeams() {
       }
       after = readTrimmedString(pageInfo.endCursor);
       if (!after) {
+        teamsMore = true;
         break;
+      }
+      if (page === MAX_PAGES - 1) {
+        teamsMore = true;
       }
     }
 
-    return { connected: true, teams };
+    return { connected: true, teams, teamsMore };
   } catch (error) {
     if (error?.status === 401) {
       const failed = getLinearAuth();
