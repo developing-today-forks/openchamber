@@ -35,13 +35,15 @@ const PROJECT_PLAN_MAX_ITEMS = 500;
  * Read cap for context.json (and the legacy <stem>.json read through
  * the same helper). A legitimate file is bounded by the write-side
  * clamps above: notes at most 200 x 3,000 chars, todos at most
- * 500 x 1,000 chars, plan links at most 500 x (title at most 160
- * chars plus a file name and ids) - roughly 1.3M chars in total.
- * 4 MiB leaves headroom over that even with multi-byte UTF-8 and
- * JSON overhead, while keeping one oversized file from being
- * buffered whole.
+ * 500 x 1,000 chars, plan links at most 500 x ~300 chars, plus
+ * planSessions entries - roughly 1.3M chars in total. At UTF-8's
+ * widest (4 bytes per char) that is a worst-case legitimate file of
+ * ~5.2 MB. 8 MiB gives headroom over that worst case (the previous
+ * 4 MiB cap sat below it, so a legitimate all-multibyte store could
+ * have been refused as malformed) while keeping one oversized file
+ * from being buffered whole.
  */
-export const CONTEXT_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
+export const CONTEXT_FILE_READ_MAX_BYTES = 8 * 1024 * 1024;
 
 const PROJECT_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 const PLAN_FILE_PATTERN = /^[a-zA-Z0-9._-]+\.md$/;

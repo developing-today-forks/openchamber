@@ -52,11 +52,13 @@ const PROJECT_MEMORY_MAX_ITEMS = 200;
  * Read cap for the on-disk store. A legitimate file is bounded by the
  * write-side clamps above: at most 200 entries (project scope; global
  * allows 60), each with a title of at most 60 chars and a body of at
- * most 2,000 chars, plus ids and timestamps - under ~0.5 MB even with
- * multi-byte UTF-8 and JSON overhead. 2 MiB leaves over 4x headroom
- * while keeping one oversized file from being buffered whole.
+ * most 2,000 chars, plus ids, timestamps, and JSON overhead - roughly
+ * 0.45M chars in total. At UTF-8's widest (4 bytes per char) that is
+ * a worst-case legitimate file of ~1.8 MB. 4 MiB gives over 2x headroom
+ * over that worst case while keeping one oversized file from being
+ * buffered whole.
  */
-export const MEMORY_FILE_READ_MAX_BYTES = 2 * 1024 * 1024;
+export const MEMORY_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * `fact` — something true about the project or the user.
