@@ -218,12 +218,27 @@ injection. The contract rules:
    integer `mode` (0o600 for secret-bearing stores) and write a unique
    temp file (pid + time + random) in the same directory, renamed over
    the destination via `renameWithRetry` / `renameSyncWithRetry`.
-4. **Both clock styles, fs injection preserved.** Async stores that
+4. **Reads are bounded and regular-file-checked (#1649).** Every read
+   in the module — both reader spellings and all three read points of
+   both preserve spellings — goes through one handle-judged bounded
+   read: open once with `O_NONBLOCK`, judge from the handle, enforce
+   the cap in flight at cap+1 bytes. The cap is
+   `DEFAULT_DURABLE_JSON_MAX_BYTES` (32 MiB, derived at its definition
+   from the fifteen callers' write-side bounds, with headroom over the
+   one unbounded caller, the session-metadata index) unless a caller
+   passes `options.maxBytes`. An over-cap or non-regular file is a
+   coded refusal (`DURABLE_JSON_STORE_TOO_LARGE` /
+   `DURABLE_JSON_STORE_NOT_REGULAR`): the readers throw it (their
+   existing read-failure branch — never `malformed`, never `missing`),
+   and preserve answers `failed` at whichever read point refused.
+   Where an injected fs surface has no handle API (the unit-test
+   seam), the cap is enforced on the bytes its `readFile` returns.
+5. **Both clock styles, fs injection preserved.** Async stores that
    receive `fsPromises` and sync stores both use the same contract by
    passing their fs surface in `options.fs`; no store loses its test
    seam, and the module imports nothing beyond platform APIs and
    `atomic-rename.js`.
-5. **Divergent policies stay local and are named** (see below). The
+6. **Divergent policies stay local and are named** (see below). The
    contract governs stores whose loss is the failure; policies that
    answer differently for real inputs are recorded, not redefined.
 
@@ -291,7 +306,10 @@ The contract (rules 1–5 of #1254):
   file, and its cap is enforced by cancelling the stream.
 - The server's own state files stay `durable-json-store.js` (#976):
   contents the server controls, with preserve-on-malformed semantics
-  this reader does not have.
+  this reader does not have. Since #1649 the durable store applies
+  the same bound-and-judge discipline internally (handle stat,
+  non-regular refusal, cap enforced in flight), so the exclusion is
+  about disposition, not about the bound.
 - Cap values, error surfaces and HTTP shapes at the call sites: the
   primitive knows paths, bytes and caps only.
 
