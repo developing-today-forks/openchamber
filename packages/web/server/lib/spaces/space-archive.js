@@ -20,10 +20,18 @@ import { requestedDirectories } from './dispatcher.js';
 
 import { SpaceError } from './errors.js';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 import { archivedChatOf, chatIdSchema } from './space-opencode.js';
 
 // The maintainer's call of 2026-09-30: at most this many chats of one space go to the archive.
 export const ARCHIVE_MAX_CHATS = 1000;
+// One archive entry on disk, read at server startup. Its shape is small by
+// construction: at most ARCHIVE_MAX_CHATS chat ids, each at most 68 ASCII
+// characters (about 70 KiB of JSON for the full list), a name of at most 200
+// characters, and a project directory path. A 1 MiB cap leaves substantial
+// headroom for all of that while keeping a single overgrown or non-regular
+// entry from being buffered whole — or, for a FIFO, from blocking startup.
+export const ARCHIVE_ENTRY_MAX_BYTES = 1024 * 1024;
 // All the chats of one space are taken out within this, however slowly the space answers; the
 // rest counts as not saved, so a space cannot hold its own delete.
 const SAVE_TIMEOUT_MS = 30 * 60_000;
@@ -38,7 +46,7 @@ const archiveEntrySchema = z.object({
   name: z.string().max(200),
   projectDirectory: z.string().nullable(),
   archivedAt: z.number().int().nonnegative(),
-  chats: z.array(chatIdSchema),
+  chats: z.array(chatIdSchema).max(ARCHIVE_MAX_CHATS),
 });
 
 // A request that would run or change a chat, by the session id in its path. Reads pass, and so
@@ -85,7 +93,16 @@ export function createSpaceArchive({ dataDir, hostOpenCode, logger = console, no
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
       try {
-        const entry = archiveEntrySchema.parse(JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')));
+        // Judged from the opened handle through the shared bounded reader:
+        // an over-cap or non-regular entry takes the same warn-and-skip
+        // path as a malformed one, and a FIFO never blocks startup.
+        const read = readBoundedFileSync(path.join(root, name), ARCHIVE_ENTRY_MAX_BYTES);
+        if (!read.ok) {
+          const refused = new Error(read.reason);
+          refused.code = read.code;
+          throw refused;
+        }
+        const entry = archiveEntrySchema.parse(JSON.parse(read.buffer.toString('utf8')));
         entries.set(entry.spaceId, entry);
       } catch (error) {
         logger.warn?.(`[spaces] an archive entry could not be read: ${name}: ${error?.code ?? 'malformed'}`);
