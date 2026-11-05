@@ -70,6 +70,8 @@ interface ProjectsStore {
     defaultAgent?: string | null;
     defaultModel?: string | null;
     defaultVariant?: string | null;
+    hiddenFromWork?: boolean;
+    hiddenFromAllSessions?: boolean;
   }) => void;
   uploadProjectIcon: (id: string, file: File) => Promise<{ ok: boolean; error?: string }>;
   removeProjectIcon: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -338,6 +340,12 @@ const sanitizeProjects = (value: readonly (ProjectEntry | PersistedProjectCandid
     }
     if (typeof candidate.sidebarCollapsed === 'boolean') {
       project.sidebarCollapsed = candidate.sidebarCollapsed;
+    }
+    if (candidate.hiddenFromWork === true) {
+      project.hiddenFromWork = true;
+    }
+    if (candidate.hiddenFromAllSessions === true) {
+      project.hiddenFromAllSessions = true;
     }
     result.push(project);
   }
@@ -854,6 +862,8 @@ export const useProjectsStore = create<ProjectsStore>()(
       defaultAgent?: string | null;
       defaultModel?: string | null;
       defaultVariant?: string | null;
+      hiddenFromWork?: boolean;
+      hiddenFromAllSessions?: boolean;
     }) => {
       if (isVSCodeProjectsRuntime) {
         return;
@@ -870,6 +880,15 @@ export const useProjectsStore = create<ProjectsStore>()(
         if (meta.color !== undefined) updated.color = meta.color;
         if (meta.iconBackground !== undefined) {
           updated.iconBackground = normalizeIconBackground(meta.iconBackground);
+        }
+        // Only a hidden project carries a flag; a shown one stores none.
+        if (meta.hiddenFromWork !== undefined) {
+          if (meta.hiddenFromWork) updated.hiddenFromWork = true;
+          else delete updated.hiddenFromWork;
+        }
+        if (meta.hiddenFromAllSessions !== undefined) {
+          if (meta.hiddenFromAllSessions) updated.hiddenFromAllSessions = true;
+          else delete updated.hiddenFromAllSessions;
         }
         if (meta.defaultAgent !== undefined) {
           const normalized = parseNonEmptyTrimmedString(meta.defaultAgent, {});

@@ -177,6 +177,8 @@ export type SessionSidebarRowModelArgs = {
   chatGroup: SessionGroup | null;
   /** Every non-archived root project session with its project, in lifecycle order. */
   timelineItems?: readonly SessionSidebarActivityItem[];
+  /** Projects the List view leaves out of All sessions; their sessions are already gone from timelineItems. */
+  hiddenFromAllProjectIds?: ReadonlySet<string>;
   /**
    * Pinned sessions and sessions in work, already ordered and
    * search-filtered. Each zone renders as its own block at the top, and its
@@ -934,6 +936,8 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     const shown = new Set<string>();
     for (const section of args.sections) {
       if (listedProjects.has(section.project.id)) continue;
+      // A project hidden from all sessions stays out of this list, its load status too.
+      if (args.hiddenFromAllProjectIds?.has(section.project.id)) continue;
       const mainGroup = section.groups.find((group) => group.isMain);
       if (!mainGroup) continue;
       const groupKey = `${section.project.id}:${mainGroup.id}`;
@@ -1027,6 +1031,7 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     const chatsIndex = chatsAmongProjects ? Math.min(timelineLayout.chatsGroupIndex, args.sections.length) : -1;
     args.sections.forEach((section, index) => {
       if (index === chatsIndex) appendChats('projects');
+      if (args.hiddenFromAllProjectIds?.has(section.project.id)) return;
       appendTimelineProject(section, itemsByProject.get(section.project.id) ?? []);
     });
     if (chatsIndex === args.sections.length) appendChats('projects');
