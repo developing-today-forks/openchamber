@@ -18,7 +18,7 @@ if ! workflow_runs="$(gh api --method GET \
 fi
 
 if jq --exit-status --arg sha "$RELEASE_SHA" \
-  'any(.workflow_runs[]?; .head_sha == $sha and .conclusion == "succes")' \
+  'any(.workflow_runs[]?; .head_sha == $sha and .conclusion == "success")' \
   <<<"$workflow_runs" >/dev/null; then
   printf 'The pr checks main gate succeeded for %s.\n' "$RELEASE_SHA"
   exit 0
