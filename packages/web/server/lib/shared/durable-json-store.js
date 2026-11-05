@@ -44,6 +44,139 @@ import { renameSyncWithRetry, renameWithRetry } from './atomic-rename.js';
 const PRESERVE_ATTEMPTS = 10;
 
 /**
+ * Default byte cap for every read in this module (#1649).
+ *
+ * Derived from the write-side inventory of the fifteen caller stores,
+ * not copied from an unrelated reader: the credential and config
+ * stores (pairing, remote-clients, voice-keys, passkeys, push/APNs
+ * tokens, route settings/overrides, tunnels, magic-prompts) are
+ * KiB-scale by construction; the message-queue snapshot is bounded by
+ * its 50-session x 20-item retention; the archive store prunes by
+ * count and age. The one store with no write-side bound is the
+ * session-metadata index, which grows by one small record per session
+ * (thousands of sessions are still single-digit MiB) — it is named
+ * here as the unbounded caller, and this cap sits at generous headroom
+ * over that plausible maximum. A caller that legitimately outgrows
+ * the default passes `options.maxBytes` at its call sites.
+ */
+export const DEFAULT_DURABLE_JSON_MAX_BYTES = 32 * 1024 * 1024;
+
+const READ_CHUNK_BYTES = 64 * 1024;
+
+const resolveMaxBytes = (options) => {
+  const maxBytes = options.maxBytes ?? DEFAULT_DURABLE_JSON_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError(`maxBytes must be a non-negative integer, got ${maxBytes}`);
+  }
+  return maxBytes;
+};
+
+const tooLargeError = (filePath, size, maxBytes) =>
+  Object.assign(new Error(`durable JSON store file is too large: ${filePath} exceeds the ${maxBytes}-byte limit`), {
+    code: 'DURABLE_JSON_STORE_TOO_LARGE',
+    path: filePath,
+    size,
+    limit: maxBytes,
+  });
+
+const notRegularError = (filePath, stat) => {
+  // A directory at the store path historically failed the plain read
+  // with EISDIR, and callers match on that code — keep that answer for
+  // directories; other non-regular files (FIFO, device, socket) get
+  // the module's own coded refusal.
+  if (stat && typeof stat.isDirectory === 'function' && stat.isDirectory()) {
+    return Object.assign(new Error(`EISDIR: illegal operation on a directory, read '${filePath}'`), {
+      code: 'EISDIR',
+      path: filePath,
+    });
+  }
+  return Object.assign(new Error(`durable JSON store file is not a regular file: ${filePath}`), {
+    code: 'DURABLE_JSON_STORE_NOT_REGULAR',
+    path: filePath,
+  });
+};
+
+const openFlags = () =>
+  process.platform === 'win32' ? 'r' : fsSync.constants.O_RDONLY | fsSync.constants.O_NONBLOCK;
+
+// Bounded, regular-file-checked read (#1649): open once and judge from
+// the handle (O_NONBLOCK so a FIFO with no writer cannot wedge the
+// open), enforce the cap in flight (at most maxBytes + 1 bytes are
+// read). When the caller's injected fs surface has no handle API (the
+// unit-test seam), fall back to its readFile and enforce the cap on
+// the bytes returned — the seam is preserved, never silently dropped.
+// Over-cap and non-regular refusals are thrown errors with codes, so
+// they land in the readers' existing throw branch and in preserve's
+// 'failed' outcome — never in 'malformed'.
+const readBoundedRaw = async (filePath, options) => {
+  const fs = options.fs ?? fsPromises;
+  const maxBytes = resolveMaxBytes(options);
+  // An injected surface that intercepts readFile (a spread of the real
+  // promises fs with a wrapped readFile is how callers' tests simulate
+  // read failures and races) intends reads to go through that
+  // interception — respect it and enforce the cap on what it returns.
+  if (typeof fs.open !== 'function' || (options.fs && fs.readFile !== fsPromises.readFile)) {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const size = Buffer.byteLength(String(raw), 'utf8');
+    if (size > maxBytes) throw tooLargeError(filePath, size, maxBytes);
+    return raw;
+  }
+  const handle = await fs.open(filePath, openFlags());
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw notRegularError(filePath, stat);
+    if (stat.size > maxBytes) throw tooLargeError(filePath, stat.size, maxBytes);
+    const chunks = [];
+    let total = 0;
+    while (total <= maxBytes) {
+      const chunk = Buffer.alloc(Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    if (total > maxBytes) throw tooLargeError(filePath, total, maxBytes);
+    return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+};
+
+const readBoundedRawSync = (filePath, options) => {
+  const fs = options.fs ?? fsSync;
+  const maxBytes = resolveMaxBytes(options);
+  if (
+    typeof fs.openSync !== 'function' ||
+    typeof fs.fstatSync !== 'function' ||
+    (options.fs && fs.readFileSync !== fsSync.readFileSync)
+  ) {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const size = Buffer.byteLength(String(raw), 'utf8');
+    if (size > maxBytes) throw tooLargeError(filePath, size, maxBytes);
+    return raw;
+  }
+  const fd = fs.openSync(filePath, openFlags());
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw notRegularError(filePath, stat);
+    if (stat.size > maxBytes) throw tooLargeError(filePath, stat.size, maxBytes);
+    const chunks = [];
+    let total = 0;
+    while (total <= maxBytes) {
+      const chunk = Buffer.alloc(Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total));
+      const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    if (total > maxBytes) throw tooLargeError(filePath, total, maxBytes);
+    return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+};
+
+/**
  * The object judgement for an object-shaped store: a parsed JSON value
  * that is an object (not null, not an array). Pass it as `validateValue`
  * to the reader or the preserve helper; stores with another shape pass
@@ -85,13 +218,14 @@ const judgeForPreserve = (raw, validateValue) => {
  * empty file (the first-run case), `{ state: 'valid', value, raw }`, or
  * `{ state: 'malformed', raw }`. A read failure other than absence
  * throws: a caller that cannot see the current contents must not
- * replace them.
+ * replace them. Reads are bounded (#1649): a file over
+ * `options.maxBytes` (default DEFAULT_DURABLE_JSON_MAX_BYTES) or not a
+ * regular file throws a coded refusal, never a 'malformed' answer.
  */
 export const readDurableJsonFile = async (filePath, options = {}) => {
-  const fs = options.fs ?? fsPromises;
   let raw;
   try {
-    raw = await fs.readFile(filePath, 'utf8');
+    raw = await readBoundedRaw(filePath, options);
   } catch (error) {
     if (isMissingError(error)) return { state: 'missing' };
     throw error;
@@ -101,10 +235,9 @@ export const readDurableJsonFile = async (filePath, options = {}) => {
 
 /** Sync spelling of readDurableJsonFile; the answers are identical. */
 export const readDurableJsonFileSync = (filePath, options = {}) => {
-  const fs = options.fs ?? fsSync;
   let raw;
   try {
-    raw = fs.readFileSync(filePath, 'utf8');
+    raw = readBoundedRawSync(filePath, options);
   } catch (error) {
     if (isMissingError(error)) return { state: 'missing' };
     throw error;
@@ -133,7 +266,7 @@ export const preserveMalformedJsonFile = async (filePath, options = {}) => {
   const fs = options.fs ?? fsPromises;
   let raw;
   try {
-    raw = await fs.readFile(filePath, 'utf8');
+    raw = await readBoundedRaw(filePath, options);
   } catch (error) {
     if (isMissingError(error)) return { preserved: false, outcome: 'missing' };
     return { preserved: false, outcome: 'failed' };
@@ -160,7 +293,7 @@ export const preserveMalformedJsonFile = async (filePath, options = {}) => {
     // here, not moved to the preserve name by the rename below.
     let rawNow;
     try {
-      rawNow = await fs.readFile(filePath, 'utf8');
+      rawNow = await readBoundedRaw(filePath, options);
     } catch (error) {
       if (isMissingError(error)) return { preserved: false, outcome: 'missing' };
       return { preserved: false, outcome: 'failed' };
@@ -184,7 +317,7 @@ export const preserveMalformedJsonFile = async (filePath, options = {}) => {
     // intact under the preserve name.
     let movedRaw;
     try {
-      movedRaw = await fs.readFile(candidate, 'utf8');
+      movedRaw = await readBoundedRaw(candidate, options);
     } catch {
       return { preserved: false, outcome: 'failed' };
     }
@@ -221,7 +354,7 @@ export const preserveMalformedJsonFileSync = (filePath, options = {}) => {
   const fs = options.fs ?? fsSync;
   let raw;
   try {
-    raw = fs.readFileSync(filePath, 'utf8');
+    raw = readBoundedRawSync(filePath, options);
   } catch (error) {
     if (isMissingError(error)) return { preserved: false, outcome: 'missing' };
     return { preserved: false, outcome: 'failed' };
@@ -237,7 +370,7 @@ export const preserveMalformedJsonFileSync = (filePath, options = {}) => {
     // verification above; the answers are identical.
     let rawNow;
     try {
-      rawNow = fs.readFileSync(filePath, 'utf8');
+      rawNow = readBoundedRawSync(filePath, options);
     } catch (error) {
       if (isMissingError(error)) return { preserved: false, outcome: 'missing' };
       return { preserved: false, outcome: 'failed' };
@@ -253,7 +386,7 @@ export const preserveMalformedJsonFileSync = (filePath, options = {}) => {
     }
     let movedRaw;
     try {
-      movedRaw = fs.readFileSync(candidate, 'utf8');
+      movedRaw = readBoundedRawSync(candidate, options);
     } catch {
       return { preserved: false, outcome: 'failed' };
     }
