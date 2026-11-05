@@ -121,6 +121,43 @@ test('over-cap stderr terminates the child and resolves output-too-large', { tim
   assert.match(result.stderr, /output-too-large/);
 });
 
+test('decodes stdout and stderr split inside multi-byte characters like one chunk', async () => {
+  const text = 'café 🔑 end';
+  const chunked = await execGit(['-e', `
+    const bytes = Buffer.from(${JSON.stringify(text)}, 'utf8');
+    for (const stream of [process.stdout, process.stderr]) {
+      stream.write(bytes.subarray(0, 4));
+      setTimeout(() => {
+        stream.write(bytes.subarray(4, 8));
+        setTimeout(() => stream.write(bytes.subarray(8)), 20);
+      }, 20);
+    }
+  `], os.tmpdir(), { binary: process.execPath, timeoutMs: 3000 });
+  const control = await execGit(['-e', `
+    const text = ${JSON.stringify(text)};
+    process.stdout.write(text);
+    process.stderr.write(text);
+  `], os.tmpdir(), { binary: process.execPath, timeoutMs: 3000 });
+
+  assert.equal(chunked.exitCode, 0);
+  assert.equal(chunked.stdout, text);
+  assert.equal(chunked.stderr, text);
+  assert.equal(chunked.stdout, control.stdout);
+  assert.equal(chunked.stderr, control.stderr);
+});
+
+test('keeps a capped stdout prefix on a whole character', async () => {
+  const result = await execGit(['-e', `
+    process.stdout.write(Buffer.from('café', 'utf8'));
+    setInterval(() => {}, 1000);
+  `], os.tmpdir(), { binary: process.execPath, maxOutputBytes: 4, timeoutMs: 3000 });
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stdout, 'caf');
+  assert.doesNotMatch(result.stdout, /\uFFFD/);
+  assert.match(result.stderr, /output-too-large/);
+});
+
 test('git exec env readers fall back to the documented defaults', () => {
   const timeoutEnv = process.env.OPENCHAMBER_GIT_EXEC_TIMEOUT_MS;
   const outputEnv = process.env.OPENCHAMBER_GIT_EXEC_OUTPUT_MAX_BYTES;
