@@ -575,6 +575,7 @@ describe('Linear auth routes', () => {
     const empty = await request(app).get('/api/linear/mapping').expect(200);
     expect(empty.body).toEqual({
       connected: true,
+      teamsMore: false,
       defaultProjectPath: null,
       teams: [
         { id: 'team-eng', key: 'ENG', name: 'Engineering', projectPath: null },
@@ -589,6 +590,7 @@ describe('Linear auth routes', () => {
     }).expect(200);
     expect(saved.body).toEqual({
       connected: true,
+      teamsMore: false,
       defaultProjectPath: '/Users/ada/openchamber',
       teams: [
         { id: 'team-eng', key: 'ENG', name: 'Engineering', projectPath: '/Users/ada/eng' },
