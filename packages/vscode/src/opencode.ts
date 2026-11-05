@@ -18,6 +18,7 @@ import { runOpenCodeCliUpgrade } from '../../web/server/lib/opencode/cli-upgrade
 import { spawnManagedOpenCodeProcess } from './managed-opencode-process';
 import { readEnterprisePolicy } from '../../web/server/lib/enterprise-mode.js';
 import { isExecutable, isKnownOpenCodeDesktopAppPath, isMacOpenCodeAppBundlePath, resolveDetectedOpencodeCliPath } from './opencodeCliDiscovery';
+import { readCappedFileSync } from './opencodeConfig';
 
 const t = vscode.l10n.t;
 
@@ -109,10 +110,21 @@ function isValidOpenCodePassword(password: string): boolean {
   return typeof password === 'string' && password.trim().length > 0;
 }
 
+// The shared settings file only needs to yield `opencodeBinary` here; cap
+// the read at the same 4 MiB the package's bounded config reader uses so a
+// grown or non-regular settings.json cannot buffer whole (or wedge the
+// extension host on a FIFO) on every CLI resolution. Over-cap and
+// non-regular failures throw into the bare catch below and degrade to {}
+// exactly as a read failure does today.
+export const MAX_OPENCHAMBER_SETTINGS_BYTES = 4 * 1024 * 1024;
+
 function readOpenChamberSettings(): Record<string, unknown> {
   const settingsPath = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
   try {
-    const raw = fs.readFileSync(settingsPath, 'utf8');
+    const raw = readCappedFileSync(settingsPath, MAX_OPENCHAMBER_SETTINGS_BYTES, {
+      tooLarge: (target) => new Error(`OpenChamber settings at ${target} exceeds the ${MAX_OPENCHAMBER_SETTINGS_BYTES}-byte limit`),
+      notRegular: (target) => new Error(`OpenChamber settings at ${target} is not a regular file`),
+    });
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
