@@ -15,8 +15,8 @@ const PACKAGE_NAME = '@openchamber/web';
 const PACKAGE_PATH_SEGMENTS = PACKAGE_NAME.split('/');
 // This build is developing-today's fork: its releases are the source for the update
 // checks that it ships with (the Android app reads these directly).
-const GITHUB_RELEASES_URL = 'https://github.com/developing-today/openchamber/releases';
-const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/developing-today/openchamber/releases';
+const GITHUB_RELEASES_URL = 'https://github.com/developing-today-forks/openchamber/releases';
+const GITHUB_RELEASES_API_URL = 'https://api.github.com/repos/developing-today-forks/openchamber/releases';
 // npm publishes upstream's @openchamber/web, so this build never installs updates through
 // the package manager. The server and CLI report the fork release and the user installs it.
 const FORK_RELEASES_LATEST_URL = `${GITHUB_RELEASES_URL}/latest`;
