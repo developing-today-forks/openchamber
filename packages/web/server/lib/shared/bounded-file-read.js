@@ -25,8 +25,15 @@ import fs from 'node:fs';
 // must not pin a 50 MiB buffer for the duration of the read.
 const READ_CHUNK_BYTES = 64 * 1024;
 
-const openFlags = () =>
-  process.platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+// Callers that must judge a symlink at open (#1659: a setting file the agent
+// owns, where a symlink is an answer, not a path to follow) pass noFollow;
+// open then fails with ELOOP on a symlink instead of following it, judged on
+// the same open as the read — no by-path pre-screen can race it. The default
+// keeps the long-standing behaviour of reading through symlinks.
+const openFlags = (noFollow = false) =>
+  process.platform === 'win32'
+    ? 'r'
+    : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (noFollow ? fs.constants.O_NOFOLLOW : 0);
 
 const assertMaxBytes = (maxBytes) => {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
@@ -70,11 +77,11 @@ const isMissingError = (error) => error?.code === 'ENOENT';
  *   | { ok: false, reason: 'too-large', code: string, path: string, size: number, limit: number }
  * >}
  */
-export async function readBoundedFile(filePath, maxBytes) {
+export async function readBoundedFile(filePath, maxBytes, { noFollow = false } = {}) {
   assertMaxBytes(maxBytes);
   let handle;
   try {
-    handle = await fs.promises.open(filePath, openFlags());
+    handle = await fs.promises.open(filePath, openFlags(noFollow));
   } catch (error) {
     if (isMissingError(error)) return missingResult(filePath);
     throw error;
@@ -114,11 +121,11 @@ export async function readBoundedFile(filePath, maxBytes) {
  *   | { ok: false, reason: 'too-large', code: string, path: string, size: number, limit: number }
  * }
  */
-export function readBoundedFileSync(filePath, maxBytes) {
+export function readBoundedFileSync(filePath, maxBytes, { noFollow = false } = {}) {
   assertMaxBytes(maxBytes);
   let fd;
   try {
-    fd = fs.openSync(filePath, openFlags());
+    fd = fs.openSync(filePath, openFlags(noFollow));
   } catch (error) {
     if (isMissingError(error)) return missingResult(filePath);
     throw error;
