@@ -205,6 +205,34 @@ describe('managed OpenCode log cursor', () => {
     expect(readLogSince(logPath, 5)).toEqual({ text: '', offset: 5 });
   });
 
+  it('holds back a trailing incomplete UTF-8 sequence instead of corrupting it', () => {
+    // Oracle: the unsplit control string. A multi-byte character split across
+    // two polls at any byte position must arrive intact in the accumulated
+    // output, and the first poll's offset must stop before the partial bytes.
+    for (const char of ['\u00e9', '\u20ac', '\u{1f600}']) {
+      const control = `diag boot ${char} ready`;
+      const bytes = Buffer.from(control, 'utf8');
+      const charStart = Buffer.from('diag boot ', 'utf8').length;
+      const charLength = Buffer.from(char, 'utf8').length;
+      for (let split = 1; split < charLength; split++) {
+        fs.writeFileSync(logPath, bytes.subarray(0, charStart + split));
+        const first = readLogSince(logPath, 0);
+        expect(first).toEqual({ text: 'diag boot ', offset: charStart });
+        fs.writeFileSync(logPath, bytes);
+        const second = readLogSince(logPath, first.offset);
+        expect(first.text + second.text).toBe(control);
+        expect(second.offset).toBe(bytes.length);
+      }
+    }
+  });
+
+  it('still decodes invalid trailing bytes instead of holding them back forever', () => {
+    fs.writeFileSync(logPath, Buffer.from([0x61, 0x80]));
+    const result = readLogSince(logPath, 0);
+    expect(result.offset).toBe(2);
+    expect(result.text).toBe('a\ufffd');
+  });
+
   it('returns empty text for a missing log', () => {
     expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
   });
