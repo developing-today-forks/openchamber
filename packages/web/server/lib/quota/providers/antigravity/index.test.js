@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OpenCodeUpstreamAuthError, isOpenCodeUpstreamAuthRejection } from '../../../opencode/credential-auth-error.js';
 
 // The credential source is wired through configureOpenCodeCredentials, the
 // same seam server/index.js uses. Entries are credential rows as the
@@ -136,6 +137,31 @@ describe('Antigravity fetchQuota credential resolution', () => {
     // classification (errorKind + shared error text) in providers/index.js.
     expect(result.credentialReadFailure).toBe(true);
     expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('marks a non-bare store-read error when OpenCode marks its origin', async () => {
+    const { configureOpenCodeCredentials, fetchQuota } = await loadProvider();
+    configureOpenCodeCredentials({
+      list: async () => {
+        throw new OpenCodeUpstreamAuthError('Credential request failed with status 401');
+      },
+    });
+    const fetchStub = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchStub);
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(true);
+    expect(result.error).toBe('Failed to read OpenCode credential store');
+    expect(result.credentialReadFailure).toBe(true);
+    expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  it('does not treat bare auth text alone as OpenCode origin', async () => {
+    const error = new Error('Authentication required');
+
+    expect(isOpenCodeUpstreamAuthRejection(error)).toBe(false);
   });
 
   it('still reports Not configured when the store reads fine but holds no google login', async () => {
