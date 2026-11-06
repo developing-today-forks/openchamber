@@ -176,7 +176,9 @@ export const createContentSearchRuntime = ({
       let aborted = false;
       let settled = false;
       let stderr = '';
+      let stderrBytes = 0;
       const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
       let pending = [];
       let pendingBytes = 0;
       let lineOversized = false;
@@ -251,6 +253,30 @@ export const createContentSearchRuntime = ({
         pendingBytes = 0;
         lineOversized = false;
       };
+      // stderr is decoded the way stdout is: a multi-byte character can be
+      // split across chunks, and per-chunk decoding would corrupt it in the
+      // failure message. The cap counts bytes, not characters; a character
+      // that would cross it is dropped whole rather than sliced, and chunks
+      // keep being drained after the cap so ripgrep never blocks.
+      const appendStderr = (text) => {
+        if (!text || stderrBytes >= STDERR_MAX_BYTES) return;
+        const textBytes = Buffer.byteLength(text, 'utf8');
+        if (stderrBytes + textBytes <= STDERR_MAX_BYTES) {
+          stderr += text;
+          stderrBytes += textBytes;
+          return;
+        }
+        let remaining = STDERR_MAX_BYTES - stderrBytes;
+        let kept = '';
+        for (const character of text) {
+          const characterBytes = Buffer.byteLength(character, 'utf8');
+          if (characterBytes > remaining) break;
+          kept += character;
+          remaining -= characterBytes;
+          stderrBytes += characterBytes;
+        }
+        stderr += kept;
+      };
       child.stdout.on('data', (chunk) => {
         const text = stdoutDecoder.write(chunk);
         let lineStart = 0;
@@ -265,7 +291,7 @@ export const createContentSearchRuntime = ({
       });
       // Read stderr to the end: an unread pipe can block ripgrep forever.
       child.stderr.on('data', (chunk) => {
-        if (stderr.length < STDERR_MAX_BYTES) stderr += chunk.toString('utf8', 0, STDERR_MAX_BYTES - stderr.length);
+        appendStderr(stderrDecoder.write(chunk));
       });
       child.on('error', (error) => finish({ status: 'failed', message: error.message }));
       child.on('close', (code) => {
@@ -274,6 +300,7 @@ export const createContentSearchRuntime = ({
           return;
         }
         pushPiece(stdoutDecoder.end());
+        appendStderr(stderrDecoder.end());
         if (!lineOversized) consume(pending.join(''));
         matches.sort((a, b) => (a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : a.line - b.line));
         // 0: matches, 1: none, 2: an error. ripgrep also exits 2 after a

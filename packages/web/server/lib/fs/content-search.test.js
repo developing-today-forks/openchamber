@@ -142,7 +142,7 @@ describe('content search with ripgrep', () => {
 
 // A ripgrep that keeps running until killed, for the paths real searches
 // finish too fast to exercise.
-const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', exitCode = null } = {}) => {
+const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', stderrChunks = [], exitCode = null } = {}) => {
   const children = [];
   const spawnFake = vi.fn(() => {
     const child = new EventEmitter();
@@ -159,6 +159,7 @@ const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', 
       for (const line of stdoutLines) child.stdout.emit('data', Buffer.from(`${line}\n`));
       for (const chunk of stdoutChunks) child.stdout.emit('data', Buffer.from(chunk));
       if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+      for (const chunk of stderrChunks) child.stderr.emit('data', Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       if (exitCode !== null) child.emit('close', exitCode, null);
     });
     return child;
@@ -261,6 +262,30 @@ describe('content search process control', () => {
       status: 'failed',
       message: './root: No such file or directory (os error 2)',
     });
+  });
+
+  it('keeps a multi-byte character split across stderr chunks intact in the failure message', async () => {
+    const stderrBytes = Buffer.from('rg: regex parse error:\nerror: unclosed \u20AC group\n', 'utf8');
+    const euroStart = stderrBytes.indexOf(0xE2);
+    const stderrChunks = [stderrBytes.subarray(0, euroStart + 1), stderrBytes.subarray(euroStart + 1)];
+    const { spawn: spawnFake } = createHangingSpawn({ stderrChunks, exitCode: 2 });
+    const runtime = createContentSearchRuntime({ spawn: spawnFake, path, resolveRipgrepBinary });
+    expect(await runtime.searchFileContents('/root', { query: '(', regex: true })).toEqual({
+      status: 'invalid-pattern',
+      message: 'unclosed \u20AC group',
+    });
+  });
+
+  it('caps accumulated stderr at STDERR_MAX_BYTES counted in bytes, on a character boundary', async () => {
+    const stderrBytes = Buffer.from('\u20AC'.repeat(40_000) + '\n', 'utf8');
+    const stderrChunks = [];
+    for (let offset = 0; offset < stderrBytes.length; offset += 8192) stderrChunks.push(stderrBytes.subarray(offset, offset + 8192));
+    const { spawn: spawnFake } = createHangingSpawn({ stderrChunks, exitCode: 2 });
+    const runtime = createContentSearchRuntime({ spawn: spawnFake, path, resolveRipgrepBinary });
+    const result = await runtime.searchFileContents('/root', { query: 'x', regex: false });
+    expect(result.status).toBe('failed');
+    expect(Buffer.byteLength(result.message, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(result.message).not.toContain('\uFFFD');
   });
 
   it('reports a process that could not start', async () => {
