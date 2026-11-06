@@ -11,6 +11,7 @@ import path from 'path';
 import { Readable, Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { spawn } from 'child_process';
+import { StringDecoder } from 'node:string_decoder';
 
 import { getLocalSttModelSpec } from './model-catalog.js';
 
@@ -185,11 +186,21 @@ export function describeTarFailure(code, stderr) {
   return lastLine ? `tar exited with code ${code}: ${lastLine}` : `tar exited with code ${code}`;
 }
 
-async function extractTarArchive(archivePath, destDir, timeoutMs = TAR_EXTRACT_TIMEOUT_MS) {
+function appendStderrTail(stderr, decoded) {
+  const combined = stderr + decoded;
+  let start = Math.max(0, combined.length - 4096);
+  const firstCodeUnit = combined.charCodeAt(start);
+  if (start > 0 && firstCodeUnit >= 0xdc00 && firstCodeUnit <= 0xdfff) {
+    start += 1;
+  }
+  return combined.slice(start);
+}
+
+export async function extractTarArchive(archivePath, destDir, timeoutMs = TAR_EXTRACT_TIMEOUT_MS, spawnImpl = spawn) {
   await mkdir(destDir, { recursive: true });
 
   await new Promise((resolve, reject) => {
-    const child = spawn('tar', ['xf', archivePath, '-C', destDir], {
+    const child = spawnImpl('tar', ['xf', archivePath, '-C', destDir], {
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
       // Own process group (where the platform has them) so the timeout
@@ -198,6 +209,7 @@ async function extractTarArchive(archivePath, destDir, timeoutMs = TAR_EXTRACT_T
       detached: process.platform !== 'win32',
     });
     let stderr = '';
+    const stderrDecoder = new StringDecoder('utf8');
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -214,7 +226,7 @@ async function extractTarArchive(archivePath, destDir, timeoutMs = TAR_EXTRACT_T
     timer.unref?.();
     child.stderr.on('data', (chunk) => {
       // Only the tail matters for the message; keep memory bounded.
-      stderr = (stderr + chunk.toString()).slice(-4096);
+      stderr = appendStderrTail(stderr, stderrDecoder.write(chunk));
     });
     child.on('error', (error) => {
       clearTimeout(timer);
@@ -222,6 +234,7 @@ async function extractTarArchive(archivePath, destDir, timeoutMs = TAR_EXTRACT_T
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      stderr = appendStderrTail(stderr, stderrDecoder.end());
       if (timedOut) {
         reject(
           new Error(
