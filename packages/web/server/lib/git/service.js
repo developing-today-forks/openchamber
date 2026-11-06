@@ -1474,10 +1474,28 @@ const inspectPostCheckoutHook = async (directory) => {
   const hookPath = path.join(path.isAbsolute(hooksPath) ? hooksPath : path.resolve(directory, hooksPath), 'post-checkout');
   let handle;
   try {
-    handle = await fsp.open(hookPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    // Open per the shared bounded reader's flags (lib/shared/bounded-file-read.js):
+    // O_NONBLOCK keeps open() from blocking on a FIFO with no writer before the
+    // handle stat can reject it as non-regular, and O_NOFOLLOW refuses a symlink
+    // hook on the same open. The cap is then enforced during the read itself,
+    // not only on the pre-read stat: at most MAX + 1 bytes are read, so a hook
+    // grown past the cap after the stat is refused, not buffered whole.
+    handle = await fsp.open(hookPath, process.platform === 'win32'
+      ? 'r'
+      : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size > MAX_POST_CHECKOUT_HOOK_SIZE || (process.platform !== 'win32' && (stat.mode & 0o111) === 0)) return null;
-    const content = await handle.readFile();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_POST_CHECKOUT_HOOK_SIZE + 1 - total));
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+      if (total > MAX_POST_CHECKOUT_HOOK_SIZE) return null;
+    }
+    const content = Buffer.concat(chunks, total);
     const gitDirResult = await runGitCommand(directory, ['rev-parse', '--absolute-git-dir']);
     const gitDir = normalizeGitOutputPath(String(gitDirResult.stdout || '').trim());
     if (!gitDirResult.success || !gitDir) return null;
