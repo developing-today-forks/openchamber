@@ -167,6 +167,45 @@ describe('project icon routes', () => {
     expect(handle.close).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a stored icon that grows after the handle stat (#1686)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    const maxBytes = 5 * 1024 * 1024;
+    const handle = createMockFileHandle(Buffer.alloc(maxBytes + 32), 8);
+    const fsPromises = {
+      open: vi.fn(async () => handle),
+    };
+
+    registerProjectIconRoutes(app, {
+      fsPromises,
+      path,
+      crypto,
+      openchamberDataDir: '/tmp/openchamber-test',
+      sanitizeProjects: (projects) => projects,
+      readSettingsFromDiskMigrated: async () => ({
+        projects: [{
+          id: 'proj-1',
+          path: '/repo',
+          iconImage: { mime: 'image/png', updatedAt: 1, source: 'custom' },
+        }],
+      }),
+      persistSettings: async () => ({}),
+      createFsSearchRuntime: () => ({ searchFilesystemFiles: async () => [] }),
+      spawn: vi.fn(),
+      resolveGitBinaryForSpawn: vi.fn(),
+    });
+
+    const res = createMockResponse();
+    await getRoute('GET', '/api/projects/:projectId/icon')({
+      params: { projectId: 'proj-1' },
+      query: {},
+    }, res);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual({ error: 'Project icon is too large' });
+    expect(handle.totalBytesRead()).toBe(maxBytes + 1);
+    expect(handle.close).toHaveBeenCalledTimes(1);
+  });
+
   it('serves an at-cap stored icon byte-identically (#1537)', async () => {
     const { app, getRoute } = createRouteRegistry();
     const atCapBytes = Buffer.alloc(5 * 1024 * 1024, 7);
