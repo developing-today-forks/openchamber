@@ -2240,6 +2240,8 @@ export type LinearIssueSummary = {
   priority?: LinearIssuePriority | null;
   /** Absent on a related issue (a parent, a sub-issue): Linear is not asked for them there. */
   labels?: LinearIssueLabel[];
+  /** The first page only; `labelsMore` says there are others. */
+  labelsMore?: boolean;
   updatedAt?: string | null;
   /** The issue this one is a sub-issue of. */
   parent?: LinearIssueSummary | null;
