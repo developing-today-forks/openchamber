@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { StringDecoder } from 'node:string_decoder';
 import { spawnOwnedProcess } from './owned-process';
 
 const execFileAsync = promisify(execFile);
@@ -138,6 +139,8 @@ export const execGit = async (
   activeProcesses.add(process);
   let stdout = '';
   let stderr = '';
+  const stdoutDecoder = new StringDecoder('utf8');
+  const stderrDecoder = new StringDecoder('utf8');
   let stdoutBytes = 0;
   let stderrBytes = 0;
   let timedOut = false;
@@ -151,10 +154,11 @@ export const execGit = async (
   // grows extension-host memory without bound.
   const appendChunk = (chunk: Buffer, isStderr: boolean) => {
     if (outputTooLarge) return;
+    const decoder = isStderr ? stderrDecoder : stdoutDecoder;
     const currentBytes = isStderr ? stderrBytes : stdoutBytes;
     const remaining = maxOutputBytes - currentBytes;
     if (chunk.length > remaining) {
-      const kept = remaining > 0 ? chunk.subarray(0, remaining).toString() : '';
+      const kept = remaining > 0 ? decoder.write(chunk.subarray(0, remaining)) : '';
       if (isStderr) {
         stderr += kept;
         stderrBytes = maxOutputBytes;
@@ -170,11 +174,12 @@ export const execGit = async (
       void termination.catch((error: Error) => rejectExit?.(error));
       return;
     }
+    const decoded = decoder.write(chunk);
     if (isStderr) {
-      stderr += chunk.toString();
+      stderr += decoded;
       stderrBytes += chunk.length;
     } else {
-      stdout += chunk.toString();
+      stdout += decoded;
       stdoutBytes += chunk.length;
     }
   };
@@ -193,6 +198,12 @@ export const execGit = async (
       }
     });
     await termination;
+    // Overflow can leave a decoder holding the partial character cut by the
+    // cap. Ending it here would append U+FFFD beyond the retained prefix.
+    if (!outputTooLarge) {
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+    }
     if (outputTooLarge) return { stdout, stderr: `Git command output exceeded the ${maxOutputBytes} byte limit (output-too-large)`, exitCode: 1 };
     if (timedOut) return { stdout, stderr: `Git command timed out after ${timeoutMs}ms`, exitCode: 1 };
     if (exit.error) return { stdout, stderr: exit.error.message, exitCode: 1 };

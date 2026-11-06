@@ -338,6 +338,26 @@ describe('GET /api/source-control/github/pulls/context diff cap (#1457)', () => 
     expect(diffRequests).toBe(2);
   }, 60_000);
 
+  it('stops reading the diff at the cap instead of consuming the whole body (#1664)', async () => {
+    const CHUNK_BYTES = 1024 * 1024;
+    const TOTAL_CHUNKS = 400;
+    let pulled = 0;
+    const header = new TextEncoder().encode('diff --git a/big b/big\n');
+    const body = new ReadableStream({
+      pull(controller) {
+        if (pulled >= TOTAL_CHUNKS) { controller.close(); return; }
+        pulled += 1;
+        controller.enqueue(pulled === 1 ? header : new Uint8Array(CHUNK_BYTES).fill(120));
+      },
+    });
+    serveGitHub(body);
+    const result = await contextRequest(8).expect(413);
+    expect(result.body).toEqual({ error: 'Pull request diff is too large to serve' });
+    expect(result.body).not.toHaveProperty('diff');
+    // The cap is 50 chunks; the read aborts right after crossing it, not after 400.
+    expect(pulled).toBeLessThan(DIFF_MAX_BYTES / CHUNK_BYTES + 5);
+  }, 60_000);
+
   it('serves a diff at exactly the cap byte-identically', async () => {
     const atCap = diffOfBytes(DIFF_MAX_BYTES);
     serveGitHub(atCap);

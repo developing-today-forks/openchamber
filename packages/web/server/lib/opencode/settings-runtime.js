@@ -13,6 +13,27 @@ import {
   seedPreferencesFrom,
   serializePreferencesDocument,
 } from './settings-files.js';
+// Settings and preferences are single documents a user edits by hand; 8 MiB
+// is the cap the other settings readers use (#1631), applied here to both
+// files and to the JSON files readJsonFile loads (#1653). The gate sits on
+// the factory's injected fsPromises seam — the seam is load-bearing (tests
+// and embedders simulate I/O failure through it), so the shared bounded
+// reader, which opens real node:fs handles, cannot be used here; this is
+// its equivalent on the seam: stat judges regularity and size before the
+// read (a FIFO is refused from its stat, promptly, without opening it),
+// and the read's byte length is rechecked after, so a file grown past the
+// cap between the two is still refused, never used. A refusal is a thrown
+// non-ENOENT error, so every reader's existing failure mapping applies
+// unchanged: lenient -> {}, preferences -> { status: 'failed' }, strict
+// throws (never {}, which identity-regenerating callers would misread as
+// a first run), readJsonFile -> throw (missing alone still answers null).
+const SETTINGS_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const boundedReadError = (filePath, result) => Object.assign(
+  new Error(result.reason === 'too-large'
+    ? `${filePath} exceeds the ${result.limit}-byte read limit (size ${result.size}); refusing to read it whole`
+    : `${filePath} is not a regular file; refusing to read it`),
+  { code: result.code },
+);
 
 const DEFAULT_NOTIFICATION_TEMPLATES = {
   completion: { title: '{agent_name} is ready', message: '{model_name} completed the task' },
@@ -102,9 +123,30 @@ export const createSettingsRuntime = (deps) => {
   const projectIconBaseName = (projectId) => `project-${sha1Hex(projectId)}`;
   const PROJECT_ICON_EXTENSIONS = ['png', 'jpg', 'svg', 'webp', 'ico'];
 
+  // fsPromises.readFile with the #1653 gate in front of it (see the cap
+  // comment at the top of this module): behaves exactly like readFile —
+  // ENOENT and I/O errors propagate with their codes — plus the two bounded
+  // refusals above. Defined inside the factory so it closes over the
+  // injected fsPromises every other reader here uses.
+  const readGatedFile = async (filePath) => {
+    const stat = await fsPromises.stat(filePath);
+    if (!stat.isFile()) {
+      throw boundedReadError(filePath, { reason: 'not-regular', code: 'BOUNDED_FILE_NOT_REGULAR' });
+    }
+    if (stat.size > SETTINGS_FILE_MAX_BYTES) {
+      throw boundedReadError(filePath, { reason: 'too-large', code: 'BOUNDED_FILE_TOO_LARGE', size: stat.size, limit: SETTINGS_FILE_MAX_BYTES });
+    }
+    const raw = await fsPromises.readFile(filePath, 'utf8');
+    const bytes = Buffer.byteLength(raw, 'utf8');
+    if (bytes > SETTINGS_FILE_MAX_BYTES) {
+      throw boundedReadError(filePath, { reason: 'too-large', code: 'BOUNDED_FILE_TOO_LARGE', size: bytes, limit: SETTINGS_FILE_MAX_BYTES });
+    }
+    return raw;
+  };
+
   const readJsonFile = async (filePath) => {
     try {
-      const raw = await fsPromises.readFile(filePath, 'utf8');
+      const raw = await readGatedFile(filePath);
       const parsed = JSON.parse(raw);
       return parsed && typeof parsed === 'object' ? parsed : null;
     } catch (error) {
@@ -590,7 +632,7 @@ export const createSettingsRuntime = (deps) => {
 
   const readInstanceSettingsFromDisk = async () => {
     try {
-      const raw = await fsPromises.readFile(SETTINGS_FILE_PATH, 'utf8');
+      const raw = await readGatedFile(SETTINGS_FILE_PATH);
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
         return parsed;
@@ -613,7 +655,7 @@ export const createSettingsRuntime = (deps) => {
   const readPreferenceFields = async () => {
     let raw;
     try {
-      raw = await fsPromises.readFile(PREFERENCES_FILE_PATH, 'utf8');
+      raw = await readGatedFile(PREFERENCES_FILE_PATH);
     } catch (error) {
       if (error && typeof error === 'object' && error.code === 'ENOENT') {
         return { status: 'missing' };
@@ -676,7 +718,7 @@ export const createSettingsRuntime = (deps) => {
   const readSettingsFromDiskStrict = async () => {
     let raw;
     try {
-      raw = await fsPromises.readFile(SETTINGS_FILE_PATH, 'utf8');
+      raw = await readGatedFile(SETTINGS_FILE_PATH);
     } catch (error) {
       if (error && typeof error === 'object' && error.code === 'ENOENT') {
         return {};

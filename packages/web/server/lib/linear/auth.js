@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 import { isVaultReference } from '../environment/vault.js';
 import { isPlainObject, readEnv, readFiniteNumber, readTrimmedString } from './parse.js';
 
@@ -11,6 +12,13 @@ const DEFAULT_LINEAR_BROKER_URL = 'https://api.openchamber.dev/v1/oauth/linear';
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const LEGACY_WORKSPACE_ID = 'legacy';
 const SESSION_COMMENTS_SETTING_KEY = 'linearSessionComments';
+
+// Per-file caps for the bounded strict read below: linear-auth.json holds
+// workspace credentials and stays small; the shared settings.json is a
+// broader legacy/settings document, so it gets a distinct larger cap. A
+// file over its cap is refused (MALFORMED), never buffered whole.
+const LINEAR_AUTH_FILE_MAX_BYTES = 4 * 1024 * 1024;
+const SETTINGS_FILE_MAX_BYTES = 8 * 1024 * 1024;
 
 function resolveDataDir() {
   const fromEnv = readEnv('OPENCHAMBER_DATA_DIR');
@@ -56,16 +64,20 @@ function malformedFileError(filePath) {
 // malformed files throw MALFORMED, and any other read failure (permissions,
 // I/O) propagates - a caller that cannot see the current contents must not
 // replace them. Used by every write path, via the *ForUpdate readers below.
-function readJsonFileStrict(filePath) {
-  let raw;
-  try {
-    raw = fs.readFileSync(filePath, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
+// The read goes through the shared bounded reader (design #1254): a file
+// over its per-file cap, or a non-regular file such as a FIFO, maps to the
+// same MALFORMED refusal instead of being buffered whole (or, for a FIFO,
+// blocking the server on read). Unexpected I/O errors from the bounded
+// reader still propagate unchanged.
+function readJsonFileStrict(filePath, maxBytes) {
+  const result = readBoundedFileSync(filePath, maxBytes);
+  if (!result.ok) {
+    if (result.reason === 'missing') {
       return null;
     }
-    throw error;
+    throw malformedFileError(filePath);
   }
+  const raw = result.buffer.toString('utf8');
   const trimmed = raw.trim();
   if (!trimmed) {
     return null;
@@ -82,9 +94,9 @@ function readJsonFileStrict(filePath) {
   return parsed;
 }
 
-function jsonFileState(filePath) {
+function jsonFileState(filePath, maxBytes) {
   try {
-    return readJsonFileStrict(filePath) === null ? 'missing' : 'valid';
+    return readJsonFileStrict(filePath, maxBytes) === null ? 'missing' : 'valid';
   } catch (error) {
     if (error instanceof LinearAuthError && error.code === 'MALFORMED') {
       return 'malformed';
@@ -99,8 +111,8 @@ function jsonFileState(filePath) {
 // file that was never written.
 export function getLinearStorageState() {
   return {
-    authFile: jsonFileState(storageFile()),
-    settingsFile: jsonFileState(settingsFile()),
+    authFile: jsonFileState(storageFile(), LINEAR_AUTH_FILE_MAX_BYTES),
+    settingsFile: jsonFileState(settingsFile(), SETTINGS_FILE_MAX_BYTES),
   };
 }
 
@@ -109,9 +121,9 @@ export function getLinearStorageState() {
 // The destructive conflation was only ever on the write side: writers
 // built a replacement on this empty base and erased what the file held.
 // Writers therefore never use this reader - see readJsonFileStrict.
-function readJsonFile(filePath) {
+function readJsonFile(filePath, maxBytes) {
   try {
-    return readJsonFileStrict(filePath);
+    return readJsonFileStrict(filePath, maxBytes);
   } catch (error) {
     if (error instanceof LinearAuthError) {
       console.error('Failed to read Linear auth file:', error.message);
@@ -259,7 +271,7 @@ function normalizeAuthList(raw) {
 }
 
 function readAuthList() {
-  const data = readJsonFile(storageFile());
+  const data = readJsonFile(storageFile(), LINEAR_AUTH_FILE_MAX_BYTES);
   if (!data) {
     return [];
   }
@@ -274,7 +286,7 @@ function readAuthList() {
 // never an empty base, so set/activate/clear refuse (MALFORMED) with the
 // original bytes untouched instead of erasing every stored token.
 function readAuthListForUpdate() {
-  const data = readJsonFileStrict(storageFile());
+  const data = readJsonFileStrict(storageFile(), LINEAR_AUTH_FILE_MAX_BYTES);
   if (!data) {
     return [];
   }
@@ -293,13 +305,13 @@ function writeAuthList(list) {
 }
 
 function readSettings() {
-  return readJsonFile(settingsFile()) || {};
+  return readJsonFile(settingsFile(), SETTINGS_FILE_MAX_BYTES) || {};
 }
 
 // Same rule for the shared settings.json: a write built on a malformed
 // file would rewrite the whole file from an empty base.
 function readSettingsForUpdate() {
-  return readJsonFileStrict(settingsFile()) || {};
+  return readJsonFileStrict(settingsFile(), SETTINGS_FILE_MAX_BYTES) || {};
 }
 
 function writeSettings(settings) {

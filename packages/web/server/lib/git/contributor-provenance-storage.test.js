@@ -102,6 +102,27 @@ describe('contributor provenance storage', () => {
     });
   });
 
+  it('fails closed for an oversized persisted state file', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-contributor-oversized-'));
+    roots.push(root);
+    const gitDirectory = path.join(root, 'git');
+    await fs.mkdir(gitDirectory);
+    const filePath = path.join(root, 'provenance.json');
+    // maxRecords: 1 bounds the derived cap at 80 KiB; a larger file is
+    // refused on the handle stat before any of it is parsed.
+    const store = createContributorProvenanceStore({
+      filePath,
+      maxRecords: 1,
+      resolveRepositoryIdentity: async () => ({ supported: true, repositoryId: 'repo_one' }),
+      resolveGitPaths: async () => ({ supported: true, bare: false, gitDirectory }),
+    });
+    await fs.writeFile(filePath, ' '.repeat(80 * 1024 + 1), { mode: 0o600 });
+    await expect(store.read('/checkout')).rejects.toMatchObject({
+      code: 'CONTRIBUTOR_PROVENANCE_STORE_INVALID',
+    });
+    expect((await fs.stat(filePath)).size).toBe(80 * 1024 + 1);
+  });
+
   it('reads a bounded worktree batch from one authoritative store snapshot', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-contributor-batch-'));
     roots.push(root);

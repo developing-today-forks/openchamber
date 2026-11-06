@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 import { resolveOpenCodeDataDir } from './route-overrides-store.js';
 
@@ -19,6 +20,7 @@ const STATUSES = ['active', 'expired', 'cancelled', 'unknown'];
 const PERIODS = ['monthly', 'yearly', 'once'];
 const NOTE_KINDS = ['experience', 'expectation', 'plan-change', 'correction', 'other'];
 const NOTE_SOURCES = ['user', 'model', 'ui'];
+const MAX_PLAN_NOTES_BYTES = 8 * 1024 * 1024;
 
 const text = z.string();
 const finite = z.number().finite();
@@ -201,13 +203,24 @@ export const addNote = (input, now, dataDir) => {
   return note;
 };
 
-/** The notes that match, oldest first, keeping the newest `limit`. A damaged line is skipped and counted. */
+/**
+ * The notes that match, oldest first, keeping the newest `limit`. A damaged line is skipped and counted.
+ * The append-only log is read whole under an 8 MiB cap so filters and skipped counts cover the full file.
+ */
 export const readNotes = (filter = {}, dataDir) => {
   const { notes: file } = planStoreFiles(dataDir);
-  if (!fs.existsSync(file)) return { notes: [], skipped: 0 };
+  const result = readBoundedFileSync(file, MAX_PLAN_NOTES_BYTES);
+  if (!result.ok) {
+    if (result.reason === 'missing') return { notes: [], skipped: 0 };
+    if (result.reason === 'too-large') {
+      throw httpError(413, `${file} exceeds the ${MAX_PLAN_NOTES_BYTES}-byte limit.`, 'PLAN_NOTES_TOO_LARGE');
+    }
+    throw httpError(409, `${file} is not a regular file.`, 'PLAN_NOTES_NOT_REGULAR');
+  }
+
   let skipped = 0;
   const parsed = [];
-  for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+  for (const line of result.buffer.toString('utf8').split('\n')) {
     if (line.trim() === '') continue;
     try {
       parsed.push(noteSchema.parse(JSON.parse(line)));

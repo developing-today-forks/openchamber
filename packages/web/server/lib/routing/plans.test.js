@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { addNote, emptyPlanStore, readNotes, readPlanStore, setModel, setPool, upsertPlan, writePlanStore } from './plans.js';
 
 const NOW = '2026-10-14T09:00:00.000Z';
+const isWindows = process.platform === 'win32';
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'plans-'));
 
 describe('plan store', () => {
@@ -76,6 +78,30 @@ describe('plan store', () => {
     expect(all.skipped).toBe(1);
     expect(readNotes({ providerID: 'anthropic' }, root).notes).toHaveLength(1);
     expect(readNotes({ limit: 1 }, root).notes[0]?.kind).toBe('expectation');
+  });
+
+  it('keeps a missing notes file as an empty result', () => {
+    expect(readNotes({}, dir())).toEqual({ notes: [], skipped: 0 });
+  });
+
+  it('refuses an over-cap notes file with a coded 413', () => {
+    const root = dir();
+    const note = { id: 'note_big', at: NOW, kind: 'other', text: 'x'.repeat(8 * 1024 * 1024), source: 'ui' };
+    fs.writeFileSync(path.join(root, 'plan-notes.jsonl'), `${JSON.stringify(note)}\n`);
+
+    expect(() => readNotes({ limit: 20 }, root)).toThrow(
+      expect.objectContaining({ status: 413, code: 'PLAN_NOTES_TOO_LARGE' }),
+    );
+  });
+
+  it.skipIf(isWindows)('refuses a FIFO notes file without blocking', () => {
+    const root = dir();
+    const file = path.join(root, 'plan-notes.jsonl');
+    execFileSync('mkfifo', [file]);
+
+    expect(() => readNotes({}, root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_NOTES_NOT_REGULAR' }),
+    );
   });
 
   it('refuses a blank note', () => {

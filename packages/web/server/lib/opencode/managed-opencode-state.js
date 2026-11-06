@@ -102,6 +102,22 @@ export const decideManagedOpenCodeLaunch = ({ state, ownsPid, binary, args, fing
   return { action: 'adopt', reason: 'matches-state' };
 };
 
+// Length of a trailing incomplete UTF-8 sequence in buffer[0, length), i.e. a
+// valid lead byte followed by fewer continuation bytes than it declares.
+// Invalid bytes (lone continuations, overlong leads) are not a prefix of any
+// sequence and return 0 — they decode to U+FFFD exactly as before.
+const incompleteUtf8TailLength = (buffer, length) => {
+  for (let i = length - 1, scanned = 0; i >= 0 && scanned < 4; i--, scanned++) {
+    const byte = buffer[i];
+    if ((byte & 0xc0) === 0x80) continue;
+    if (byte < 0x80) return 0;
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    const have = length - i;
+    return have < needed ? have : 0;
+  }
+  return 0;
+};
+
 // The managed child writes stdout and stderr to this file, not a pipe, so it outlives OpenChamber.
 export const readLogSince = (logPath, offset) => {
   let fd = null;
@@ -111,7 +127,12 @@ export const readLogSince = (logPath, offset) => {
     if (length <= 0) return { text: '', offset };
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, offset);
-    return { text: buffer.toString('utf8', 0, bytesRead), offset: offset + bytesRead };
+    // Hold back a trailing incomplete UTF-8 sequence: the returned offset
+    // stops before it, so the next poll re-reads those bytes together with
+    // their continuation instead of corrupting the character to U+FFFD and
+    // advancing past it for good.
+    const consumed = bytesRead - incompleteUtf8TailLength(buffer, bytesRead);
+    return { text: buffer.toString('utf8', 0, consumed), offset: offset + consumed };
   } catch {
     return { text: '', offset };
   } finally {

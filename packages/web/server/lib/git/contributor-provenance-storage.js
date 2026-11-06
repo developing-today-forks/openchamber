@@ -8,6 +8,13 @@ import { renameWithRetry } from '../shared/atomic-rename.js';
 
 const VERSION = 1;
 const DEFAULT_MAX_RECORDS = 512;
+// Byte cap for the state file, derived from the write-side clamps (design
+// #1655 rule 4): one record's nominal ceiling is ~75 KiB (setupCommand
+// <= 65536 chars, nine provenance identifiers <= 512 chars each, the two
+// record identifiers <= 512 chars each, sourceSha <= 64 chars, an absolute
+// gitDirectory path, plus JSON overhead), so a full store is bounded by
+// maxRecords records at 80 KiB each (~40 MiB at the default 512).
+const MAX_STATE_BYTES_PER_RECORD = 80 * 1024;
 const isIdentifier = (value) => isString(value) && value.length > 0 && value.length <= 512
   && value.trim() === value && !/[\0\r\n]/.test(value);
 const exactKeys = (value, keys) => {
@@ -100,6 +107,7 @@ export function createContributorProvenanceStore({
     try {
       const stats = await handle.stat();
       if (!stats.isFile() || (process.platform !== 'win32' && (stats.mode & 0o077) !== 0)) throw invalidStore();
+      if (stats.size > maxRecords * MAX_STATE_BYTES_PER_RECORD) throw invalidStore();
       return parseState(JSON.parse(await handle.readFile('utf8')), maxRecords);
     } catch (error) {
       if (error?.code === 'CONTRIBUTOR_PROVENANCE_STORE_INVALID') throw error;

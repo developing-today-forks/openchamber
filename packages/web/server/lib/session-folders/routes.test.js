@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fsSync from 'node:fs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'path';
 
-import { registerSessionFoldersRoutes } from './routes.js';
+import { MAX_STORED_SNAPSHOT_BYTES, registerSessionFoldersRoutes } from './routes.js';
 
 const createRouteRegistry = () => {
   const routes = new Map();
@@ -46,6 +50,23 @@ const createMockResponse = () => {
   };
 };
 
+
+// A bounded-reader fake backed by a test's readFile mock, mirroring the
+// real reader's answers: ENOENT -> missing, over-cap -> too-large, and
+// anything else the mock returns becomes the file buffer.
+const fakeBoundedReaderFor = (mockFs) => async (filePath, maxBytes) => {
+  let raw;
+  try {
+    raw = await mockFs.readFile(filePath, 'utf8');
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return { ok: false, reason: 'missing' };
+    throw error;
+  }
+  const buffer = Buffer.from(String(raw), 'utf8');
+  if (buffer.length > maxBytes) return { ok: false, reason: 'too-large', size: buffer.length, limit: maxBytes };
+  return { ok: true, buffer, size: buffer.length };
+};
+
 const missingFile = async () => {
   const error = new Error('missing');
   error.code = 'ENOENT';
@@ -75,7 +96,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
     };
 
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -105,7 +126,7 @@ describe('session folders routes', () => {
       unlink: vi.fn(async () => {}),
     };
 
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -123,7 +144,7 @@ describe('session folders routes', () => {
   it('does not present a missing disk file as an authoritative empty snapshot', async () => {
     const { app, getRoute } = createRouteRegistry();
     const fsPromises = { readFile: vi.fn(missingFile) };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -139,7 +160,7 @@ describe('session folders routes', () => {
   it('rejects malformed disk state instead of clearing valid browser state', async () => {
     const { app, getRoute } = createRouteRegistry();
     const fsPromises = { readFile: vi.fn(async () => '{broken') };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -158,7 +179,7 @@ describe('session folders routes', () => {
       foldersMap: { project: [{ id: 'folder', name: 'Folder', sessionIds: 'session-1', createdAt: 1 }] },
     };
     const fsPromises = { readFile: vi.fn(async () => JSON.stringify(malformedPayload)) };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -186,7 +207,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -223,7 +244,7 @@ describe('session folders routes', () => {
   it('refuses changes on top of a malformed file instead of replacing it', async () => {
     const { app, getRoute } = createRouteRegistry();
     const fsPromises = { readFile: vi.fn(async () => '{broken'), writeFile: vi.fn(), mkdir: vi.fn(), rename: vi.fn() };
-    registerSessionFoldersRoutes(app, { fsPromises, path, openchamberDataDir: '/tmp/openchamber-test' });
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises), fsPromises, path, openchamberDataDir: '/tmp/openchamber-test' });
 
     const response = createMockResponse();
     await getRoute('PATCH', '/api/session-folders')({
@@ -249,7 +270,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -282,7 +303,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -316,7 +337,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -349,7 +370,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, { fsPromises, path, openchamberDataDir: '/tmp/openchamber-test', onChanged, now });
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises), fsPromises, path, openchamberDataDir: '/tmp/openchamber-test', onChanged, now });
     const post = async (body) => {
       const response = createMockResponse();
       await getRoute('POST', '/api/session-folders')({ body }, response);
@@ -643,7 +664,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -676,7 +697,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -703,7 +724,7 @@ describe('session folders routes', () => {
       rename: vi.fn(async () => {}),
       unlink: vi.fn(async () => {}),
     };
-    registerSessionFoldersRoutes(app, {
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
       fsPromises,
       path,
       openchamberDataDir: '/tmp/openchamber-test',
@@ -714,5 +735,84 @@ describe('session folders routes', () => {
 
     expect(response.body).toEqual({ success: true });
     expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('session folders bounded store reads (real reader, real temp dir)', () => {
+  const setupRealRoutes = async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-session-folders-'));
+    const { app, getRoute } = createRouteRegistry();
+    registerSessionFoldersRoutes(app, {
+      fsPromises: fs,
+      path,
+      openchamberDataDir: dir,
+    });
+    const call = async (method, body) => {
+      const response = createMockResponse();
+      await getRoute(method, '/api/session-folders')(body === undefined ? {} : { body }, response);
+      return response;
+    };
+    return { dir, file: path.join(dir, 'sessions-directories.json'), call };
+  };
+
+  const paddedSnapshot = (totalBytes) => {
+    const base = { version: 1, foldersMap: { '/repo': [{ id: 'f1', name: '', sessionIds: [], createdAt: 1 }] }, collapsedFolderIds: [], updatedAt: 5 };
+    const baseBytes = Buffer.byteLength(JSON.stringify(base), 'utf8');
+    base.foldersMap['/repo'][0].name = 'x'.repeat(totalBytes - baseBytes);
+    return JSON.stringify(base);
+  };
+
+  it('refuses an oversized stored file with 500 on GET and PATCH, without parsing it whole', async () => {
+    const { dir, file, call } = await setupRealRoutes();
+    try {
+      await fs.writeFile(file, paddedSnapshot(MAX_STORED_SNAPSHOT_BYTES + 1024), 'utf8');
+      const getResponse = await call('GET');
+      expect(getResponse.statusCode).toBe(500);
+      const patchResponse = await call('PATCH', { changes: [{ type: 'create', scopeKey: '/repo', folder: { id: 'f2', name: 'New', parentId: null, createdAt: 1 } }] });
+      expect(patchResponse.statusCode).toBe(500);
+      expect(patchResponse.body.error).toContain('malformed');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO promptly on GET and PATCH, and the save queue still completes a later save', async () => {
+    const { dir, file, call } = await setupRealRoutes();
+    try {
+      execFileSync('mkfifo', [file]);
+      const getResponse = await call('GET');
+      expect(getResponse.statusCode).toBe(500);
+      const patchResponse = await call('PATCH', { changes: [{ type: 'create', scopeKey: '/repo', folder: { id: 'f2', name: 'New', parentId: null, createdAt: 1 } }] });
+      expect(patchResponse.statusCode).toBe(500);
+      // The queue is not wedged: once the FIFO is gone, a save completes.
+      await fs.rm(file, { force: true });
+      const later = await call('PATCH', { changes: [{ type: 'create', scopeKey: '/repo', folder: { id: 'f2', name: 'New', parentId: null, createdAt: 1 } }] });
+      expect(later.statusCode).toBe(200);
+      expect(fsSync.existsSync(file)).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps missing, empty, and at-cap files behaving exactly as before', async () => {
+    const { dir, file, call } = await setupRealRoutes();
+    try {
+      const missing = await call('GET');
+      expect(missing.statusCode).toBe(200);
+      expect(missing.body).toEqual({ version: 1, exists: false });
+
+      await fs.writeFile(file, '', 'utf8');
+      const empty = await call('GET');
+      expect(empty.statusCode).toBe(200);
+      expect(empty.body).toEqual({ version: 1, exists: false });
+
+      await fs.writeFile(file, paddedSnapshot(MAX_STORED_SNAPSHOT_BYTES), 'utf8');
+      const atCap = await call('GET');
+      expect(atCap.statusCode).toBe(200);
+      expect(atCap.body.exists).toBe(true);
+      expect(atCap.body.foldersMap['/repo'][0].id).toBe('f1');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -10,6 +10,13 @@ const hasExactKeys = (value, keys) => {
   const actual = Object.keys(value);
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
 };
+// Named generous byte cap for the store file (design #1655 rule 4):
+// parseStore states no count or length clamp (a finding, not changed here),
+// and append's maxKeys = 256 at ~4.2 KiB nominal per key (an absolute
+// privateKeyPath, a 52-char fingerprint, an id, JSON overhead) puts a full
+// legitimate store near 1.1 MiB — 4 MiB, the identity-store sibling shape,
+// leaves generous headroom while still bounding the read.
+const MAX_STORE_BYTES = 4 * 1024 * 1024;
 const invalidStore = () => Object.assign(new Error('Managed SSH credential store is invalid'), {
   code: 'INVALID_MANAGED_SSH_CREDENTIAL_STORE',
 });
@@ -59,6 +66,7 @@ export function createManagedSshCredentialStore({ filePath, fsImpl = fs, lockWai
     try {
       const stats = await handle.stat();
       if (!stats.isFile() || (process.platform !== 'win32' && (stats.mode & 0o077) !== 0)) throw invalidStore();
+      if (stats.size > MAX_STORE_BYTES) throw invalidStore();
       return parseStore(JSON.parse(await handle.readFile('utf8')));
     } catch (error) {
       if (error?.code === 'INVALID_MANAGED_SSH_CREDENTIAL_STORE') throw error;

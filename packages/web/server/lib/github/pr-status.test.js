@@ -90,6 +90,50 @@ describe('findBranchPrCandidates', () => {
     expect(historical).toBeNull();
   });
 
+  test('finds an open PR past the first per-head page (#1596)', async () => {
+    // More than one page of PRs was opened from this head: the matching open
+    // PR sits on page 2, behind a full page of closed ones. The per-head
+    // read must paginate instead of treating page 1 as the whole set.
+    const fillerPage = new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 1000 + index }));
+    listMock.mockImplementation(async ({ head, page }) => {
+      if (!head) return { data: [] };
+      return page === 2 ? { data: [openPr] } : { data: fillerPage };
+    });
+
+    const { open, historical } = await call();
+
+    expect(open?.number).toBe(15);
+    expect(historical).toBeNull();
+    expect(listMock.mock.calls.some((entry) => entry[0]?.head && entry[0]?.page === 2)).toBe(true);
+  });
+
+  test('finds the newest historical PR past the first per-head page (#1596)', async () => {
+    const fillerPage = new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 100 + index }));
+    const newestMergedPr = { ...mergedPr, number: 4242 };
+    listMock.mockImplementation(async ({ head, page }) => {
+      if (!head) return { data: [] };
+      return page === 2 ? { data: [newestMergedPr] } : { data: fillerPage };
+    });
+
+    const { open, historical } = await call();
+
+    expect(open).toBeNull();
+    expect(historical?.number).toBe(4242);
+  });
+
+  test('errors instead of answering from a prefix past the per-head cap (#1596)', async () => {
+    // Every page is full and the probe past the cap is non-empty: the set
+    // may be incomplete, so the verdict disposition is an explicit error,
+    // never a "no PR" answer read off a prefix.
+    listMock.mockImplementation(async ({ head }) => (
+      head
+        ? { data: new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 2000 + index })) }
+        : { data: [] }
+    ));
+
+    await expect(call()).rejects.toThrow('may be incomplete');
+  });
+
   test('returns the branch history when no open PR exists', async () => {
     listMock.mockImplementation(async ({ head }) => (
       head ? { data: [olderMergedPr, mergedPr] } : { data: [] }

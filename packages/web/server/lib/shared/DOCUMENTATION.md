@@ -218,12 +218,27 @@ injection. The contract rules:
    integer `mode` (0o600 for secret-bearing stores) and write a unique
    temp file (pid + time + random) in the same directory, renamed over
    the destination via `renameWithRetry` / `renameSyncWithRetry`.
-4. **Both clock styles, fs injection preserved.** Async stores that
+4. **Reads are bounded and regular-file-checked (#1649).** Every read
+   in the module — both reader spellings and all three read points of
+   both preserve spellings — goes through one handle-judged bounded
+   read: open once with `O_NONBLOCK`, judge from the handle, enforce
+   the cap in flight at cap+1 bytes. The cap is
+   `DEFAULT_DURABLE_JSON_MAX_BYTES` (32 MiB, derived at its definition
+   from the fifteen callers' write-side bounds, with headroom over the
+   one unbounded caller, the session-metadata index) unless a caller
+   passes `options.maxBytes`. An over-cap or non-regular file is a
+   coded refusal (`DURABLE_JSON_STORE_TOO_LARGE` /
+   `DURABLE_JSON_STORE_NOT_REGULAR`): the readers throw it (their
+   existing read-failure branch — never `malformed`, never `missing`),
+   and preserve answers `failed` at whichever read point refused.
+   Where an injected fs surface has no handle API (the unit-test
+   seam), the cap is enforced on the bytes its `readFile` returns.
+5. **Both clock styles, fs injection preserved.** Async stores that
    receive `fsPromises` and sync stores both use the same contract by
    passing their fs surface in `options.fs`; no store loses its test
    seam, and the module imports nothing beyond platform APIs and
    `atomic-rename.js`.
-5. **Divergent policies stay local and are named** (see below). The
+6. **Divergent policies stay local and are named** (see below). The
    contract governs stores whose loss is the failure; policies that
    answer differently for real inputs are recorded, not redefined.
 
@@ -291,9 +306,103 @@ The contract (rules 1–5 of #1254):
   file, and its cap is enforced by cancelling the stream.
 - The server's own state files stay `durable-json-store.js` (#976):
   contents the server controls, with preserve-on-malformed semantics
-  this reader does not have.
+  this reader does not have. Since #1649 the durable store applies
+  the same bound-and-judge discipline internally (handle stat,
+  non-regular refusal, cap enforced in flight), so the exclusion is
+  about disposition, not about the bound.
 - Cap values, error surfaces and HTTP shapes at the call sites: the
   primitive knows paths, bytes and caps only.
+
+## State-file reader inventory (design #1655 phase 2, #1656)
+
+Every hand-rolled reader in `packages/web/server/lib` that reads one of the
+server's own state files whole, re-grepped on main `8cc23ba52d`
+(2026-11-05) — not the filing-day list. Each row is dispositioned against
+both halves of design #1655 rule 2: the **bound** (open once, judge from
+the handle, cap enforced in flight, non-regular refused) and the
+**disposition** (#976's three states — missing / valid /
+malformed-preserved; malformed never read as empty, never rewritten from
+an empty base). "In place" below means a malformed file is left
+byte-identical where it lies and the read refuses — preserved in place,
+not preserved aside by rename as the durable store does. Stores on
+`durable-json-store.js` are not rows here: they are **migrated** and
+covered by phase 1 (#1649, closed; the bounded composition merged in
+PR #1676) — client-auth pairing and remote-clients, dispatch-results,
+magic-prompts, message-queue, notifications APNs and push runtimes,
+openchamber-sessions archive and session-metadata, routing
+route-settings and route-overrides (its JSON store), session-warming,
+TTS voice-keys, tunnels managed-config (its main store), and UI
+passkeys.
+
+| Store (file — reader) | Sync/async | Bound half | Disposition half | Overall |
+|---|---|---|---|---|
+| routing store (`routing.json`, `routing-auth.json`, `classification.json`, `classifier-endpoint.json`, `auto-sessions.json` — `routing/store.js` `readJsonFile` / `readJsonFileSync`) | both | none — covered-by-open-issue #1608 | private: missing/empty → null, malformed → uncoded throw, no preserve | covered-by-open-issue (#1608, bound) |
+| routing plans (`plans.json` — `routing/plans.js` `readPlanStore`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `PLAN_STORE_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
+| pool plan links (`pool-plan-links.json` — `routing/pool-plan-links.js` `readPoolPlanLinks`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `POOL_LINKS_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
+| Linear mapping (`linear-mapping.json` — `linear/mapping.js` `readStoredLinearMapping` + the `setStoredLinearMapping` re-read) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; empty → empty mapping | covered-by-open-issue (#1621, bound) |
+| Linear session status (`linear/status.js` `readRecords`) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; records individually dropped | covered-by-open-issue (#1621, bound) |
+| model choices (`model-choices.json` — `model-choices/store.js` `read`) | async | none — covered-by-open-issue #1610 | malformed → coded store error, never an empty history (a read-modify-write never seeds from it) | covered-by-open-issue (#1610, bound) |
+| relay identity (`relay-identity.json` — `relay/key-store.js` `readStore`) | async | none — covered-by-open-issue #1614 | excepted: throw-and-stop, a human repairs the file (named under "What stays out" in the durable-store section above) | covered-by-open-issue (#1614, bound); disposition excepted-with-reason |
+| managed OpenCode state (`state.json`, `draining.json` — `opencode/managed-opencode-state.js` `readManagedOpenCodeState` / `readDrainingOpenCodeRecords`) | sync | none — covered-by-open-issue #1622 | read-as-empty hazard: any failure → null / [], no distinction between missing and malformed | covered-by-open-issue (#1622, bound); disposition hazard recorded for phase 3 |
+| merged settings, sync (`settings.json` + `preferences.json` — `opencode/settings-files.js` `readMergedSettingsSync`) | sync | none — covered-by-open-issue #1631 | read-as-empty by design on a read-only hot path (missing or unreadable contributes nothing); the settings family carries its own migration semantics (see the durable-store "What stays out" note) | covered-by-open-issue (#1631, bound) |
+| skills installed sources (`skills-installed-sources.json` — `skills-catalog/installed-sources.js`) | sync | none — covered-by-open-issue #1627 | split: the lenient reader reads malformed as an empty map (read-only provenance badge); the strict for-update reader is three-state in place — missing → empty, malformed → coded `MALFORMED` throw (#936) | covered-by-open-issue (#1627, bound) |
+| skills disk cache (`skills-catalog/disk-cache.js` `readDiskCache`) | sync | none — covered-by-open-issue #1627 | cache semantics: missing / unreadable / malformed → null (a cache miss) | covered-by-open-issue (#1627, bound); disposition excepted-with-reason (cache) |
+| space records (`spaces/records/<id>.json` — `spaces/space-records.js` `read`) | sync | none — covered-by-open-issue #1628 | three-state by status: `missing` / `ok` / `unreadable`; an update refuses to write over an unreadable record; unreadable grants/setup fragments are dropped with a warning | covered-by-open-issue (#1628, bound) |
+| tracked items (`tracked-items.json` — `tracked-items/persistence.js` `load`) | async | none — covered-by-open-issue #1662 | cache restore: missing → [], wrong version/shape → [], a parse error throws; the file is a rebuildable cache, never the only copy | covered-by-open-issue (#1662, bound) |
+| quota auth files (`quota/utils/auth.js` `readJsonFile` :19 and the `resolveConfigApiKey` `{file:}` read :73) | sync | none — covered-by-open-issue #1645 | read-as-empty: any failure → null (read-only lookup of credential files the server never writes) | covered-by-open-issue (#1645, bound) |
+| OpenCode service env (`service.json` — `environment/opencode-service-env.js` `readOpenCodeServiceEnv`) | sync | none — covered-by-open-issue #1636 | read-as-empty: any failure → {} (the OpenCode CLI's file, read-only) | covered-by-open-issue (#1636, bound) |
+| environment store (`environment.json` — `environment/store.js`) | sync | conforming: `readBoundedFileSync`, 64 MiB cap derived from the write-side clamps at the read site (#1609, closed) | private three-state in place: a file that cannot be read or parsed is an error, never an empty store | conforming-on-both-halves |
+| git identity store (`git/identity-storage.js` internal `readFile`) | sync | conforming: handle-judged, `MAX_STORE_BYTES` 4 MiB enforced in flight at cap+1 (#1635, closed) | malformed → coded invalid-store throw, in place; missing → empty state / legacy migration | conforming-on-both-halves |
+| git network-operation and worktree-bootstrap stores (`git/network-operation-storage.js`, `git/worktree-bootstrap-storage.js`) | async | bound-complete (#1684): handle stat judges `size > maxBytes` (2 MiB) and regular-file before the read, the cap is re-enforced in flight by the chunked handle read (at most maxBytes + 1 buffered), and the open carries O_NONBLOCK on POSIX so a FIFO is refused promptly instead of wedging the serialized chain | malformed → coded invalid-store throw, in place; missing → empty state | conforming-on-both-halves |
+| source-control stores (mutation / audit / binding `readState` — `source-control/*-storage.js`) | async | bound-complete (#1663, closed) via the family's gated reads | private: malformed → throw, never seeded from empty | conforming-on-both-halves |
+| quota credentials store (`quota/credentials/store.js`) | sync | bound-complete (#1613, closed, PR #1671) | private strict read (the #907-pattern strict readers) | conforming-on-both-halves |
+| GitHub auth store (`github/auth.js` `readState`, plus the shared `settings.json` read) | async | bound-complete (#1651, closed, PR #1666) | private strict read, malformed never read as empty | conforming-on-both-halves |
+| settings runtime, async (`settings.json` / `preferences.json` — `opencode/settings-runtime.js`) | async | bound-complete (#1653, closed, PR #1673) | the settings family's own migration semantics (named exclusion in the durable-store section) | conforming-on-both-halves (bound); disposition excepted-with-reason |
+| agent-memory and project-context stores (`agent-memory/runtime.js`, `project-context/runtime.js`) | async | bound-complete (#1607, closed) via the bounded reader | agent-memory is named under "What stays out": malformed is a failure and throws | conforming-on-both-halves |
+| session folders (`session-folders/routes.js`) | async | bound-complete (#1623, closed) | private strict read | conforming-on-both-halves |
+| session-goal objectives (`session-goal/objectives.js`) | async | bound-complete (#1582, closed) | private strict read | conforming-on-both-halves |
+| Linear auth strict reader (`linear/auth.js`) | sync | bound-complete (#1615, closed) | three-state strict read (#907): malformed never read as empty | conforming-on-both-halves |
+| guest extension and auth stores (`guests/` `readExtensionStore` / `readGuestAuthStore`) | async | bound-complete (#1620, closed) | private strict reads | conforming-on-both-halves |
+| space archive entries (`spaces/space-archive.js` `readEntries`) | sync | bound-complete (#1639, closed); the module now reads through the bounded path | cache/startup semantics: an unreadable entry is skipped, not fatal | conforming-on-both-halves |
+| space setting file (`spaces/space-setting-file.js`) | sync | conforming: the gate is judged on the opened file, not the path (#1659, closed) | private: over-gate or non-plain file is refused, not read as a setting | conforming-on-both-halves |
+| git contributor-provenance store (`git/contributor-provenance-storage.js` `readState`) | async | none: the handle is judged (regular file, mode) but no byte cap is stated and `handle.readFile` buffers whole; the record count is capped only after parsing | private three-state in place: missing → empty, malformed → coded invalid-store throw | follow-up-filed (#1678) |
+| managed SSH credential store (`git/ssh-credential-storage.js` `readState`) | async | none: same handle shape as contributor-provenance, no byte cap (credential-bearing) | private three-state in place: missing → empty, malformed → coded invalid-store throw | follow-up-filed (#1678) |
+| GitLab auth store (`gitlab/auth-storage.js` `readState`) | async | none: plain `readFile` whole, no stat, no cap, no regular-file check (credential-bearing) — covered-by-open-issue #1677 (filed by the new-issue-creator job during this audit; this audit's own duplicate filing #1679 was closed in its favour) | private three-state in place: missing → empty, malformed / wrong version → coded invalid-state throw | covered-by-open-issue (#1677, bound) |
+| guest extension storage documents (`guest-storage/<id>.json` — `guests/storage.js` `runGuestStorage`) | async | flawed: the `GUEST_STORAGE_TOTAL_BYTES` cap is judged on a stat by path, then the file is read by path — growth or a swap between the two is buffered whole (the #1605 pattern) | malformed / schema-invalid throws out of the storage lock; missing → empty entries | follow-up-filed (#1680) |
+| guest service registry records (`guests/service-registry.js`) | async | none, and none owed | excepted: ephemeral service-lifecycle records; a corrupt record is dropped by the reaper and hosts rewrite their own — losing one is free | excepted-with-reason (ephemeral registry) |
+| walkthrough cache (`walkthrough/store.js` `readJson` + the pointer prune read) | both | bound-complete: handle-judged `readBoundedFileSync` / `readBoundedFile`, with the 4 MiB cap enforced during the read | cache semantics: missing / over-cap / non-regular / unreadable / corrupt all answer "no usable walkthrough"; pruning skips unreadable pointers and deletes only for a missing repository | bound-complete; disposition excepted-with-reason (cache) |
+| managed-process registry and relay host lock (`<pid>.json` entries, `<pid>.claim-from-<owner>`, relay host claim — `opencode/managed-process-registry.js`, `relay/host-lock.js`) | both | none, and none owed | excepted: coordination files whose whole content is one writer-clamped value (a pid integer, or a small fixed-shape entry); every failure answers "no claim / no owner", which is the safe answer for a liveness question | excepted-with-reason (coordination files) |
+| foreign read-only files (mcpx daemon discovery `daemon-*.json` — `opencode/mcpx-daemon.js`; Muse login store — `quota/providers/meta.js`; Cursor token files — `quota/providers/cursor.js`; cloudflared user config — `cloudflare-tunnel.js`; enterprise machine policy — `enterprise-mode.js`; the legacy named-tunnels file — `tunnels/managed-config.js`) | both | none, and none owed in this inventory | excepted: files owned by another program or the machine administrator, read read-only and never written by the server; any failure degrades to "not configured / absent" (the enterprise policy reader names its three states — absent / ok / invalid — explicitly). The managed-config main store is durable (migrated); only its one-shot legacy migration source is in this row | excepted-with-reason (foreign-owned, read-only) |
+| UI auth JWT secret (`ui-auth/ui-auth.js`) | sync | none, and none owed | excepted: a raw secret file, not a JSON store; it is read as bytes for a key, and no disposition question arises | excepted-with-reason (not a JSON store) |
+
+Adjacent, deliberately not rows: project and user files (the #1254
+family — `projects/project-config.js` stays covered by open #1490,
+`opencode/npm-registry-config.js`'s `.npmrc` read by open #1654, and the
+`fs/routes.js` reads by open #1605), repository and git-internals reads
+(`git/service.js` and friends), system files (`/proc`, `/etc/shells`),
+package manifests, and test fixtures (`spaces/code-in-bait.js`). They
+are named so the inventory's edge is explicit, not silent.
+
+### Append-only logs (their own kind — the design leaves their answer open)
+
+| Log (reader) | Bound half | Disposition |
+|---|---|---|
+| event-stream replay (`global-replay.jsonl` — `event-stream/replay-store.js` `load`) | none — covered-by-open-issue #1632 | per-record: a torn final line ends the read, a malformed record mid-file discards everything after it with a warning |
+| route feedback (`route-overrides-store.js` `readFeedback`) | none — covered-by-open-issue #1624 | per-line: unparseable lines are dropped; a missing log reads as no feedback. The store's JSON half is durable (migrated) |
+| plan notes (`plan-notes.jsonl` — `routing/plans.js` `readNotes`) | bound-complete (#1638, closed, PR #1646): the notes read is bounded | per-line append-only semantics, as recorded on #1656 |
+
+### VS Code mirror rows (mirror inventory — not audited as web code)
+
+| Mirror reader | Coverage |
+|---|---|
+| bridge settings runtime (three shared files) | covered-by-open-issue #1641 |
+| quota local-file readers (credential / auth / config) | covered-by-open-issue #1643 |
+| `opencode.ts` `readOpenChamberSettings` (shared `settings.json`) | bound-complete (#1644, closed) |
+
+Phase 3 of design #1655 (migration shape, the append-only-log answer,
+the VS Code mirror question, and a ratchet) is not decided by this
+inventory; rows marked as hazards or private spellings stay on the
+inventory until phase 3 answers them.
 
 ## Traversal budget (design #1391 phase 1, #1392)
 

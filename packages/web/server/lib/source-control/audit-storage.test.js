@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -308,5 +309,21 @@ describe('source-control audit storage', () => {
     await expect(store.read('unknown')).resolves.toMatchObject({ state: 'outcome-unknown', expiresAt: null });
     timestamp = 1_000;
     await expect(store.plan(plan('over-capacity'))).rejects.toMatchObject({ code: 'SOURCE_CONTROL_AUDIT_CAPACITY' });
+  });
+});
+
+describe('bounded state read (#1663)', () => {
+  it('refuses an over-cap state file with the typed error, without parsing it', async () => {
+    const { filePath, store } = await setup();
+    await fs.writeFile(filePath, 'x'.repeat(8 * 1024 * 1024 + 1));
+    await expect(store.list()).rejects.toMatchObject({ code: 'INVALID_SOURCE_CONTROL_AUDIT' });
+  });
+
+  it('refuses a FIFO promptly and the chain stays live for the next operation', async () => {
+    const { filePath, store } = await setup();
+    execFileSync('mkfifo', [filePath]);
+    await expect(store.list()).rejects.toMatchObject({ code: 'INVALID_SOURCE_CONTROL_AUDIT' });
+    await fs.rm(filePath);
+    await expect(store.list()).resolves.toEqual([]);
   });
 });

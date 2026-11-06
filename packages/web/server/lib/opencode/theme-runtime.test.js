@@ -81,6 +81,20 @@ const createTestRuntime = ({ entries, files, stats }) => createThemeRuntime({
     readdir: async () => entries,
     stat: async (filePath) => stats[filePath],
     readFile: async (filePath) => files[filePath],
+    open: async (filePath) => {
+      const stat = stats[filePath];
+      if (!stat) throw Object.assign(new Error(`ENOENT: ${filePath}`), { code: 'ENOENT' });
+      const content = Buffer.from(files[filePath] ?? '', 'utf8');
+      return {
+        stat: async () => stat,
+        read: async (buffer, offset, length, position) => {
+          const slice = content.subarray(position, position + length);
+          buffer.set(slice, offset);
+          return { bytesRead: slice.length, buffer };
+        },
+        close: async () => {},
+      };
+    },
   },
   path: { join: (...parts) => parts.join('/') },
   themesDir: '/themes',
@@ -127,6 +141,45 @@ describe('theme runtime', () => {
       const themes = await runtime.readCustomThemesFromDisk();
 
       expect(themes.map((theme) => theme.metadata.id)).toEqual(['linked-theme']);
+    });
+
+    it('refuses a stat-small/read-huge theme without buffering it whole', async () => {
+      // The path stat claims 1024 bytes, but the opened file actually holds a
+      // valid theme padded past the cap: the in-flight read must refuse it
+      // exactly like an already-over-cap file, serving at most cap + 1 bytes.
+      const cap = 512 * 1024;
+      const padded = validTheme('padded-theme');
+      padded.metadata.description = 'x'.repeat(cap);
+      const content = JSON.stringify(padded);
+      expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(cap);
+      let servedBytes = 0;
+      const runtime = createThemeRuntime({
+        fsPromises: {
+          readdir: async () => [fileEntry('padded.json')],
+          stat: async () => ({ isFile: () => true, size: 1024 }),
+          readFile: async () => content,
+          open: async () => {
+            const bytes = Buffer.from(content, 'utf8');
+            return {
+              stat: async () => ({ isFile: () => true, size: 1024 }),
+              read: async (buffer, offset, length, position) => {
+                const slice = bytes.subarray(position, position + length);
+                buffer.set(slice, offset);
+                servedBytes += slice.length;
+                return { bytesRead: slice.length, buffer };
+              },
+              close: async () => {},
+            };
+          },
+        },
+        path: { join: (...parts) => parts.join('/') },
+        themesDir: '/themes',
+        maxThemeJsonBytes: cap,
+        logger: { warn: () => {} },
+      });
+
+      expect(await runtime.readCustomThemesFromDisk()).toEqual([]);
+      expect(servedBytes).toBeLessThanOrEqual(cap + 1);
     });
 
     it('skips JSON directories after stat resolution', async () => {

@@ -2,7 +2,7 @@
 #
 # openchamber module — NixOS.
 #
-# Canonical home: developing-today/openchamber, nix/modules
+# Canonical home: developing-today-forks/openchamber, nix/modules
 # (openchamber#1440). Installs the OpenChamber server as a
 # systemd *user* service plus its socket unit, mirroring the live
 # deployment's shape (which was hand-assembled in another repo's
