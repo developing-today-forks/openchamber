@@ -25,7 +25,9 @@ const CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024;
 // Accumulates one stream's output across chunk boundaries. `push` returns
 // the decoded text of this chunk, the lines completed by it (a trailing
 // partial line is held for the next chunk), and the bounded rolling text
-// for substring/regex matching that does not care about lines.
+// for substring/regex matching that does not care about lines. `flush`
+// ends the decoder and releases the held partial line, so a final
+// unterminated line is not lost when the stream ends.
 function createBoundedOutputAccumulator() {
   const decoder = new StringDecoder('utf8');
   let pendingLine = '';
@@ -41,6 +43,13 @@ function createBoundedOutputAccumulator() {
         pendingLine = pendingLine.slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
       }
       return { decoded, lines, recentText };
+    },
+    flush() {
+      const tail = decoder.end();
+      recentText = (recentText + tail).slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
+      const line = pendingLine + tail;
+      pendingLine = '';
+      return line ? [line] : [];
     },
   };
 }
@@ -330,6 +339,9 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
     let settled = false;
     let sawOutput = false;
 
+    const stdoutAccumulator = createBoundedOutputAccumulator();
+    const stderrAccumulator = createBoundedOutputAccumulator();
+
     const finish = (handler, value) => {
       if (settled) {
         return;
@@ -339,22 +351,21 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
       clearTimeout(hardTimeout);
       child.stdout?.off('data', onStdout);
       child.stderr?.off('data', onStderr);
+      child.stdout?.off('end', onStdoutEnd);
+      child.stderr?.off('end', onStderrEnd);
       child.off('exit', onExit);
       handler(value);
     };
 
     // A ready/fatal line can be split across pipe chunks; match only
     // complete lines reassembled by each stream's bounded accumulator.
-    const inspectChunk = (accumulator, chunk) => {
-      const { decoded, lines } = accumulator.push(chunk);
-      if (decoded.trim().length > 0) {
-        sawOutput = true;
-      }
+    const inspectLines = (lines) => {
       for (const rawLine of lines) {
         const line = rawLine.trim();
         if (!line) {
           continue;
         }
+        sawOutput = true;
         if (isCloudflaredReadyLogLine(line)) {
           finish(resolve, null);
           return;
@@ -366,8 +377,20 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
       }
     };
 
-    const stdoutAccumulator = createBoundedOutputAccumulator();
-    const stderrAccumulator = createBoundedOutputAccumulator();
+    const inspectChunk = (accumulator, chunk) => {
+      const { decoded, lines } = accumulator.push(chunk);
+      if (decoded.trim().length > 0) {
+        sawOutput = true;
+      }
+      inspectLines(lines);
+    };
+
+    // cloudflared's last log line can arrive with no trailing newline:
+    // flushing releases it, so a fatal reason is not lost when the
+    // stream ends or the child exits, and a ready line still settles.
+    const inspectFlush = (accumulator) => {
+      inspectLines(accumulator.flush());
+    };
 
     const onStdout = (chunk) => {
       inspectChunk(stdoutAccumulator, chunk);
@@ -377,15 +400,47 @@ async function waitForManagedTunnelReady(child, { modeLabel }) {
       inspectChunk(stderrAccumulator, chunk);
     };
 
+    const onStdoutEnd = () => {
+      inspectFlush(stdoutAccumulator);
+    };
+
+    const onStderrEnd = () => {
+      inspectFlush(stderrAccumulator);
+    };
+
     const onExit = (code) => {
+      // 'exit' can fire before a stream emits 'end', so flush both held
+      // final lines here; flush() clears them, so a later 'end' handler
+      // cannot inspect one a second time.
+      inspectFlush(stdoutAccumulator);
+      if (settled) {
+        return;
+      }
+      inspectFlush(stderrAccumulator);
+      if (settled) {
+        return;
+      }
       finish(reject, new Error(`Cloudflared exited while starting ${modeLabel} (code ${code ?? 'unknown'})`));
     };
 
     child.stdout?.on('data', onStdout);
     child.stderr?.on('data', onStderr);
+    child.stdout?.on('end', onStdoutEnd);
+    child.stderr?.on('end', onStderrEnd);
     child.once('exit', onExit);
 
     const fallbackTimer = setTimeout(() => {
+      // A fatal final line wins over the liveness fallback: flush and
+      // inspect the held partial lines before treating any output as
+      // proof the tunnel is alive.
+      inspectFlush(stdoutAccumulator);
+      if (settled) {
+        return;
+      }
+      inspectFlush(stderrAccumulator);
+      if (settled) {
+        return;
+      }
       if (sawOutput) {
         finish(resolve, null);
       }

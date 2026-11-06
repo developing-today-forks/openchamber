@@ -217,4 +217,44 @@ describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
     expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
     outcome.value.stop();
   });
+
+  it('rejects naming the line when a fatal log line is unterminated and the child exits', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\"\nsleep 0.2\nexit 1');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  });
+
+  it('rejects naming the line when a fatal log line is unterminated, its stream ends, and the child lingers', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\" >&2\nexec 2>&-\nsleep 5');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  });
+
+  it('does not resolve as ready at the liveness fallback when a fatal log line is unterminated and the child lingers', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\"\nexec sleep 10');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }), 9000);
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  }, 12000);
+
+  it('resolves when a ready log line is unterminated and the child exits', async () => {
+    installFakeCloudflared('printf %s \"Registered tunnel connection connIndex=0\"\nsleep 0.2\nexit 0');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
+    outcome.value.stop();
+  });
 });
