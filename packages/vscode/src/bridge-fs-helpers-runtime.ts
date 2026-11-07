@@ -119,12 +119,18 @@ export const readUriAsAttachment = async (
     }
 
     const bytes = await vscode.workspace.fs.readFile(uri);
+    // The file can grow between the stat and the read; never hand back more
+    // than the cap even when the stat said it fit (the gitService.ts diff
+    // path guards the same race). Report the size actually read below.
+    if (bytes.byteLength > MAX_FILE_ATTACH_SIZE_BYTES) {
+      return { skipped: { name, reason: 'File exceeds 20MB limit' } };
+    }
     const ext = path.extname(name).toLowerCase();
     const mimeType = guessMimeTypeFromExtension(ext);
     const base64 = Buffer.from(bytes).toString('base64');
     const dataUrl = `data:${mimeType};base64,${base64}`;
 
-    return { file: { name, mimeType, size, dataUrl } };
+    return { file: { name, mimeType, size: bytes.byteLength, dataUrl } };
   } catch (error) {
     return { skipped: { name, reason: error instanceof Error ? error.message : 'Failed to read file' } };
   }
