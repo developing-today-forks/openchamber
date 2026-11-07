@@ -260,14 +260,16 @@ injection. The contract rules:
 
 ## Bounded file read (design #1254, #1256 and #1255)
 
-`bounded-file-read.js` holds the one bounded read for files whose size the
-server does not control — project and user files, as opposed to response
-bodies (#802) and the server's own state files (#976). It generalises
+`bounded-file-read.js` holds one handle-judged, byte-bounded read for files
+whose caller owns the parse, retention and error policy. That includes
+project and user files and append-only logs, as opposed to response bodies
+(#802) and durable JSON stores (#976). It generalises
 `skills-catalog/scan.js`'s `readSkillMdFile`, the family's one correct
 embodiment. Phase 2 (#1255) migrated the call sites: scan's
 `readSkillMdFile`, snippets' `parseMarkdownFile`, plugins'
 `readPluginDirFile`, the guests entry-HTML read in `guestBuiltScriptsReady`,
-and git's `readFileDiffWorkingTreeFile` all read through this module now.
+git's `readFileDiffWorkingTreeFile`, and routing's `readPlanStore`,
+`readPoolPlanLinks`, and `readFeedback` all read through this module now.
 Each caller maps the coded outcomes back onto its own existing contract,
 so error surfaces and missing-file behaviour are unchanged.
 
@@ -304,12 +306,12 @@ The contract (rules 1–5 of #1254):
   are the point and stay.
 - Response bodies stay `response-body.js` (#802): a stream is not a
   file, and its cap is enforced by cancelling the stream.
-- The server's own state files stay `durable-json-store.js` (#976):
-  contents the server controls, with preserve-on-malformed semantics
-  this reader does not have. Since #1649 the durable store applies
-  the same bound-and-judge discipline internally (handle stat,
-  non-regular refusal, cap enforced in flight), so the exclusion is
-  about disposition, not about the bound.
+- Durable JSON stores stay on `durable-json-store.js` (#976): their
+  preserve-on-malformed and atomic-write contract is separate. The routing
+  plan maps keep their existing coded 409 errors through this reader, and
+  append-only logs use their own retention policy. Since #1649 the durable
+  store applies the same bound-and-judge discipline internally, so its
+  exclusion is about disposition, not about the bound.
 - Cap values, error surfaces and HTTP shapes at the call sites: the
   primitive knows paths, bytes and caps only.
 
@@ -337,8 +339,8 @@ passkeys.
 | Store (file — reader) | Sync/async | Bound half | Disposition half | Overall |
 |---|---|---|---|---|
 | routing store (`routing.json`, `routing-auth.json`, `classification.json`, `classifier-endpoint.json`, `auto-sessions.json` — `routing/store.js` `readJsonFile` / `readJsonFileSync`) | both | none — covered-by-open-issue #1608 | private: missing/empty → null, malformed → uncoded throw, no preserve | covered-by-open-issue (#1608, bound) |
-| routing plans (`plans.json` — `routing/plans.js` `readPlanStore`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `PLAN_STORE_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
-| pool plan links (`pool-plan-links.json` — `routing/pool-plan-links.js` `readPoolPlanLinks`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `POOL_LINKS_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
+| routing plans (`plans.json` — `routing/plans.js` `readPlanStore`) | sync | conforming: handle-judged `readBoundedFileSync`, 8 MiB cap | malformed / over-cap / non-regular → coded 409 `PLAN_STORE_MALFORMED` throw, in place; missing → empty | conforming-on-both-halves |
+| pool plan links (`pool-plan-links.json` — `routing/pool-plan-links.js` `readPoolPlanLinks`) | sync | conforming: handle-judged `readBoundedFileSync`, 1 MiB cap | malformed / over-cap / non-regular → coded 409 `POOL_LINKS_MALFORMED` throw, in place; missing → empty | conforming-on-both-halves |
 | Linear mapping (`linear-mapping.json` — `linear/mapping.js` `readStoredLinearMapping` + the `setStoredLinearMapping` re-read) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; empty → empty mapping | covered-by-open-issue (#1621, bound) |
 | Linear session status (`linear/status.js` `readRecords`) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; records individually dropped | covered-by-open-issue (#1621, bound) |
 | model choices (`model-choices.json` — `model-choices/store.js` `read`) | async | none — covered-by-open-issue #1610 | malformed → coded store error, never an empty history (a read-modify-write never seeds from it) | covered-by-open-issue (#1610, bound) |
@@ -383,12 +385,12 @@ family — `projects/project-config.js` stays covered by open #1490,
 package manifests, and test fixtures (`spaces/code-in-bait.js`). They
 are named so the inventory's edge is explicit, not silent.
 
-### Append-only logs (their own kind — the design leaves their answer open)
+### Append-only logs
 
 | Log (reader) | Bound half | Disposition |
 |---|---|---|
 | event-stream replay (`global-replay.jsonl` — `event-stream/replay-store.js` `load`) | none — covered-by-open-issue #1632 | per-record: a torn final line ends the read, a malformed record mid-file discards everything after it with a warning |
-| route feedback (`route-overrides-store.js` `readFeedback`) | none — covered-by-open-issue #1624 | per-line: unparseable lines are dropped; a missing log reads as no feedback. The store's JSON half is durable (migrated) |
+| route feedback (`route-overrides-store.js` `readFeedback`) | bound-complete (#1624): handle-judged 4 MiB read cap; append compacts over-cap logs to the newest complete lines within 3 MiB | per-line: unparseable lines are dropped; missing reads as no feedback; over-cap / non-regular warns and reads as no learned choices. The store's JSON half is durable (migrated) |
 | plan notes (`plan-notes.jsonl` — `routing/plans.js` `readNotes`) | bound-complete (#1638, closed, PR #1646): the notes read is bounded | per-line append-only semantics, as recorded on #1656 |
 
 ### VS Code mirror rows (mirror inventory — not audited as web code)
