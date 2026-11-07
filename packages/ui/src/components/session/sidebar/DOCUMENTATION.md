@@ -341,7 +341,7 @@ metadata-only changes update rows. See `lib/multirun/DOCUMENTATION.md`.
 
 ## In work
 
-A project can be hidden from the In work zone and from the List view's All sessions. Its General tab has a Sidebar section with one checkbox per view; the choice is `hiddenFromWork` and `hiddenFromAllSessions` on the project entry, stored only when true, so a project without them is shown in both. A hidden project's sessions leave that one zone or list, and the project itself stays in the Tree view and the rest of the sidebar. The List view sorted by time leaves it out too, its load-status line included. The Tree view does not read `hiddenFromAllSessions`, and VS Code shows no Sidebar section because its projects are workspace folders.
+A project can be hidden from the In work zone and from the List view's All sessions. Its General tab has a Sidebar section with one checkbox per view; the choice is `hiddenFromWork` and `hiddenFromAllSessions` on the project entry, stored only when true, so a project without them is shown in both. A hidden project's sessions leave that one zone or list, and the project itself stays in the Tree view and the rest of the sidebar. The phone sheet applies the same rules: `hiddenFromWork` filters the In work zone, and `hiddenFromAllSessions` filters the List view's project groups, combined list and time-sorted list. Tree project groups keep their sessions regardless of either flag. The List view sorted by time leaves hidden projects out too, including its load-status line. VS Code shows no Sidebar section because its projects are workspace folders.
 
 Sessions in work (`metadata.openchamber.work.state === 'open'`, see
 `packages/web/server/lib/session-work/DOCUMENTATION.md`) render in their own

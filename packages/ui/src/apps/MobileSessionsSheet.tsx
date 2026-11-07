@@ -64,6 +64,7 @@ import { reorderSectionsByDrop } from '@/components/session/sidebar/zones/sectio
 import {
   expandZoneSessions,
   insertChatsGroupIndex,
+  isSessionVisibleInProjectScope,
   phoneSectionsInUse,
 } from './mobileSessionsSheetSections';
 import { getDescendantIds, partitionSidebarSessions } from '@/components/session/sidebar/list/sessionCollection';
@@ -220,6 +221,8 @@ type ProjectMeta = {
   color?: string | null;
   iconImage?: { mime: string; updatedAt: number; source: 'custom' | 'auto' } | null;
   iconBackground?: string | null;
+  hiddenFromWork?: boolean;
+  hiddenFromAllSessions?: boolean;
   isGitRepo: boolean;
   worktrees: WorktreeMetadata[];
   /** Read by the 'date-added' / 'recent' project orders. */
@@ -1082,6 +1085,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
           color: project.color,
           iconImage: project.iconImage,
           iconBackground: project.iconBackground,
+          hiddenFromWork: project.hiddenFromWork,
+          hiddenFromAllSessions: project.hiddenFromAllSessions,
           isGitRepo: gitProjectPaths.has(normalizePath(project.path)),
           worktrees: orderWorktrees(
             worktreeOrderByProject[project.id],
@@ -1145,6 +1150,30 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     () => partitionSidebarSessions(sessions, false),
     [sessions],
   );
+  const spaceList = useSidebarSpaces();
+  const sessionOwnership = React.useMemo(() => createSessionOwnershipIndex(
+    projectSessions,
+    projectsMeta.map((project) => ({ id: project.id, normalizedPath: project.path })),
+    new Map(projectsMeta.map((project) => [project.path, project.worktrees])),
+    false,
+    [],
+    authoritativeProjects,
+    spaceList,
+  ), [authoritativeProjects, projectSessions, projectsMeta, spaceList]);
+  const hiddenFromWorkProjectIds = React.useMemo(
+    () => new Set(projectsMeta.filter((project) => project.hiddenFromWork).map((project) => project.id)),
+    [projectsMeta],
+  );
+  const hiddenFromAllProjectIds = React.useMemo(
+    () => new Set(projectsMeta.filter((project) => project.hiddenFromAllSessions).map((project) => project.id)),
+    [projectsMeta],
+  );
+  const isListedInWork = React.useCallback((session: Session): boolean => (
+    isSessionVisibleInProjectScope(session, sessionOwnership.bySessionId, hiddenFromWorkProjectIds, hiddenFromAllProjectIds)
+  ), [hiddenFromWorkProjectIds, hiddenFromAllProjectIds, sessionOwnership.bySessionId]);
+  const isVisibleInAllSessionsList = React.useCallback((session: Session): boolean => (
+    isSessionVisibleInProjectScope(session, sessionOwnership.bySessionId, new Set<string>(), hiddenFromAllProjectIds)
+  ), [hiddenFromAllProjectIds, sessionOwnership.bySessionId]);
 
   // Sessions in work, with their subsessions, get their own section under
   // Chats and stay in their projects too, like the desktop sidebar. With the
@@ -1156,12 +1185,12 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     const ids = new Set<string>();
     if (!sessionWorkEnabled || !showWorkSection) return ids;
     for (const session of sessions) {
-      if (getParentId(session) || isChatDirectoryPath(getSessionDirectory(session)) || !isSessionInWork(session)) continue;
+      if (getParentId(session) || isChatDirectoryPath(getSessionDirectory(session)) || !isSessionInWork(session) || !isListedInWork(session)) continue;
       ids.add(session.id);
       for (const id of getDescendantIds(childrenBySessionId, session.id)) ids.add(id);
     }
     return ids;
-  }, [childrenBySessionId, sessionWorkEnabled, sessions, showWorkSection]);
+  }, [childrenBySessionId, isListedInWork, sessionWorkEnabled, sessions, showWorkSection]);
   // Pinned project sessions, with their subsessions, get their own section
   // above In work while the display panel shows it; a pinned session in work
   // is listed there only. Pinned chats stay at the top of Chats.
@@ -1180,21 +1209,11 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     () => (workSessionIds.size > 0 ? chatSessions.filter((session) => !workSessionIds.has(session.id)) : chatSessions),
     [chatSessions, workSessionIds],
   );
-  const spaceList = useSidebarSpaces();
   const spaces = React.useMemo(() => new Map(spaceList.map((space) => [space.id, space])), [spaceList]);
   const spaceLabelById = React.useMemo(
     () => new Map(spaceList.map((space) => [space.id, space.name || t('sessions.sidebar.grouping.spaceUnnamed')])),
     [spaceList, t],
   );
-  const sessionOwnership = React.useMemo(() => createSessionOwnershipIndex(
-    projectSessions,
-    projectsMeta.map((project) => ({ id: project.id, normalizedPath: project.path })),
-    new Map(projectsMeta.map((project) => [project.path, project.worktrees])),
-    false,
-    [],
-    authoritativeProjects,
-    spaceList,
-  ), [authoritativeProjects, projectSessions, projectsMeta, spaceList]);
   // Multi-runs render as one row that opens their overview; their lanes list
   // under the project root instead of each lane's worktree, like the sidebar.
   const runIndex = React.useMemo(() => buildMultiRunIndex(projectSessions, (session) => {
@@ -1261,8 +1280,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   );
   const isFollowedSession = React.useCallback((session: Session) => !isChatDirectoryPath(getSessionDirectory(session)) && (
     (showPinnedSection && isSessionPinned(pinnedSessionIds, getSessionDirectory(session), session.id))
-    || (showWorkZone && isSessionInWork(session))
-  ), [pinnedSessionIds, showPinnedSection, showWorkZone]);
+    || (showWorkZone && isSessionInWork(session) && isListedInWork(session))
+  ), [isListedInWork, pinnedSessionIds, showPinnedSection, showWorkZone]);
   const watchOthers = watchesOtherSessions(sidebarLayout);
   const watchesLiveState = sidebarLayout.attention !== 'off' || watchOthers;
   const liveStateCandidates = React.useMemo(() => {
@@ -1280,7 +1299,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       showPinnedZone: showPinnedSection,
       showWorkZone,
       isPinned: (session) => isSessionPinned(pinnedSessionIds, getSessionDirectory(session), session.id),
-      isInWork: (session) => isSessionInWork(session),
+      isInWork: (session) => isSessionInWork(session) && isListedInWork(session),
       isChat: (session) => isChatDirectoryPath(getSessionDirectory(session)),
       liveStateById,
       held: null,
@@ -1288,7 +1307,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     const stable = reuseUnchangedPartition(previousZonePartitionRef.current, next);
     previousZonePartitionRef.current = stable;
     return stable;
-  }, [liveStateById, pinnedSessionIds, showPinnedSection, showWorkZone, sidebarLayout, zoneRoots]);
+  }, [isListedInWork, liveStateById, pinnedSessionIds, showPinnedSection, showWorkZone, sidebarLayout, zoneRoots]);
   const zoneSessionIds = React.useMemo(() => new Set(zonePartition.zoneBySessionId.keys()), [zonePartition]);
   const pinnedTimelineIds = React.useMemo(
     () => new Set((zonePartition.sessionsByZone.get('pinned') ?? []).map((session) => session.id)),
@@ -1363,6 +1382,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     }
 
     for (const session of projectSessions) {
+      // Filter out sessions in projects that are hidden from all sessions
+      if (!isVisibleInAllSessionsList(session)) continue;
       const owner = sessionOwnership.bySessionId.get(session.id);
       if (!owner) continue;
       const node = nodes.find((entry) => entry.project.id === owner.projectId);
@@ -2067,7 +2088,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     // A session the Pinned zone lists leaves its project in List; the other
     // zones keep it in both places, as on the desktop sidebar.
     const roots = orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id) && isVisibleInAllSessionsList(session)),
       pinnedSessionIds,
       sessionOrderRanks,
     );
@@ -2077,25 +2098,25 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       else byProject.set(entry.project.id, [entry]);
     }
     return byProject;
-  }, [combinedListActive, pinnedSessionIds, pinnedTimelineIds, projectSessions, sessionOrderRanks, timeListActive, timelineActive, timelineContextById, toTimelineEntries]);
+  }, [combinedListActive, isVisibleInAllSessionsList, pinnedSessionIds, pinnedTimelineIds, projectSessions, sessionOrderRanks, timeListActive, timelineActive, timelineContextById, toTimelineEntries]);
   // Without project groups: one heading over every project's root sessions in
   // lifecycle order, 20 at a time, as on the desktop sidebar.
   const combinedTimelineEntries = React.useMemo(() => {
     if (!combinedListActive) return [];
     return toTimelineEntries(orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id) && isVisibleInAllSessionsList(session)),
       pinnedSessionIds,
       sessionOrderRanks,
     ));
-  }, [combinedListActive, pinnedSessionIds, pinnedTimelineIds, projectSessions, sessionOrderRanks, timelineContextById, toTimelineEntries]);
+  }, [combinedListActive, isVisibleInAllSessionsList, pinnedSessionIds, pinnedTimelineIds, projectSessions, sessionOrderRanks, timelineContextById, toTimelineEntries]);
   const timeListEntries = React.useMemo(() => {
     if (!timeListActive) return [];
     return toTimelineEntries(orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !zoneSessionIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !zoneSessionIds.has(session.id) && timelineContextById.has(session.id) && isVisibleInAllSessionsList(session)),
       pinnedSessionIds,
       sessionOrderRanks,
     ));
-  }, [pinnedSessionIds, projectSessions, sessionOrderRanks, timeListActive, timelineContextById, toTimelineEntries, zoneSessionIds]);
+  }, [isVisibleInAllSessionsList, pinnedSessionIds, projectSessions, sessionOrderRanks, timeListActive, timelineContextById, toTimelineEntries, zoneSessionIds]);
   const workTimelineEntries = React.useMemo(
     () => (listActive ? toTimelineEntries(workBucket.sessions.filter((session) => !getParentId(session))) : []),
     [listActive, toTimelineEntries, workBucket],
@@ -2145,13 +2166,16 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   // index, while Chats keep their own section everywhere else.
   const projectNodesWithChats = React.useMemo<Array<ProjectNode | 'chats'>>(
     () => {
-      if (!chatsInListProjects || combinedListActive) return orderedNodes;
-      const byId = new Map(orderedNodes.map((node) => [node.project.id, node]));
-      return insertChatsGroupIndex(orderedNodes.map((node) => node.project.id), CHAT_DRAFT_PROJECT_ID, sidebarLayout.chatsGroupIndex)
+      const visibleNodes = timelineActive
+        ? orderedNodes.filter((node) => !hiddenFromAllProjectIds.has(node.project.id))
+        : orderedNodes;
+      if (!chatsInListProjects || combinedListActive) return visibleNodes;
+      const byId = new Map(visibleNodes.map((node) => [node.project.id, node]));
+      return insertChatsGroupIndex(visibleNodes.map((node) => node.project.id), CHAT_DRAFT_PROJECT_ID, sidebarLayout.chatsGroupIndex)
         .map((id) => (id === CHAT_DRAFT_PROJECT_ID ? 'chats' : byId.get(id)))
         .filter((entry): entry is ProjectNode | 'chats' => entry !== undefined);
     },
-    [chatsInListProjects, combinedListActive, orderedNodes, sidebarLayout.chatsGroupIndex],
+    [chatsInListProjects, combinedListActive, hiddenFromAllProjectIds, orderedNodes, sidebarLayout.chatsGroupIndex, timelineActive],
   );
 
   /**

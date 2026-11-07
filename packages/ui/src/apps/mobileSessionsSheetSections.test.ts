@@ -7,6 +7,7 @@ import {
   excludeRoots,
   expandZoneSessions,
   insertChatsGroupIndex,
+  isSessionVisibleInProjectScope,
   phoneSectionsInUse,
 } from './mobileSessionsSheetSections';
 
@@ -42,6 +43,45 @@ describe('expandZoneSessions', () => {
 
   test('returns nothing for an empty zone', () => {
     expect(expandZoneSessions([session('a')], new Set(), () => [])).toEqual([]);
+  });
+});
+
+describe('project visibility', () => {
+  const sessions = [session('work-hidden'), session('all-hidden'), session('visible'), session('unowned')];
+  const ownerBySessionId = new Map([
+    ['work-hidden', { projectId: 'hidden-from-work' }],
+    ['all-hidden', { projectId: 'hidden-from-all' }],
+    ['visible', { projectId: 'visible' }],
+  ]);
+
+  test('hiddenFromWork removes owned sessions from In work only', () => {
+    const visible = sessions.filter((entry) => isSessionVisibleInProjectScope(
+      entry,
+      ownerBySessionId,
+      new Set(['hidden-from-work']),
+      new Set(),
+    ));
+    expect(visible.map((entry) => entry.id)).toEqual(['all-hidden', 'visible', 'unowned']);
+  });
+
+  test('hiddenFromAllSessions removes owned sessions from the List only', () => {
+    const visible = sessions.filter((entry) => isSessionVisibleInProjectScope(
+      entry,
+      ownerBySessionId,
+      new Set(),
+      new Set(['hidden-from-all']),
+    ));
+    expect(visible.map((entry) => entry.id)).toEqual(['work-hidden', 'visible', 'unowned']);
+  });
+
+  test('both flags together removes owned sessions from all views', () => {
+    const visible = sessions.filter((entry) => isSessionVisibleInProjectScope(
+      entry,
+      ownerBySessionId,
+      new Set(['hidden-from-work']),
+      new Set(['hidden-from-all']),
+    ));
+    expect(visible.map((entry) => entry.id)).toEqual(['visible', 'unowned']);
   });
 });
 

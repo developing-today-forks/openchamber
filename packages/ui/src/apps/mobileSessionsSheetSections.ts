@@ -5,6 +5,17 @@ import {
   type SidebarSectionKey,
 } from '@/stores/sidebarLayout';
 
+/** A session without a project owner remains visible, matching the desktop sidebar. */
+export const isSessionVisibleInProjectScope = (
+  session: Pick<Session, 'id'>,
+  ownerBySessionId: ReadonlyMap<string, { projectId: string }>,
+  hiddenProjectIds: ReadonlySet<string>,
+  hiddenFromAllProjectIds: ReadonlySet<string>,
+): boolean => {
+  const projectId = ownerBySessionId.get(session.id)?.projectId;
+  return !projectId || (!hiddenProjectIds.has(projectId) && !hiddenFromAllProjectIds.has(projectId));
+};
+
 /** Options the phone sheet needs to decide which sections of the layout are drawn. */
 type PhoneSectionsVisibility = {
   showChatsSection: boolean;

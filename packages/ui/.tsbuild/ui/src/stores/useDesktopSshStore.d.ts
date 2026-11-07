@@ -1,0 +1,26 @@
+import { type DesktopSshImportCandidate, type DesktopSshInstance, type DesktopSshInstanceStatus } from '@/lib/desktopSsh';
+type DesktopSshState = {
+    instances: DesktopSshInstance[];
+    statusesById: Record<string, DesktopSshInstanceStatus>;
+    importCandidates: DesktopSshImportCandidate[];
+    isLoading: boolean;
+    isSaving: boolean;
+    isImportsLoading: boolean;
+    initialized: boolean;
+    listenerReady: boolean;
+    error: string | null;
+    load: () => Promise<void>;
+    loadImports: () => Promise<void>;
+    refreshStatuses: () => Promise<void>;
+    upsertInstance: (instance: DesktopSshInstance) => Promise<void>;
+    createFromCommand: (id: string, sshCommand: string, nickname?: string) => Promise<void>;
+    removeInstance: (id: string) => Promise<void>;
+    setInstances: (instances: DesktopSshInstance[]) => Promise<void>;
+    connect: (id: string) => Promise<void>;
+    disconnect: (id: string) => Promise<void>;
+    retry: (id: string) => Promise<void>;
+    getStatus: (id: string) => DesktopSshInstanceStatus | null;
+    clearError: () => void;
+};
+export declare const useDesktopSshStore: import("zustand").UseBoundStore<import("zustand").StoreApi<DesktopSshState>>;
+export {};
