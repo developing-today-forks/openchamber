@@ -1,0 +1,22 @@
+import { type Locale } from './runtime';
+type BootstrapMessages = {
+    startingApi: string;
+    initializing: string;
+    connecting: string;
+    connected: string;
+    connectionError: string;
+    disconnected: string;
+    reconnecting: string;
+    initialDataLoadFailed: string;
+    cliNotFound: string;
+    providersReady: string;
+    providersLoading: string;
+    agentsReady: string;
+    agentsLoading: string;
+    startingDevServer: (hostLabel: string) => string;
+    waitingDevServer: (hostLabel: string, attempt: number) => string;
+    loadingData: (providersText: string, agentsText: string) => string;
+};
+export declare const getBootstrapMessages: (locale: Locale) => BootstrapMessages;
+export declare const readStoredLocaleForBootstrap: () => Locale;
+export {};

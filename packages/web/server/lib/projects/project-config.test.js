@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import os from 'os';
 import path from 'path';
 import { mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { createProjectConfigRuntime } from './project-config.js';
 import { createProjectIdFromPath } from './project-id.js';
+import { SHARED_PROJECT_CONFIG_MAX_BYTES } from './project-setup.js';
 
 const createRuntime = async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'oc-scheduled-project-config-'));
@@ -83,6 +85,40 @@ describe('project-config runtime', () => {
       expect(reloaded[0].name).toBe('Nightly digest');
       expect(reloaded[0].schedule.timezone).toBe('UTC');
       expect(reloaded[0].schedule.times).toEqual(['09:30']);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('reads a personal project config at the cap and refuses an oversized config without overwriting it', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const atCapID = 'project-at-cap';
+      const empty = JSON.stringify({ padding: '' });
+      const atCap = JSON.stringify({ padding: 'x'.repeat(SHARED_PROJECT_CONFIG_MAX_BYTES - Buffer.byteLength(empty)) });
+      expect(Buffer.byteLength(atCap)).toBe(SHARED_PROJECT_CONFIG_MAX_BYTES);
+      await writeFile(runtime.resolveProjectConfigPath(atCapID), atCap, 'utf8');
+      await expect(runtime.readProjectSetup(atCapID)).resolves.toMatchObject({ setupWorktree: [] });
+
+      const oversizedID = 'project-over-cap';
+      const filePath = runtime.resolveProjectConfigPath(oversizedID);
+      const oversized = JSON.stringify({ projectNotes: 'x'.repeat(SHARED_PROJECT_CONFIG_MAX_BYTES) });
+      await writeFile(filePath, oversized, 'utf8');
+      await expect(runtime.readProjectSetup(oversizedID)).rejects.toThrow(/too large/);
+      await expect(runtime.updateProjectSetup(oversizedID, { setupWorktree: ['bun install'] })).rejects.toThrow(/too large/);
+      expect(await readFile(filePath, 'utf8')).toBe(oversized);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO personal project config without waiting for a writer', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'project-fifo';
+      const filePath = runtime.resolveProjectConfigPath(projectID);
+      execFileSync('mkfifo', [filePath]);
+      await expect(runtime.readProjectSetup(projectID)).rejects.toThrow(/not a regular file/);
     } finally {
       await cleanup();
     }

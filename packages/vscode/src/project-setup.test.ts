@@ -1,5 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -149,6 +150,31 @@ describe('project setup bridge', () => {
       await fs.promises.rm(dir, { recursive: true, force: true });
     }
   };
+
+  test('reads a personal project config at the cap and refuses an oversized config without overwriting it', async () => {
+    await withStore(async (store, dir) => {
+      const empty = JSON.stringify({ padding: '' });
+      const atCap = JSON.stringify({ padding: 'x'.repeat(SHARED_PROJECT_CONFIG_MAX_BYTES - Buffer.byteLength(empty)) });
+      assert.equal(Buffer.byteLength(atCap), SHARED_PROJECT_CONFIG_MAX_BYTES);
+      await fs.promises.writeFile(path.join(dir, 'project-at-cap.json'), atCap, 'utf8');
+      assert.deepEqual((await store.read('project-at-cap')).setupWorktree, []);
+
+      const filePath = path.join(dir, 'project-over-cap.json');
+      const oversized = JSON.stringify({ projectNotes: 'x'.repeat(SHARED_PROJECT_CONFIG_MAX_BYTES) });
+      await fs.promises.writeFile(filePath, oversized, 'utf8');
+      await assert.rejects(store.read('project-over-cap'), /too large/);
+      await assert.rejects(store.update('project-over-cap', { setupWorktree: ['bun install'] }), /too large/);
+      assert.equal(await fs.promises.readFile(filePath, 'utf8'), oversized);
+    });
+  });
+
+  test('refuses a FIFO personal project config without waiting for a writer', { skip: process.platform === 'win32' }, async () => {
+    await withStore(async (store, dir) => {
+      const filePath = path.join(dir, 'project-fifo.json');
+      execFileSync('mkfifo', [filePath]);
+      await assert.rejects(store.read('project-fifo'), /not a regular file/);
+    });
+  });
 
   test('stores a project whose id is too long for a file name under a bounded name', async () => {
     await withStore(async (store, dir) => {
