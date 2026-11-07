@@ -1,0 +1,21 @@
+import React from 'react';
+import type { MultiRunSummary } from '@/lib/multirun/runs';
+import type { SessionNode } from '../types';
+import { type SessionSidebarRenderContext } from '../sessionSidebarRowModel';
+type Props = {
+    run: MultiRunSummary;
+    depth: number;
+    laneNodes: readonly SessionNode[];
+    blockingSessionIds: readonly string[];
+    renderContext: SessionSidebarRenderContext;
+    projectId: string | null;
+    projectLabel: string | null;
+    expansionKey: string;
+    expanded: boolean;
+    forceExpanded: boolean;
+    notifyOnSubtasks: boolean;
+    toggleParent: (key: string) => void;
+};
+declare function RunSidebarRowComponent({ run, depth, laneNodes, blockingSessionIds, renderContext, projectId, projectLabel, expansionKey, expanded, forceExpanded, notifyOnSubtasks, toggleParent, }: Props): React.ReactNode;
+export declare const RunSidebarRow: React.MemoExoticComponent<typeof RunSidebarRowComponent>;
+export {};
