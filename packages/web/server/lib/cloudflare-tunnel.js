@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from 'child_process';
-import { StringDecoder } from 'string_decoder';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -9,6 +8,7 @@ import {
   createExecutableSearchEnv,
   resolveExecutableLaunchTarget,
 } from './tunnels/executable-search.js';
+import { createBoundedOutputAccumulator } from './shared/bounded-output-accumulator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,44 +16,9 @@ const __dirname = path.dirname(__filename);
 const TRY_CF_URL_REGEX = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i;
 
 // cloudflared writes its URL and ready/fatal log lines with no regard for
-// pipe chunk boundaries, so output must be matched over an accumulated
-// buffer, never per chunk. The buffer is bounded: once it grows past this
-// many characters only the newest tail is kept, which is all a URL or a
-// log line can occupy.
-const CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024;
-
-// Accumulates one stream's output across chunk boundaries. `push` returns
-// the decoded text of this chunk, the lines completed by it (a trailing
-// partial line is held for the next chunk), and the bounded rolling text
-// for substring/regex matching that does not care about lines. `flush`
-// ends the decoder and releases the held partial line, so a final
-// unterminated line is not lost when the stream ends.
-function createBoundedOutputAccumulator() {
-  const decoder = new StringDecoder('utf8');
-  let pendingLine = '';
-  let recentText = '';
-  return {
-    push(chunk) {
-      const decoded = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-      recentText = (recentText + decoded).slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
-      pendingLine += decoded;
-      const lines = pendingLine.split(/\r?\n/);
-      pendingLine = lines.pop() ?? '';
-      if (pendingLine.length > CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS) {
-        pendingLine = pendingLine.slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
-      }
-      return { decoded, lines, recentText };
-    },
-    flush() {
-      const tail = decoder.end();
-      recentText = (recentText + tail).slice(-CLOUDFLARED_OUTPUT_BUFFER_MAX_CHARS);
-      const line = pendingLine + tail;
-      pendingLine = '';
-      return line ? [line] : [];
-    },
-  };
-}
-
+// pipe chunk boundaries, so output is matched over the shared bounded
+// accumulator (lib/shared/bounded-output-accumulator.js, #1705), never
+// per chunk.
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
 // spawnSync blocks the whole server event loop while it waits, so a hung
 // cloudflared binary must be bounded: probe timeouts elsewhere in the tree
