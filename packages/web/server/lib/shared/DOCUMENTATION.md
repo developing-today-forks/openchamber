@@ -407,6 +407,96 @@ the VS Code mirror question, and a ratchet) is not decided by this
 inventory; rows marked as hazards or private spellings stay on the
 inventory until phase 3 answers them.
 
+## Stream-output inventory (design #1740 phase 2, #1741)
+
+Every incremental-stream consumer in `packages/web/server/lib` that turns
+child-process or pipe output into text, re-grepped on main `2ca4d6df9`
+(2026-11-07) — `data` handlers, `chunk.toString`, `+= chunk`,
+`StringDecoder`, buffer-and-decode-once captures, and every `spawn` /
+`execFile` site — not the filing-day list. Each row is dispositioned
+against the four rules of design #1740: **(1)** stream-decoded
+(`StringDecoder`, or buffered as bytes and decoded once), never per
+chunk — forwarding counts as consuming; **(2)** every cap judged in the
+unit its name claims (`*_BYTES` in bytes, `*_CHARS` in chars);
+**(3)** matching/classification on completed lines or bounded rolling
+text, never on chunk text; **(4)** flush (decoder end + held final line)
+before settlement. Phase 1 (#1705, closed) has landed: the shared
+accumulator lives at `lib/shared/bounded-output-accumulator.js`
+(`createBoundedOutputAccumulator`, `BOUNDED_OUTPUT_MAX_CHARS` judged in
+chars), and both tunnel modules import it — neither keeps a local copy.
+
+| Consumer (file — site) | 1 Decode | 2 Cap unit | 3 Match on lines | 4 Flush before settle | Overall |
+|---|---|---|---|---|---|
+| cloudflare managed-tunnel readiness (`cloudflare-tunnel.js` `waitForManagedTunnelReady`) | conforming: shared accumulator per stream | conforming: `*_MAX_CHARS` rolling text, in chars | conforming: ready/fatal matched on completed lines only | conforming: `flush()` inspected on stream `end` and on `exit` (exit can precede end) | conforming-on-all-rules |
+| cloudflare quick tunnel (`cloudflare-tunnel.js` `startCloudflareQuickTunnel`) | conforming: shared accumulator; the decoded text it forwards to the server log comes from the accumulator, not the chunk | conforming: `*_MAX_CHARS`, in chars | conforming: tunnel URL matched against bounded rolling `recentText`, never chunk text | n/a to settlement: readiness settles on the URL match or a timeout/exit error that carries no accumulated text | conforming-on-all-rules |
+| cloudflare managed starters' stderr forwarding (`cloudflare-tunnel.js` `startCloudflareManagedRemoteTunnel` / `startCloudflareManagedLocalTunnel`) | per-chunk `chunk.toString('utf8')` forwarded to `process.stderr` — covered-by-open-issue #1734 | none (unbounded forwarding) | none (no matching on this text) | none | covered-by-open-issue (#1734, rule 1) |
+| ngrok tunnel (`ngrok-tunnel.js`) | conforming: shared accumulator per stream; forwarded stderr is the accumulator's decoded text | conforming: `*_MAX_CHARS`, in chars | conforming: URL extraction and diagnostics on completed lines / rolling text | stdout and stderr flush on stream `end`; settlement on `exit` builds its error from `recentOutput` before that flush can run — covered-by-open-issue #1693; the stdout flush regression-test gap was #1694 (closed) | covered-by-open-issue (#1693, rule 4); rules 1–3 conforming |
+| content-search ripgrep stdout (`fs/content-search.js`) | conforming: `StringDecoder`; parsed on completed lines, an unfinished line held as pieces | conforming: line cap `CONTENT_SEARCH_MAX_LINE_BYTES` counted with `Buffer.byteLength` | conforming: JSON events parsed per completed line only | conforming: `decoder.end()` piece is consumed on `close` before results settle | conforming-on-all-rules |
+| content-search ripgrep stderr (`fs/content-search.js`) | per-chunk `chunk.toString` — covered-by-open-issue #1690 | byte-named `STDERR_MAX_BYTES` judged against string `.length` (chars) and sliced in bytes — covered-by-open-issue #1690 | none (diagnostic only) | none | covered-by-open-issue (#1690, rules 1–2) |
+| dictation worker stderr (`dictation/local/worker-client.js`) | conforming: `StringDecoder` | conforming: tail cap `STDERR_TAIL_MAX_CHARS` in chars, and the tail slice skips a leading low surrogate so it never splits a pair | none (diagnostic tail) | conforming: `decoder.end()` remainder is appended to the tail on worker `close`, before exit handling | conforming-on-all-rules |
+| dictation model tar extraction stderr (`dictation/local/model-downloader.js`) | per-chunk `chunk.toString()` appended to a string, tail-sliced in chars (can split a surrogate pair) — covered-by-open-issue #1695 | char slice against an unnamed 4096 bound; no byte-named cap | none (the tail is the failure message) | settles on `close` with whatever the per-chunk decode produced | covered-by-open-issue (#1695, rules 1–2) |
+| guest service collector (`guests/service.js` `collectProcessOutput`) | per-chunk `chunk.toString('utf8')` — covered-by-open-issue #1696 | conforming in isolation: the cap is a `maxChars` parameter and is sliced in chars | none (snapshot diagnostic) | no decoder to flush; the snapshot can be taken before stream end by design (startup probe) | covered-by-open-issue (#1696, rule 1) |
+| guest clone (`guests/clone.js`) | conforming: stdout buffered as bytes and decoded once on `close`; stderr kept as a byte tail and decoded once | conforming: stdout cap counted in chunk bytes; stderr tail `STDERR_TAIL_BYTES` kept in bytes | none (whole-output result) | decode-once is the flush: nothing is held by a decoder | conforming-on-all-rules (decode-once special case, rule 5) |
+| environment command runner (`environment/runtime.js` `runCommand`) | conforming: `StringDecoder` | conforming: `MAX_COMMAND_OUTPUT_BYTES` counted in chunk bytes; over-cap kills the child | none (whole-output result) | conforming: result is `stdout + decoder.end()` on `close` | conforming-on-all-rules |
+| fs exec route (`fs/routes.js` `/api/fs/exec` runner) | conforming: one `StringDecoder` per stream; a cap-truncated stream drops the decoder's held tail rather than flushing a cut character | conforming: `execOutputMaxBytes` counted in bytes per stream | none (output returned verbatim) | conforming: `flushDecoded` runs on both `error` and `close` settlement (skipped only where the cap already truncated) | conforming-on-all-rules |
+| fs search / routes git check-ignore (`fs/search.js`, and the duplicated copy in `fs/routes.js`) | conforming: `StringDecoder` | none stated (git's own output for one directory's names; timeout-bounded) | conforming: names split from the completed decoded text | conforming: settles with `stdout + stdoutDecoder.end()` on `close` | conforming-on-all-rules |
+| git untracked listing (`git/service.js` `listUntrackedFilesBounded`) | conforming: `StringDecoder` | conforming: the bound is a record count, applied per completed record | conforming: records split on `\0` from decoded text; a trailing partial record is held, never parsed early | conforming: `decoder.end()` remainder is pushed as the final record on `close` before finishing | conforming-on-all-rules |
+| git worktree start command (`git/service.js` `execWorktreeStartCommand`) | conforming: chunks buffered as bytes, decoded once in the settle function | conforming with note: `START_COMMAND_MAX_BUFFER` counted in chunk bytes; a stream stops being *kept* once the count passes the cap but is still drained, so the kept bytes can exceed the cap by less than one chunk — the cap is a memory bound on kept output, not a refusal | none (whole-output result) | decode-once is the flush; settlement is on `close` (or the timeout path, which finishes only after the kill escalation) | conforming-on-all-rules (decode-once special case) |
+| git network runner (`git/network-operations.js`, incl. the trusted-directories `git config` read) | conforming: chunks buffered as bytes, decoded once at settle (`Buffer.concat(...).toString('utf8')`) | conforming: `appendBounded` counts chunk bytes against byte-named limits and truncates the final chunk to the remaining bytes | none (whole-output result) | decode-once is the flush; settlement is on `close` | conforming-on-all-rules (decode-once special case) |
+| git credential resolver runner (`git/credential-resolver.js` `runFile`) | conforming: chunks buffered, decoded once on `close` | none stated (ssh-keygen's own bounded output; deadline-bounded) | classification is the exit code, not output text | decode-once is the flush | conforming-on-all-rules (decode-once special case) |
+| workspace file names (`fs/workspace-file-names.js`) | conforming: chunks buffered, decoded once on `close` | conforming: `maxOutputBytes` counted in chunk bytes; over-cap kills the child and yields no index | conforming: names split on `\0` from the completed decoded text | decode-once is the flush | conforming-on-all-rules (decode-once special case) |
+| dev-server listener scan (`dev-servers/routes.js` `runCommand`) | conforming: `StringDecoder` (the #1691 fix) | conforming: `MAX_SCAN_OUTPUT_BYTES` counted with `Buffer.byteLength` | conforming: listener tables parsed from the completed decoded text | conforming: `decoder.end()` appended on `close` before the result is chosen | conforming-on-all-rules |
+| spaces command runner (`spaces/run-command.js` `exec`) | conforming: chunks buffered as bytes, decoded once on `close`; the keep-tail window and the too-large gate both work on the buffered bytes | conforming: `maxOutputBytes` counted in bytes in both the gate and the tail window | none (whole-output result, plus a stderr file read back as bytes) | decode-once is the flush; settlement is on `close` | conforming-on-all-rules (decode-once special case) |
+| spaces command stream (`spaces/run-command.js` `CommandStream` / `openCommandStream`) | excepted: stdout is forwarded as raw bytes to the place transport — no text is ever decoded from it, so there is no decode to corrupt; stderr is buffered as bytes and decoded once when a failure message is built | conforming: stdout counted in bytes (flow control only); stderr held under `STREAM_STDERR_BYTES` counted in bytes | none on stdout; the failure classification is the exit code/signal | stderr decode-once is the flush | excepted-with-reason (raw-byte forwarding, no text consumer) |
+| `execFile` / `execFileSync` class (Node buffers the child's output whole and decodes it once; `maxBuffer` is a byte cap enforced by Node) — `git/service.js` runGitCommand and probe calls, `git/transport-config.js`, `skills-catalog/git.js`, `guests/service-registry.js` process probes, `terminal/shutdown.js`, `guests`/`opencode` registry and lifecycle probes, `environment/vault.js` (`op read`, output never logged), `opencode/cli-upgrade.js` (output deliberately discarded), `github/gh-cli-credential.js`, `gitlab/glab-credential.js`, `quota/providers/claude/auth.js`, `quota/providers/cursor.js` | conforming by construction: decode-once, performed by Node | conforming by construction: `maxBuffer` in bytes where set | per-site: version / token / listing parses run on the completed decoded output | decode-once is the flush | conforming-on-all-rules (decode-once special case, as a class; a site that outgrows `maxBuffer` semantics becomes its own row) |
+| spawns with no output consumed (`stdio: 'ignore'` or `'inherit'`) — `opencode/v2-install.js` installer and tar extraction, `fs/routes.js` detached file-browser and Explorer launches, `git/ssh-wrapper.js` (stdio inherited by the terminal), `opencode/self-handoff.js` (stdio inherited; readiness arrives over IPC, not a pipe), `terminal/runtime.js` PTY provider (a byte stream handed to the terminal, never decoded as text by the server) | excepted: no pipe text is consumed — output is discarded, inherited by a terminal, or carried as PTY bytes | none owed | none | none | excepted-with-reason (no text consumer) |
+
+### Body and stdin readers (recorded, not process output)
+
+Whether body readers join this contract is design #1740's phase-3
+question; the audit records these rows and decides nothing about them.
+
+| Reader (file — site) | Decode / cap | Overall |
+|---|---|---|
+| gatekeeper control body (`spaces/gatekeeper-program.cjs` `readBody`) | per-chunk `text += chunk`; `CONTROL_BODY_BYTES` (1 MiB, byte-named) judged against string `.length` — a 1,200,037-byte body was accepted at filing | body-reader row — covered-by-open-issue #1727 (rules 1–2 as they would apply) |
+| git credential broker request body (`git/credential-broker.js`) | conforming shape: chunks buffered, byte-counted against `MAX_BODY_BYTES`, decoded once on `end` | body-reader row — conforming shape, recorded only |
+| git credential helper stdin + broker response (`git/credential-helper.js`); repository credential helper stdin + broker response, and its `child.stdout.pipe(process.stdout)` delegate forwarding (`git/repository-credential-helper.js`) | conforming shape: byte-counted against `MAX_INPUT_BYTES` / `MAX_BYTES`, buffered and decoded once (the delegate path forwards raw bytes undecoded) | body-reader row — conforming shape, recorded only |
+
+Adjacent, deliberately not rows: HTTP response bodies (design #802's
+family — bounded-fetch / `shared/response-body.js` and its per-site
+relatives, including the APNs direct-request reader in
+`notifications/apns-runtime.js`, which stream-decodes via
+`setEncoding('utf8')` and counts its byte cap with `Buffer.byteLength`),
+HTTP request uploads and downloads counted as bytes and never decoded
+as text (`guests/install.js`, `guests/upload.js`,
+`dictation/local/model-downloader.js`'s download, `routing/route-local-model.js`),
+web/SSE response streams (`agent-tool/runtime.js` decodes a model
+stream with a streaming `TextDecoder`; `realtime-proxy.js` and
+`relay/tunnel-host.js` forward response bytes), socket and tunnel byte
+forwarding (`dev-tunnel/*`, `spaces/websocket.js`, `spaces/dispatcher.js`,
+`relay/tunnel-codec.js` — binary or protocol bytes, never decoded as
+text), binary audio (`dictation/stream-manager.js` reorder buffer),
+file-content streams (design #1254's family), and the generated
+test-harness scripts embedded in `spaces/code-in-bait.js`,
+`spaces/tools-filler.js` and `spaces/places/*` (strings the space
+runner writes into a sandbox, not consumers in this server). They are
+named so the inventory's edge is explicit, not silent.
+
+### Mirror rows (record only — not audited as web code)
+
+| Mirror consumer | Coverage |
+|---|---|
+| VS Code extension hand-rolled decoders | fixed per-site in #1558 / #1577 (closed); the per-runtime mirror is a phase-3 question |
+| Electron main hand-rolled decoders | fixed per-site in #1590 (closed); the per-runtime mirror is a phase-3 question |
+
+No follow-up issues were filed by this audit: every hand-rolled
+consumer found violating a rule is already covered by an open issue
+named in its row (#1734, #1690, #1695, #1696, #1693), and the one
+body-reader violation is covered by #1727. Phase 3 of design #1740
+(migration of the conforming hand-rolled decoders onto the shared
+accumulator, the VS Code / Electron mirror, the gatekeeper body-reader
+question, and a ratchet) is not decided by this inventory.
+
 ## Traversal budget (design #1391 phase 1, #1392)
 
 `traversal-budget.js` holds the one counting core for recursive directory
