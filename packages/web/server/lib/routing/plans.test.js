@@ -8,6 +8,7 @@ import { addNote, emptyPlanStore, readNotes, readPlanStore, setModel, setPool, u
 
 const NOW = '2026-10-14T09:00:00.000Z';
 const isWindows = process.platform === 'win32';
+const PLAN_STORE_MAX_BYTES = 8 * 1024 * 1024;
 const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'plans-'));
 
 describe('plan store', () => {
@@ -57,12 +58,53 @@ describe('plan store', () => {
     expect(readPlanStore(root).plans.map((plan) => plan.id)).toEqual(['anthropic-max-20x']);
   });
 
+  it('keeps a missing store empty and accepts a valid file at the byte cap only', () => {
+    const root = dir();
+    expect(readPlanStore(root)).toEqual(emptyPlanStore());
+
+    const plan = {
+      id: 'openai-free',
+      providerID: 'openai',
+      label: '',
+      coverage: 'free',
+      quotas: [],
+      status: 'active',
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    const base = JSON.stringify({ version: 1, plans: [plan], models: {}, pools: {} });
+    const label = 'x'.repeat(PLAN_STORE_MAX_BYTES - Buffer.byteLength(base));
+    const text = JSON.stringify({ version: 1, plans: [{ ...plan, label }], models: {}, pools: {} });
+    const file = path.join(root, 'plans.json');
+    expect(Buffer.byteLength(text)).toBe(PLAN_STORE_MAX_BYTES);
+    fs.writeFileSync(file, text);
+    expect(readPlanStore(root).plans[0].label).toHaveLength(label.length);
+
+    fs.appendFileSync(file, ' ');
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED' }),
+    );
+  });
+
   it('treats a malformed plan file as an error, never as an empty store', () => {
     const root = dir();
     fs.writeFileSync(path.join(root, 'plans.json'), '{ not json');
-    expect(() => readPlanStore(root)).toThrow(expect.objectContaining({ status: 409 }));
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED' }),
+    );
     fs.writeFileSync(path.join(root, 'plans.json'), JSON.stringify({ version: 2, plans: [] }));
-    expect(() => readPlanStore(root)).toThrow(/plan store format/);
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED', message: expect.stringContaining('plan store format') }),
+    );
+  });
+
+  it.skipIf(isWindows)('refuses a FIFO plan store without blocking', () => {
+    const root = dir();
+    execFileSync('mkfifo', [path.join(root, 'plans.json')]);
+
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED' }),
+    );
   });
 
   it('keeps notes in order, filters them, and skips a damaged line while counting it', () => {
