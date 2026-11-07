@@ -33,6 +33,38 @@ afterEach(() => {
 afterAll(() => network.mockRestore());
 
 describe('quota refresh failure is not empty success', () => {
+  test('Mistral console-only status survives response parsing without usage figures', async () => {
+    handleRequest = async url => {
+      expect(url).toBe('/api/quota/mistral');
+      return Response.json({
+        providerId: 'mistral', providerName: 'Mistral AI', ok: true, configured: true,
+        usage: { windows: {}, usageAvailability: 'console-only' }, fetchedAt: 123,
+      });
+    };
+
+    expect(await useQuotaStore.getState().fetchProviderQuota('mistral')).toBe(true);
+    expect(useQuotaStore.getState().results[0]).toMatchObject({
+      providerId: 'mistral', ok: true, configured: true,
+      usage: { windows: {}, usageAvailability: 'console-only' },
+    });
+    expect(useQuotaStore.getState().results[0]?.usage?.windows).toEqual({});
+  });
+
+  test('Mistral rejected credentials stay visible as an unauthorized provider result', async () => {
+    handleRequest = async () => Response.json({
+      providerId: 'mistral', providerName: 'Mistral AI', ok: false, configured: true,
+      error: 'Invalid or revoked API key — Mistral rejected the enrolled credential',
+      usage: null, fetchedAt: 123,
+    });
+
+    expect(await useQuotaStore.getState().fetchProviderQuota('mistral')).toBe(true);
+    expect(useQuotaStore.getState().results[0]).toMatchObject({
+      providerId: 'mistral', configured: true, ok: false,
+      error: 'Invalid or revoked API key — Mistral rejected the enrolled credential',
+      usage: null,
+    });
+  });
+
   test('keeps the exact previous snapshot, configuration and timestamp on network failure', async () => {
     await useQuotaStore.getState().fetchQuotas(['claude']);
     const before = useQuotaStore.getState();

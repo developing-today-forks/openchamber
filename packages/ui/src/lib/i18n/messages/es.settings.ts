@@ -1474,6 +1474,8 @@ export const settingsDict = {
   "settings.usage.page.section.modelQuotas": "Cuotas de modelo",
   "settings.usage.page.section.otherModels": "Otros modelos",
   "settings.usage.page.state.noQuotaWindowsTitle": "No se reportaron ventanas de cuota",
+  "settings.usage.page.state.consoleOnlyTitle": "Seguimiento solo en la consola",
+  "settings.usage.page.state.consoleOnlyDescription": "Mistral confirma que esta clave API es válida, pero las cifras de uso solo están disponibles en su consola.",
   "settings.usage.page.state.noQuotaWindowsDescription": "Este proveedor actualmente no reporta límites de tasa ni cuotas de uso.",
   "settings.usage.page.window.giftResetAria": "Reinicio de límite de regalo",
   "settings.usage.page.window.giftResetExpires": "Reinicio de límite de regalo disponible hasta {time}",

@@ -1507,6 +1507,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'Modellenlimieten',
   'settings.usage.page.section.otherModels': 'Overige modellen',
   'settings.usage.page.state.noQuotaWindowsTitle': 'Geen limietvensters gemeld',
+  'settings.usage.page.state.consoleOnlyTitle': 'Bijgehouden, alleen in de console',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral bevestigt dat deze API-sleutel geldig is, maar gebruikscijfers zijn alleen in de Mistral-console beschikbaar.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'Deze provider meldt momenteel geen snelheidslimieten of gebruikslimieten.',
   'settings.usage.page.window.giftResetAria': 'Cadeau-limietreset',
   'settings.usage.page.window.giftResetExpires': 'Cadeau-limietreset beschikbaar tot {time}',
