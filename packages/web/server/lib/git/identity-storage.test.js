@@ -232,4 +232,40 @@ describe('size gate (#1635)', () => {
     const store = createGitIdentityStore({ filePath });
     expect(store.getProfiles()).toEqual([atCap]);
   });
+
+  it('refuses a store that grows after its fstat, buffering at most cap + 1 bytes (#1753)', async () => {
+    const { filePath } = await setup();
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, JSON.stringify({ profiles: [profile('small')] }), { mode: 0o600 });
+    const maxStoreBytes = 4 * 1024 * 1024;
+    let storeHandle;
+    let delivered = 0;
+    const growing = {
+      ...fsSync,
+      openSync: (target, ...rest) => {
+        const handle = fsSync.openSync(target, ...rest);
+        if (target === filePath) storeHandle = handle;
+        return handle;
+      },
+      fstatSync: (handle, ...rest) => {
+        const stats = fsSync.fstatSync(handle, ...rest);
+        if (handle !== storeHandle || rest[0]?.bigint) return stats;
+        // Oracle: never buffer more than cap + 1 bytes, and refuse if the
+        // bytes delivered cross the cap, whatever fstat said. This fstat
+        // reports the small on-disk size while readSync below keeps
+        // delivering, modelling a file appended past the cap between
+        // its fstat and its read.
+        return { isFile: () => true, mode: stats.mode, size: stats.size };
+      },
+      readSync: (handle, buffer, offset, length, position) => {
+        if (handle !== storeHandle) return fsSync.readSync(handle, buffer, offset, length, position);
+        buffer.fill(0x78, offset, offset + length);
+        delivered += length;
+        return length;
+      },
+    };
+    const store = createGitIdentityStore({ filePath, fsImpl: growing });
+    expect(() => store.getProfiles()).toThrow(expect.objectContaining({ code: 'GIT_IDENTITY_STORE_INVALID' }));
+    expect(delivered).toBe(maxStoreBytes + 1);
+  });
 });
