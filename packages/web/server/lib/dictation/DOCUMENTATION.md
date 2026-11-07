@@ -131,6 +131,9 @@ the user is still speaking, so only the tail is left to transcribe on stop.
 - Worker stderr is decoded as a byte stream and flushed before an exit error is
   built. The retained tail is at most 2,000 UTF-16 code units and starts on a
   complete Unicode character.
+- Tar stderr is decoded as a byte stream and flushed on process close before an
+  extraction error is built. Its retained tail is at most 4,096 UTF-16 code
+  units and starts on a complete Unicode character.
 
 ## Decisions
 
@@ -144,3 +147,10 @@ close before the exit handler builds its error.
 
 The client defaults to the real fork, while tests inject a fake worker to drive
 stderr chunk boundaries and close timing without starting the speech process.
+
+### Why tar stderr uses a streaming decoder
+
+The tar diagnostic includes the archive member name, and it becomes the user's
+extraction error. A `StringDecoder` preserves characters split across stderr
+chunks; the injected spawn lets tests drive those byte boundaries without
+changing the timeout or process-kill behavior.
