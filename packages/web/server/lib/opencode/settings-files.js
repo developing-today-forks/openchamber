@@ -8,11 +8,19 @@
 // The VS Code extension host writes the same two files with the same shape
 // (`packages/vscode/src/settings-files.ts`); keep the format changes in sync.
 import { createRequire } from 'node:module';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 const registry = createRequire(import.meta.url)('./settings-registry.json');
 
 const PREFERENCES_FILE_NAME = 'preferences.json';
 const PREFERENCES_DOCUMENT_VERSION = 1;
+
+// These user-controlled files are read synchronously on hot paths. Keep the
+// broader settings document at linear/auth.js's established 8 MiB cap, and
+// give preferences the same cap so profile data stays bounded without a
+// stricter limit than the settings file.
+const SETTINGS_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const PREFERENCES_FILE_MAX_BYTES = 8 * 1024 * 1024;
 
 /** The registry scope for a key, or `null` when the registry does not know it. */
 const getSettingsScope = (key) => registry.fields[key]?.scope ?? null;
@@ -186,6 +194,23 @@ export const legacySettingsDocumentOf = (document, preferenceFields) => ({
   ...flattenPreferences(preferenceFields),
 });
 
+const readSettingsText = (filePath, maxBytes, fileName) => {
+  let result;
+  try {
+    result = readBoundedFileSync(filePath, maxBytes);
+  } catch (error) {
+    console.warn(`[settings] Failed to read ${fileName}:`, error?.message ?? error);
+    return null;
+  }
+  if (!result.ok) {
+    if (result.reason !== 'missing') {
+      console.warn(`[settings] Skipping ${fileName}: ${result.reason}`);
+    }
+    return null;
+  }
+  return result.buffer.toString('utf8');
+};
+
 /** The profile keys of a document, as they would seed a fresh preferences file. */
 export const seedPreferencesFrom = (document, now) => buildPreferencesFields({}, document, now);
 
@@ -195,20 +220,23 @@ export const seedPreferencesFrom = (document, now) => buildPreferencesFields({},
  * or unreadable preferences file contributes nothing, and the caller's own
  * default applies — the same "missing is not default" rule the clients use.
  */
-export const readMergedSettingsSync = ({ fs, path, settingsFilePath }) => {
+export const readMergedSettingsSync = ({ path, settingsFilePath }) => {
   let settings = {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(settingsFilePath, 'utf8'));
-    if (isPlainObject(parsed)) settings = parsed;
-  } catch {
-    settings = {};
+  const settingsText = readSettingsText(settingsFilePath, SETTINGS_FILE_MAX_BYTES, 'settings.json');
+  if (settingsText !== null) {
+    try {
+      const parsed = JSON.parse(settingsText);
+      if (isPlainObject(parsed)) settings = parsed;
+    } catch {
+      settings = {};
+    }
   }
   let preferences = {};
-  try {
-    const parsed = parsePreferencesDocument(fs.readFileSync(preferencesFilePathFor(settingsFilePath, path), 'utf8'));
+  const preferencesPath = preferencesFilePathFor(settingsFilePath, path);
+  const preferencesText = readSettingsText(preferencesPath, PREFERENCES_FILE_MAX_BYTES, PREFERENCES_FILE_NAME);
+  if (preferencesText !== null) {
+    const parsed = parsePreferencesDocument(preferencesText);
     if (parsed.ok) preferences = flattenPreferences(parsed.fields);
-  } catch {
-    preferences = {};
   }
   return { ...settings, ...preferences };
 };

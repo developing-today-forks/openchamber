@@ -1,0 +1,10 @@
+export declare const GUEST_SCROLLBAR_CSS = "\n:root {\n  /* Quiet at rest like the app's own thumbs; hover gives a clear grab target. */\n  --oc-scrollbar-thumb: color-mix(in srgb, var(--oc-muted, currentColor) 18%, transparent);\n  --oc-scrollbar-thumb-hover: color-mix(in srgb, var(--oc-muted, currentColor) 36%, transparent);\n  scrollbar-gutter: stable;\n}\n* {\n  scrollbar-width: thin;\n  scrollbar-color: transparent transparent;\n}\n:hover, [data-oc-scrolling] {\n  scrollbar-color: var(--oc-scrollbar-thumb) transparent;\n}\n/* Chromium's standard scrollbar properties otherwise override its pseudo-elements. */\n@supports selector(::-webkit-scrollbar) {\n  *, :hover, [data-oc-scrolling] { scrollbar-width: auto; scrollbar-color: auto; }\n  ::-webkit-scrollbar { width: 6px; height: 6px; background: transparent; }\n  ::-webkit-scrollbar-track { background: transparent; }\n  ::-webkit-scrollbar-thumb {\n    background: transparent;\n    border-radius: 999px;\n    min-width: 24px;\n    min-height: 24px;\n  }\n  :hover::-webkit-scrollbar-thumb, [data-oc-scrolling]::-webkit-scrollbar-thumb { background: var(--oc-scrollbar-thumb); }\n  ::-webkit-scrollbar-thumb:hover { background: var(--oc-scrollbar-thumb-hover); }\n  ::-webkit-scrollbar-corner { background: transparent; }\n  ::-webkit-scrollbar-button { display: none; width: 0; height: 0; }\n}\n@media (forced-colors: active) {\n  *, :hover, [data-oc-scrolling] { scrollbar-color: auto; }\n  ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover { background: CanvasText; }\n}\n";
+/**
+ * Marks whichever element scrolls (the root for document scrolling) with
+ * `GUEST_SCROLLING_ATTRIBUTE` and clears it once scrolling has been quiet for
+ * the hide delay. One capturing, passive listener per document; installing
+ * twice is a no-op. Self-contained on purpose: the server inlines its source.
+ */
+export declare function installGuestScrollbarActivity(doc: Document): void;
+/** Inline script form of `installGuestScrollbarActivity`, appended by the host to served guest HTML. */
+export declare const GUEST_SCROLLBAR_SCRIPT: string;
