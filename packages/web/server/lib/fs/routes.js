@@ -6,6 +6,7 @@ import { createWorkspaceFileNameIndex } from './workspace-file-names.js';
 import { createGitCheckIgnoreTimeoutMs } from './search.js';
 import { parseBoundedIntWithDefault } from '../shared/parse-int.js';
 import { createTraversalBudget } from '../shared/traversal-budget.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import {
   CONTENT_SEARCH_DEFAULT_LIMIT,
   CONTENT_SEARCH_MAX_LIMIT,
@@ -1301,27 +1302,33 @@ export const registerFsRoutes = (app, dependencies) => {
 
       const canonicalPath = await fsPromises.realpath(resolved.resolved);
 
-      const stats = await fsPromises.stat(canonicalPath);
-      if (!stats.isFile()) {
-        return res.status(400).json({ error: 'Specified path is not a file' });
-      }
-      if (stats.size > MAX_READ_BYTES) {
-        return res.status(413).json({ error: 'File too large to read' });
+      const readResult = await readBoundedFile(canonicalPath, MAX_READ_BYTES);
+      if (!readResult.ok) {
+        if (readResult.reason === 'too-large') {
+          return res.status(413).json({ error: 'File too large to read' });
+        }
+        if (readResult.reason === 'missing') {
+          return res.status(404).json({ error: 'File not found' });
+        }
+        return res.status(500).json({ error: 'Failed to read file' });
       }
 
-      let content = await fsPromises.readFile(canonicalPath, 'utf8');
+      let content = readResult.buffer.toString('utf8');
       // Retry empty reads — concurrent writer may have truncated the file
-      // between our stat and read (O_TRUNC window). If the file existed with
-      // content at stat time but we read nothing, the writer hasn't finished
+      // between our open and read (O_TRUNC window). If the file existed with
+      // content at open time but we read nothing, the writer hasn't finished
       // writing yet.
-      if (content.length === 0 && stats.size > 0) {
+      if (content.length === 0 && readResult.size > 0) {
         for (let attempt = 0; attempt < 3; attempt++) {
           await new Promise((r) => setTimeout(r, 50 * (attempt + 1)));
-          content = await fsPromises.readFile(canonicalPath, 'utf8');
-          if (content.length > 0) break;
+          const retryResult = await readBoundedFile(canonicalPath, MAX_READ_BYTES);
+          if (retryResult.ok) {
+            content = retryResult.buffer.toString('utf8');
+            if (content.length > 0) break;
+          }
         }
         if (content.length === 0) {
-          console.warn(`Read retry exhausted for ${canonicalPath}: stat reported ${stats.size} bytes but content is empty`);
+          console.warn(`Read retry exhausted for ${canonicalPath}: open reported ${readResult.size} bytes but content is empty`);
         }
       }
       return res.type('text/plain').send(content);
@@ -1512,19 +1519,21 @@ export const registerFsRoutes = (app, dependencies) => {
 
       const canonicalPath = await fsPromises.realpath(resolved.resolved);
 
-      const stats = await fsPromises.stat(canonicalPath);
-      if (!stats.isFile()) {
-        return res.status(400).json({ error: 'Specified path is not a file' });
-      }
-      if (stats.size > MAX_SERVE_BYTES) {
-        return res.status(413).json({ error: 'File too large to serve' });
+      const readResult = await readBoundedFile(canonicalPath, MAX_SERVE_BYTES);
+      if (!readResult.ok) {
+        if (readResult.reason === 'too-large') {
+          return res.status(413).json({ error: 'File too large to serve' });
+        }
+        if (readResult.reason === 'missing') {
+          return res.status(404).json({ error: 'File not found' });
+        }
+        return res.status(500).json({ error: 'Failed to read file' });
       }
 
       const ext = path.extname(canonicalPath).toLowerCase();
       const mimeType = FILE_MIME_MAP[ext] || 'application/octet-stream';
-      const bytes = await fsPromises.readFile(canonicalPath);
       // Lets the Files view annotate the page; see preview-bridge.js.
-      const content = mimeType === 'text/html' ? injectPreviewBridge(bytes) : bytes;
+      const content = mimeType === 'text/html' ? injectPreviewBridge(readResult.buffer) : readResult.buffer;
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       // Opened directly in a tab, the page is still an opaque-origin sandbox.

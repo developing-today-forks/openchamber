@@ -1,6 +1,53 @@
 import * as fs from 'fs';
 import { getFsMimeType, normalizeFsPath, resolveFileReadPath, type FsReadPathResolution } from './bridge-fs-helpers-runtime';
 
+// Bounded read helper for the VS Code bridge
+// Enforces byte caps during the read to prevent files grown between stat and read
+// from being buffered past the limit.
+const readBoundedFile = async (filePath: string, maxBytes: number): Promise<{ ok: true, content: string } | { ok: false, status: number, error: string }> => {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY);
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') {
+      return { ok: false, status: 404, error: 'File not found' };
+    }
+    return { ok: false, status: 500, error: 'Unable to open file' };
+  }
+  
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      return { ok: false, status: 400, error: 'Specified path is not a file' };
+    }
+    
+    // Read in chunks to enforce the cap during reading
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const READ_CHUNK_BYTES = 64 * 1024;
+    
+    while (total <= maxBytes) {
+      const chunk = Buffer.alloc(Math.min(READ_CHUNK_BYTES, maxBytes + 1 - total));
+      const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+      
+      // If we've exceeded the cap during reading, stop and return too-large
+      if (total > maxBytes) {
+        return { ok: false, status: 413, error: `File exceeds maximum size of ${maxBytes} bytes` };
+      }
+    }
+    
+    const content = Buffer.concat(chunks, total).toString('utf8');
+    return { ok: true, content };
+  } finally {
+    if (fd !== null) {
+      fs.closeSync(fd);
+    }
+  }
+};
+
 type ApiProxyResponsePayload = {
   status: number;
   headers: Record<string, string>;
@@ -124,32 +171,32 @@ export const tryHandleLocalFsProxy = async (method: string, requestPath: string)
     }
 
     if (fsProxyPath === '/api/fs/read') {
-      if (stats.size > LOCAL_FS_READ_MAX_BYTES) {
-        return buildProxyJsonError(413, `File exceeds maximum size of ${LOCAL_FS_READ_MAX_BYTES} bytes`);
+      const readResult = await readBoundedFile(resolution.resolvedPath, LOCAL_FS_READ_MAX_BYTES);
+      if (!readResult.ok) {
+        return buildProxyJsonError(readResult.status, readResult.error);
       }
-      const content = await fs.promises.readFile(resolution.resolvedPath, 'utf8');
       return {
         status: 200,
         headers: {
           'content-type': 'text/plain; charset=utf-8',
           'cache-control': 'no-store',
         },
-        bodyBase64: base64EncodeUtf8(content),
+        bodyBase64: base64EncodeUtf8(readResult.content),
       };
     }
 
-    if (stats.size > LOCAL_FS_RAW_MAX_BYTES) {
-      return buildProxyJsonError(413, `File exceeds maximum size of ${LOCAL_FS_RAW_MAX_BYTES} bytes`);
+    const rawResult = await readBoundedFile(resolution.resolvedPath, LOCAL_FS_RAW_MAX_BYTES);
+    if (!rawResult.ok) {
+      return buildProxyJsonError(rawResult.status, rawResult.error);
     }
 
-    const raw = await fs.promises.readFile(resolution.resolvedPath);
     return {
       status: 200,
       headers: {
         'content-type': getFsMimeType(resolution.resolvedPath),
         'cache-control': 'no-store',
       },
-      bodyBase64: Buffer.from(raw).toString('base64'),
+      bodyBase64: Buffer.from(rawResult.content, 'binary').toString('base64'),
     };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
