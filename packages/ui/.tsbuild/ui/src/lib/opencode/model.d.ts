@@ -1,0 +1,433 @@
+/**
+ * OpenChamber's session domain model.
+ *
+ * This is the shape every store, reducer, and component works with. OpenCode
+ * v2 wire types (`@opencode/client`) never leave the adapter layer: the
+ * projection in `./projection.ts` and the event reducer are the only code that
+ * knows how the server encodes sessions and messages. Keeping the model here
+ * means a server-side rename is an adapter change, not a 200-file change.
+ *
+ * Messages keep the "message + ordered parts" layout the sync stores are tuned
+ * for (`message: Record<sessionID, Message[]>`, `part: Record<messageID,
+ * Part[]>`). An assistant message's content items become parts with
+ * deterministic ids (see `partIds`), so a streaming delta can address the part
+ * it grows without a lookup by position.
+ */
+import type { AgentInfo, CommandInfo, ConfigEntry, FormInfo, JsonValue, McpServer, ModelInfo, ModelRef, PermissionRequest as PermissionRequestWire, PermissionRuleset, ProviderInfo, SessionForkBoundary, SessionRevert, SessionStatus as SessionStatusWire, SessionStructuredError, SkillInfo, TokenUsageInfo } from "@opencode/client";
+/**
+ * An agent as the UI keys it. On the wire an agent has `id` (`build`), which
+ * is what prompts, session switches, and settings refer to, and `name`
+ * (`Build`), which is only for display. The UI has always keyed agents by
+ * `name`, so the domain record keeps `name` as the machine key (equal to `id`)
+ * and carries the wire name as `displayName`.
+ */
+export type Agent = Omit<AgentInfo, "name"> & {
+    name: string;
+    displayName: string;
+};
+export type Command = CommandInfo;
+export type Skill = SkillInfo;
+export type Provider = ProviderInfo;
+export type Model = ModelInfo;
+export type McpServerStatus = McpServer;
+/** Version-control facts about a directory the UI shows (current and default branch). */
+export type Vcs = {
+    branch?: string;
+    defaultBranch?: string;
+};
+/** A project OpenCode knows: its canonical root (`worktree`) and any sandboxes. */
+export type Project = {
+    id: string;
+    worktree: string;
+    vcs?: string;
+    name?: string;
+    icon?: {
+        url?: string;
+        override?: string;
+        color?: string;
+    };
+    commands?: {
+        start?: string;
+    };
+    time: {
+        created: number;
+        updated: number;
+    };
+    sandboxes: string[];
+};
+/** A discovered configuration source; only `document` entries carry settings. */
+export type ConfigDocument = Extract<ConfigEntry, {
+    type: "document";
+}>;
+/** One merged configuration document (lowest to highest priority entries folded). */
+export type Config = ConfigDocument["info"];
+export type { JsonValue, ModelRef, PermissionRuleset, TokenUsageInfo };
+/**
+ * A model choice as the UI holds it. `variant: null` is an explicit `Default`
+ * thinking level (see `stores/DOCUMENTATION.md`), which OpenCode's `ModelRef`
+ * cannot carry: its `variant` is an optional string and a `null` is rejected
+ * with a 400.
+ */
+export type ModelSelection = Omit<ModelRef, "variant"> & {
+    variant?: string | null;
+};
+/**
+ * The wire `ModelRef` for a model choice. `Default` sends no effort at all, so
+ * it travels the same as no choice: without a `variant`, which also clears an
+ * effort the session was switched to before.
+ */
+export declare function toModelRef({ providerID, id, variant }: ModelSelection): ModelRef;
+/**
+ * Whether a switch to `next` would leave the session on `current`. OpenCode
+ * records a model switched without a variant as variant `"default"`, and
+ * treats the two as the same effort, so they compare equal here too.
+ */
+export declare function isSameModelRef(current: ModelRef, next: ModelRef): boolean;
+/**
+ * Finds a catalog model by the id a selection holds. `id` is the catalog key
+ * that pickers, favorites, and session model refs store; `modelID` is the name
+ * sent to the provider API and defaults to `id`. They differ for derived
+ * entries such as `gpt-6-luna-fast`, whose `modelID` is `gpt-6-luna`, so an
+ * exact `id` match wins and `modelID` only answers ids nothing is keyed by.
+ */
+export declare function findCatalogModel<T extends {
+    id: string;
+    modelID: string;
+}>(models: readonly T[] | undefined, id: string): T | undefined;
+/** Free-form JSON attached to sessions, messages, and prompts. */
+export type Metadata = Record<string, JsonValue>;
+/**
+ * Returns the same object without keys whose value is `undefined`, so domain
+ * records built from optional wire fields stay free of phantom properties.
+ */
+export declare function compact<T extends object>(value: T): T;
+export type SessionStatus = SessionStatusWire;
+export type SessionOutcome = "succeeded" | "failed" | "interrupted";
+/**
+ * One agent's entry in a session policy's `agentOverrides`.
+ *
+ * The fields mirror the OpenCode contract for `Session.AgentOverride`. They
+ * stay optional and are carried unchanged by this UI: the picker edits only
+ * the policy's `models` list and preserves every override as loaded.
+ */
+export type SubagentAgentOverride = {
+    model?: ModelRef;
+    models?: string[];
+    excludedModels?: string[];
+    subagentModels?: string[];
+    subagentExcludedModels?: string[];
+    force?: boolean;
+};
+/**
+ * The models a session's subsessions may run, as the session declares it.
+ *
+ * This follows the OpenCode contract for `Session.SubagentPolicy`: `models`
+ * and `excludedModels` hold model selectors, exact refs `provider/model` or
+ * wider forms such as `provider/*` and `provider/model#variant`. The
+ * generated `@opencode/client` types do not carry the field yet, so it is
+ * defined here at the API boundary (see `./client.ts` and
+ * `./projection.ts`) and can be dropped once the regenerated client ships it.
+ */
+export type SubagentPolicy = {
+    models?: string[];
+    excludedModels?: string[];
+    agentOverrides?: Record<string, SubagentAgentOverride>;
+};
+export type Session = {
+    id: string;
+    parentID?: string;
+    projectID: string;
+    /** Absolute directory the session runs in (`location.directory` on the wire). */
+    directory: string;
+    /** Optional subdirectory inside `directory` the session is scoped to. */
+    subpath?: string;
+    title: string;
+    agent?: string;
+    model?: ModelRef;
+    cost: number;
+    tokens: TokenUsageInfo;
+    outcome?: SessionOutcome;
+    time: {
+        created: number;
+        updated: number;
+        idle?: number;
+        viewed?: number;
+        archived?: number;
+    };
+    metadata?: Metadata;
+    permissions?: PermissionRuleset;
+    /** Models this session's subsessions may run; absent means no policy is set. */
+    subagentPolicy?: SubagentPolicy;
+    revert?: SessionRevert;
+    fork?: {
+        sessionID: string;
+        boundary: SessionForkBoundary;
+    };
+};
+export type StructuredError = SessionStructuredError;
+type MessageBase = {
+    id: string;
+    sessionID: string;
+    metadata?: Metadata;
+};
+export type UserMessage = MessageBase & {
+    role: "user";
+    time: {
+        created: number;
+    };
+};
+export type AssistantFinish = "stop" | "length" | "tool-calls" | "content-filter" | "error" | "unknown";
+export type AssistantMessage = MessageBase & {
+    role: "assistant";
+    time: {
+        created: number;
+        /** First streamed token. */
+        streamed?: number;
+        /** Whole step finished (text and every tool call). */
+        completed?: number;
+    };
+    agent: string;
+    providerID: string;
+    modelID: string;
+    variant?: string;
+    finish?: AssistantFinish;
+    error?: StructuredError;
+    /**
+     * Set when the client closed this message itself because OpenCode reported
+     * the turn stopped or failed before finalizing it (`interruptedTurnToolParts`
+     * in sync). A completion from the server replaces such a close.
+     */
+    closedLocally?: true;
+    cost?: number;
+    tokens?: TokenUsageInfo;
+    snapshot?: {
+        start?: string;
+        end?: string;
+        files?: string[];
+    };
+    retry?: {
+        attempt: number;
+        at: number;
+        error: StructuredError;
+    };
+};
+/** Context OpenCode injected on the client's behalf (our context attachments land here). */
+export type SyntheticMessage = MessageBase & {
+    role: "synthetic";
+    time: {
+        created: number;
+    };
+    text: string;
+    description?: string;
+};
+/** Text OpenCode itself added (instruction updates, notices). */
+type SystemMessage = MessageBase & {
+    role: "system";
+    time: {
+        created: number;
+    };
+    text: string;
+    description?: string;
+};
+type SkillMessage = MessageBase & {
+    role: "skill";
+    time: {
+        created: number;
+    };
+    skill: string;
+    name: string;
+    text: string;
+};
+type ShellMessage = MessageBase & {
+    role: "shell";
+    time: {
+        created: number;
+        completed?: number;
+    };
+    shellID: string;
+    command: string;
+    status: "running" | "exited" | "timeout" | "killed";
+    exit?: number;
+    /** Signal that killed the command; live events only, OpenCode does not persist it. */
+    signal?: string;
+    output?: {
+        output: string;
+        cursor: number;
+        size: number;
+        truncated: boolean;
+    };
+};
+export type CompactionMessage = MessageBase & {
+    role: "compaction";
+    time: {
+        created: number;
+    };
+    status: "running" | "completed" | "failed";
+    reason: "auto" | "manual";
+    summary: string;
+    error?: StructuredError;
+    cost?: number;
+    tokens?: TokenUsageInfo;
+};
+type AgentSwitchedMessage = MessageBase & {
+    role: "agent-switched";
+    time: {
+        created: number;
+    };
+    agent: string;
+    previous?: string;
+};
+type ModelSwitchedMessage = MessageBase & {
+    role: "model-switched";
+    time: {
+        created: number;
+    };
+    model: ModelRef;
+    previous?: ModelRef;
+};
+type LocationSwitchedMessage = MessageBase & {
+    role: "location-switched";
+    time: {
+        created: number;
+    };
+    directory: string;
+    previous?: string;
+};
+/**
+ * v2.0.3: the turn ended; `outcome` says how. Since 2.0.27 a `failed` record
+ * also keeps the error OpenCode reported live with `session.execution.failed`.
+ */
+type IdleMessage = MessageBase & {
+    role: "idle";
+    time: {
+        created: number;
+    };
+    outcome: SessionOutcome;
+    error?: StructuredError;
+};
+export type Message = UserMessage | AssistantMessage | SyntheticMessage | SystemMessage | SkillMessage | ShellMessage | CompactionMessage | AgentSwitchedMessage | ModelSwitchedMessage | LocationSwitchedMessage | IdleMessage;
+type MessageRole = Message["role"];
+type PartBase = {
+    id: string;
+    sessionID: string;
+    messageID: string;
+};
+export type TextPart = PartBase & {
+    type: "text";
+    text: string;
+    /** Set while the text is still streaming; `end` lands with the final text. */
+    time?: {
+        start: number;
+        end?: number;
+    };
+    metadata?: Metadata;
+};
+export type ReasoningPart = PartBase & {
+    type: "reasoning";
+    text: string;
+    time: {
+        start: number;
+        end?: number;
+    };
+};
+export type FilePart = PartBase & {
+    type: "file";
+    mime: string;
+    filename?: string;
+    url: string;
+};
+type AgentPart = PartBase & {
+    type: "agent";
+    name: string;
+};
+/** Tool arguments as the model produced them. */
+export type ToolInput = Record<string, JsonValue>;
+type ToolStatePending = {
+    status: "pending";
+    input: ToolInput;
+    /** Raw streamed argument JSON while the model is still emitting the call. */
+    raw: string;
+};
+type ToolStateRunning = {
+    status: "running";
+    input: ToolInput;
+    metadata?: Metadata;
+    time: {
+        start: number;
+    };
+};
+export type ToolStateCompleted = {
+    status: "completed";
+    input: ToolInput;
+    /** Concatenated text content of the tool result. */
+    output: string;
+    metadata?: Metadata;
+    time: {
+        start: number;
+        end: number;
+    };
+    attachments?: FilePart[];
+};
+type ToolStateError = {
+    status: "error";
+    input: ToolInput;
+    error: string;
+    /** Partial text content the tool produced before failing, if any. */
+    output?: string;
+    metadata?: Metadata;
+    time: {
+        start: number;
+        end: number;
+    };
+};
+export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError;
+export type ToolPart = PartBase & {
+    type: "tool";
+    /** Tool call id assigned by the model provider. */
+    callID: string;
+    /** Tool name (`shell`, `edit`, `openchamber_web`, ...); see `./tools`. */
+    tool: string;
+    state: ToolState;
+    /** The provider actually executed the call (false for replayed/synthetic calls). */
+    executed?: boolean;
+};
+export type Part = TextPart | ReasoningPart | FilePart | AgentPart | ToolPart;
+export type PartType = Part["type"];
+export type PermissionRequest = PermissionRequestWire;
+export type PermissionReply = "once" | "always" | "reject";
+/** OpenCode v2 replaced the question tool with typed forms. */
+export type FormRequest = FormInfo;
+/**
+ * Deterministic part ids. Text and reasoning items on the wire are addressed
+ * by `(assistantMessageID, ordinal)`; tools by their call id. Deriving the part
+ * id from those keys lets the reducer grow the right part on a delta without
+ * scanning, and lets a projected page and a live stream agree on identity.
+ */
+export declare const partIds: {
+    readonly text: (messageID: string, ordinal: number) => string;
+    readonly reasoning: (messageID: string, ordinal: number) => string;
+    readonly tool: (callID: string) => string;
+    readonly userText: (messageID: string) => string;
+    readonly userFile: (messageID: string, index: number) => string;
+    readonly userAgent: (messageID: string, index: number) => string;
+};
+export declare const isFinalToolStatus: (status: string) => boolean;
+/** Assistant reply messages carry parts; every other role is a single record. */
+export declare const hasParts: (message: Message) => message is UserMessage | AssistantMessage;
+export declare const isConversationRole: (role: MessageRole) => role is "user" | "assistant";
+/**
+ * The newest message that is part of the conversation.
+ *
+ * OpenCode v2 interleaves plumbing roles — `synthetic`, `system`, `skill`,
+ * `shell`, `compaction` and the `*-switched` notices — with `user` and
+ * `assistant`. "The last message" is only meaningful once those are skipped:
+ * a prompt plugin appending a synthetic message must not read as the turn
+ * having moved on.
+ */
+export declare const getLastConversationMessage: (messages: readonly Message[] | undefined) => UserMessage | AssistantMessage | undefined;
+/** Same rule as `getLastConversationMessage`, for the `{ info, parts }` records the chat works with. */
+export declare const getLastConversationRecord: <T extends {
+    info: Message;
+}>(records: readonly T[] | undefined) => T | undefined;
+/** An assistant turn OpenCode started and has not reported completed. */
+export declare const isIncompleteAssistantTurn: (message: Message | undefined) => boolean;
