@@ -1,0 +1,120 @@
+# Measures the aarch64-linux node_modules hash on a native arm runner (#275).
+#
+# nix/hashes.json pins one bun-installed node_modules fixed-output hash per
+# system, and a hash can only be measured on a builder for that system: the
+# fetchers here are x86_64-linux and aarch64-darwin, so the aarch64-linux
+# entry could not be re-baked at the #203 bun.lock sync (see
+# nix/update-hashes.sh, which bakes only the current system). This workflow
+# is the missing builder: it runs on ubuntu-24.04-arm (a native
+# aarch64-linux host) and does what `nix run .#update-hashes` does for that
+# system, with one difference — it never edits a dirty tree, because Nix can
+# serve stale flake sources for dirty git trees.
+#
+# Two modes, no inputs:
+#   - committed hash stale: the FOD build fails and reports the real hash in
+#     `got:`; the job records it, writes it, commits locally (clean tree
+#     again) and verifies with `--rebuild`.
+#   - committed hash current: the build succeeds and the job reports "already
+#     current". That second mode is the verification run for a branch that
+#     already carries the baked hash.
+#
+# Read-only on the repository: it uploads nix/hashes.json as an artifact and
+# prints the hash in the job summary; the commit is pushed by a maintainer or
+# queue worker. Dispatch it on the branch that holds the change.
+name: nix-arm-hash
+
+on:
+  workflow_dispatch:
+
+# CI policy: .github/ci-policy.md. Dispatch-only, ref-keyed concurrency,
+# no push/pull_request trigger, so it never runs automatically.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bake-aarch64-linux:
+    # The job needs an aarch64-linux runner; fork flake only (upstream eval
+    # jobs are gated in the other direction, see nix-eval.yml).
+    if: github.repository == 'developing-today/openchamber'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Measure or confirm the aarch64-linux node_modules hash
+        id: hash
+        run: |
+          set -uo pipefail
+          system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+          echo "runner system: $system"
+          if [ "$system" != "aarch64-linux" ]; then
+            echo "::error::expected an aarch64-linux runner, got $system"
+            exit 1
+          fi
+
+          log=$(mktemp)
+          # A committed tree: no local edit before the build, so the
+          # evaluation cannot serve a stale copy of nix/hashes.json.
+          if nix build --no-link ".#openchamber.node_modules" -L >"$log" 2>&1; then
+            current="$(grep -oP '"aarch64-linux": "\Ksha256-[A-Za-z0-9+/=]+' nix/hashes.json)"
+            echo "committed hash $current is current — nothing to bake"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "hash=$current" >> "$GITHUB_OUTPUT"
+            {
+              echo "### aarch64-linux node_modules hash"
+              echo
+              echo "Already current: \`$current\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          got=$(awk '
+            /hash mismatch in fixed-output derivation/ && /openchamber-node_modules/ { inblock = 1 }
+            inblock && /got:/ { sub(/^.*got:[[:space:]]*/, ""); print; exit }
+          ' "$log")
+          if [ -z "$got" ]; then
+            echo "::error::build failed without a node_modules hash mismatch"
+            head -40 "$log"
+            exit 1
+          fi
+          echo "measured aarch64-linux node_modules hash: $got"
+          sed -i "/\"aarch64-linux\":/s|sha256-[A-Za-z0-9+/=]*|$got|" nix/hashes.json
+          git diff -- nix/hashes.json
+
+          # Commit so the verifying build evaluates a clean tree again.
+          git config user.name "openchamber-bake-bot"
+          git config user.email "openchamber-bake-bot@users.noreply.github.com"
+          git commit -q -m "chore(nix): bake aarch64-linux node_modules hash (#275)" -- nix/hashes.json
+
+          echo "verifying with a rebuild"
+          nix build --no-link --rebuild ".#openchamber.node_modules"
+          echo "verified"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "hash=$got" >> "$GITHUB_OUTPUT"
+          {
+            echo "### aarch64-linux node_modules hash"
+            echo
+            echo "Measured and rebuild-verified on \`$system\` at \`$GITHUB_SHA\`:"
+            echo
+            echo '```'
+            echo "\"aarch64-linux\": \"$got\""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the baked hashes.json
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nix-hashes-aarch64-linux
+          path: nix/hashes.json
+          retention-days: 7
