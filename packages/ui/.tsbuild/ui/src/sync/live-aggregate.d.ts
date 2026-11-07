@@ -1,0 +1,10 @@
+import type { Session, SessionStatus } from '@/lib/opencode/model';
+import type { State } from './types';
+type LiveStateSlice = Pick<State, 'session' | 'session_status'>;
+export declare const areSessionListsEquivalent: (left: Session[], right: Session[]) => boolean;
+export declare const areStatusMapsEquivalent: (left: Record<string, SessionStatus>, right: Record<string, SessionStatus>) => boolean;
+export declare function aggregateLiveSessions(states: Iterable<LiveStateSlice>): Session[];
+export declare function aggregateLiveSessionStatuses(states: Iterable<LiveStateSlice>): Record<string, SessionStatus>;
+export declare function findLiveSession(states: Iterable<LiveStateSlice>, sessionID?: string | null): Session | undefined;
+export declare function findLiveSessionStatus(states: Iterable<LiveStateSlice>, sessionID?: string | null): SessionStatus | undefined;
+export {};
