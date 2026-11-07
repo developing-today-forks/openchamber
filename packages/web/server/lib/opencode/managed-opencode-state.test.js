@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import {
 } from './managed-opencode-state.js';
 
 const serveArgs = ['serve', '--hostname', '127.0.0.1'];
+const isWindows = process.platform === 'win32';
 
 const validState = {
   pid: 4242,
@@ -38,6 +40,12 @@ const adoptable = {
   fingerprint: 'abc123',
   port: 45678,
   healthy: true,
+};
+
+const readInChild = (reader, filePath) => {
+  const moduleUrl = new URL('./managed-opencode-state.js', import.meta.url).href;
+  const script = `import { ${reader} } from ${JSON.stringify(moduleUrl)}; process.stdout.write(JSON.stringify(${reader}(${JSON.stringify(filePath)})));`;
+  return execFileSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 3000 });
 };
 
 describe('decideManagedOpenCodeLaunch', () => {
@@ -133,6 +141,47 @@ describe('managed OpenCode state file', () => {
     fs.writeFileSync(statePath, '{not json');
 
     expect(readManagedOpenCodeState(statePath)).toBeNull();
+  });
+
+  it('returns null for an oversized state file', () => {
+    const { statePath } = resolveManagedOpenCodePaths(root);
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify({ version: 1, ...validState, password: 'p'.repeat(64 * 1024) }));
+
+    expect(readManagedOpenCodeState(statePath)).toBeNull();
+  });
+
+  it.skipIf(isWindows)('returns null for a FIFO state file without blocking', () => {
+    const { statePath } = resolveManagedOpenCodePaths(root);
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    execFileSync('mkfifo', [statePath]);
+
+    expect(readInChild('readManagedOpenCodeState', statePath)).toBe('null');
+  });
+
+  it('returns an empty list for a missing or malformed draining file', () => {
+    const drainingPath = path.join(root, 'draining.json');
+    expect(readDrainingOpenCodeRecords(drainingPath)).toEqual([]);
+
+    fs.writeFileSync(drainingPath, '{not json');
+    expect(readDrainingOpenCodeRecords(drainingPath)).toEqual([]);
+  });
+
+  it('returns an empty list for an oversized draining file', () => {
+    const drainingPath = path.join(root, 'draining.json');
+    fs.writeFileSync(drainingPath, JSON.stringify({
+      version: 1,
+      draining: [{ pid: 7001, port: 45001, binary: 'b'.repeat(64 * 1024), drainStartedAt: 1700000000000 }],
+    }));
+
+    expect(readDrainingOpenCodeRecords(drainingPath)).toEqual([]);
+  });
+
+  it.skipIf(isWindows)('returns an empty list for a FIFO draining file without blocking', () => {
+    const drainingPath = path.join(root, 'draining.json');
+    execFileSync('mkfifo', [drainingPath]);
+
+    expect(readInChild('readDrainingOpenCodeRecords', drainingPath)).toBe('[]');
   });
 
   it.each([

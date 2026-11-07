@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 const STATE_VERSION = 1;
+// These files contain a handful of state fields and a small draining-process list.
+// Keep enough room for long executable and instance paths while bounding sync reads.
+const MANAGED_OPENCODE_STATE_MAX_BYTES = 64 * 1024;
+const MANAGED_OPENCODE_DRAINING_MAX_BYTES = 64 * 1024;
 
 export const resolveManagedOpenCodePaths = (dataDir) => {
   const dir = path.join(dataDir, 'managed-opencode');
@@ -26,13 +31,18 @@ export const hashLaunchSecret = (value) => createHash('sha256').update(String(va
 
 export const createLaunchFingerprint = (launch) => createHash('sha256').update(canonicalize(launch)).digest('hex');
 
-export const readManagedOpenCodeState = (statePath) => {
-  let parsed;
+const readBoundedJsonFileSync = (filePath, maxBytes) => {
   try {
-    parsed = JSON.parse(readFileSync(statePath, 'utf8'));
+    const result = readBoundedFileSync(filePath, maxBytes);
+    if (!result.ok) return null;
+    return JSON.parse(result.buffer.toString('utf8'));
   } catch {
     return null;
   }
+};
+
+export const readManagedOpenCodeState = (statePath) => {
+  const parsed = readBoundedJsonFileSync(statePath, MANAGED_OPENCODE_STATE_MAX_BYTES);
   const valid = parsed?.version === STATE_VERSION
     && Number.isInteger(parsed.pid) && parsed.pid > 0
     && Number.isInteger(parsed.port) && parsed.port > 0
@@ -47,12 +57,7 @@ export const readManagedOpenCodeState = (statePath) => {
 // Replaced OpenCode processes that are still finishing their sessions. Kept apart from
 // state.json, which describes only the current process and is cleared when that one exits.
 export const readDrainingOpenCodeRecords = (drainingPath) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(drainingPath, 'utf8'));
-  } catch {
-    return [];
-  }
+  const parsed = readBoundedJsonFileSync(drainingPath, MANAGED_OPENCODE_DRAINING_MAX_BYTES);
   if (parsed?.version !== STATE_VERSION || !Array.isArray(parsed.draining)) return [];
   return parsed.draining.filter((record) => (
     Number.isInteger(record?.pid) && record.pid > 0
