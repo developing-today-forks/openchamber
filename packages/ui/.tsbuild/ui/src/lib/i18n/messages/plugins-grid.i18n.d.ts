@@ -1,0 +1,183 @@
+/** Plugins settings card grid and Settings list-search strings — merged into each locale's main dictionary. */
+export declare const pluginsGridI18n: {
+    readonly en: {
+        readonly 'settings.plugins.grid.actionsAria': 'Actions for {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Search';
+        readonly 'settings.common.sidebar.noMatches': 'Nothing matches “{query}”.';
+        readonly 'settings.plugins.grid.description': 'OpenCode plugins from npm, local paths and plugin files. Open one to edit it.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Search plugins';
+        readonly 'settings.plugins.grid.addHint': 'npm package or local path';
+        readonly 'settings.plugins.grid.noMatches': 'No plugins match “{query}”.';
+        readonly 'settings.plugins.grid.empty': 'No plugins yet.';
+        readonly 'settings.plugins.grid.scope.project': 'Project';
+        readonly 'settings.plugins.page.back': 'All plugins';
+    };
+    readonly nl: {
+        readonly 'settings.plugins.grid.actionsAria': 'Acties voor {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Zoeken';
+        readonly 'settings.common.sidebar.noMatches': 'Niets komt overeen met “{query}”.';
+        readonly 'settings.plugins.grid.description': 'OpenCode-plugins uit npm, lokale paden en pluginbestanden. Open er een om die te bewerken.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Plugins zoeken';
+        readonly 'settings.plugins.grid.addHint': 'npm-pakket of lokaal pad';
+        readonly 'settings.plugins.grid.noMatches': 'Geen plugins komen overeen met “{query}”.';
+        readonly 'settings.plugins.grid.empty': 'Nog geen plugins.';
+        readonly 'settings.plugins.grid.scope.project': 'Project';
+        readonly 'settings.plugins.page.back': 'Alle plugins';
+    };
+    readonly uk: {
+        readonly 'settings.plugins.grid.actionsAria': 'Дії для {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Пошук';
+        readonly 'settings.common.sidebar.noMatches': 'Нічого не знайдено за запитом «{query}».';
+        readonly 'settings.plugins.grid.description': 'Плагіни OpenCode з npm, локальних шляхів і файлів плагінів. Відкрийте плагін, щоб його змінити.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Пошук плагінів';
+        readonly 'settings.plugins.grid.addHint': 'Пакет npm або локальний шлях';
+        readonly 'settings.plugins.grid.noMatches': 'Немає плагінів за запитом «{query}».';
+        readonly 'settings.plugins.grid.empty': 'Плагінів ще немає.';
+        readonly 'settings.plugins.grid.scope.project': 'Проєкт';
+        readonly 'settings.plugins.page.back': 'Усі плагіни';
+    };
+    readonly de: {
+        readonly 'settings.plugins.grid.actionsAria': 'Aktionen für {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Suchen';
+        readonly 'settings.common.sidebar.noMatches': 'Nichts passt zu „{query}“.';
+        readonly 'settings.plugins.grid.description': 'OpenCode-Plugins aus npm, lokalen Pfaden und Plugin-Dateien. Öffne eines, um es zu bearbeiten.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Plugins suchen';
+        readonly 'settings.plugins.grid.addHint': 'npm-Paket oder lokaler Pfad';
+        readonly 'settings.plugins.grid.noMatches': 'Keine Plugins passen zu „{query}“.';
+        readonly 'settings.plugins.grid.empty': 'Noch keine Plugins.';
+        readonly 'settings.plugins.grid.scope.project': 'Projekt';
+        readonly 'settings.plugins.page.back': 'Alle Plugins';
+    };
+    readonly es: {
+        readonly 'settings.plugins.grid.actionsAria': 'Acciones de {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Buscar';
+        readonly 'settings.common.sidebar.noMatches': 'Nada coincide con «{query}».';
+        readonly 'settings.plugins.grid.description': 'Plugins de OpenCode desde npm, rutas locales y archivos de plugin. Abre uno para editarlo.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Buscar plugins';
+        readonly 'settings.plugins.grid.addHint': 'Paquete npm o ruta local';
+        readonly 'settings.plugins.grid.noMatches': 'Ningún plugin coincide con «{query}».';
+        readonly 'settings.plugins.grid.empty': 'Aún no hay plugins.';
+        readonly 'settings.plugins.grid.scope.project': 'Proyecto';
+        readonly 'settings.plugins.page.back': 'Todos los plugins';
+    };
+    readonly fr: {
+        readonly 'settings.plugins.grid.actionsAria': 'Actions pour {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Rechercher';
+        readonly 'settings.common.sidebar.noMatches': 'Rien ne correspond à « {query} ».';
+        readonly 'settings.plugins.grid.description': 'Les plugins OpenCode issus de npm, de chemins locaux et de fichiers de plugin. Ouvrez-en un pour le modifier.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Rechercher des plugins';
+        readonly 'settings.plugins.grid.addHint': 'Paquet npm ou chemin local';
+        readonly 'settings.plugins.grid.noMatches': 'Aucun plugin ne correspond à « {query} ».';
+        readonly 'settings.plugins.grid.empty': 'Aucun plugin pour l’instant.';
+        readonly 'settings.plugins.grid.scope.project': 'Projet';
+        readonly 'settings.plugins.page.back': 'Tous les plugins';
+    };
+    readonly ja: {
+        readonly 'settings.plugins.grid.actionsAria': '{name} の操作';
+        readonly 'settings.common.sidebar.searchPlaceholder': '検索';
+        readonly 'settings.common.sidebar.noMatches': '「{query}」に一致するものはありません。';
+        readonly 'settings.plugins.grid.description': 'npm、ローカルパス、プラグインファイルから読み込む OpenCode プラグインです。開くと編集できます。';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'プラグインを検索';
+        readonly 'settings.plugins.grid.addHint': 'npm パッケージまたはローカルパス';
+        readonly 'settings.plugins.grid.noMatches': '「{query}」に一致するプラグインはありません。';
+        readonly 'settings.plugins.grid.empty': 'プラグインはまだありません。';
+        readonly 'settings.plugins.grid.scope.project': 'プロジェクト';
+        readonly 'settings.plugins.page.back': 'すべてのプラグイン';
+    };
+    readonly ko: {
+        readonly 'settings.plugins.grid.actionsAria': '{name} 작업';
+        readonly 'settings.common.sidebar.searchPlaceholder': '검색';
+        readonly 'settings.common.sidebar.noMatches': '“{query}”와 일치하는 항목이 없습니다.';
+        readonly 'settings.plugins.grid.description': 'npm, 로컬 경로, 플러그인 파일에서 가져온 OpenCode 플러그인입니다. 열어서 편집하세요.';
+        readonly 'settings.plugins.grid.searchPlaceholder': '플러그인 검색';
+        readonly 'settings.plugins.grid.addHint': 'npm 패키지 또는 로컬 경로';
+        readonly 'settings.plugins.grid.noMatches': '“{query}”와 일치하는 플러그인이 없습니다.';
+        readonly 'settings.plugins.grid.empty': '아직 플러그인이 없습니다.';
+        readonly 'settings.plugins.grid.scope.project': '프로젝트';
+        readonly 'settings.plugins.page.back': '모든 플러그인';
+    };
+    readonly pl: {
+        readonly 'settings.plugins.grid.actionsAria': 'Działania dla {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Szukaj';
+        readonly 'settings.common.sidebar.noMatches': 'Nic nie pasuje do „{query}”.';
+        readonly 'settings.plugins.grid.description': 'Wtyczki OpenCode z npm, ścieżek lokalnych i plików wtyczek. Otwórz wtyczkę, aby ją edytować.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Szukaj wtyczek';
+        readonly 'settings.plugins.grid.addHint': 'Pakiet npm lub ścieżka lokalna';
+        readonly 'settings.plugins.grid.noMatches': 'Brak wtyczek pasujących do „{query}”.';
+        readonly 'settings.plugins.grid.empty': 'Brak wtyczek.';
+        readonly 'settings.plugins.grid.scope.project': 'Projekt';
+        readonly 'settings.plugins.page.back': 'Wszystkie wtyczki';
+    };
+    readonly 'pt-BR': {
+        readonly 'settings.plugins.grid.actionsAria': 'Ações para {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Buscar';
+        readonly 'settings.common.sidebar.noMatches': 'Nada corresponde a “{query}”.';
+        readonly 'settings.plugins.grid.description': 'Plugins do OpenCode vindos do npm, de caminhos locais e de arquivos de plugin. Abra um para editar.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Buscar plugins';
+        readonly 'settings.plugins.grid.addHint': 'Pacote npm ou caminho local';
+        readonly 'settings.plugins.grid.noMatches': 'Nenhum plugin corresponde a “{query}”.';
+        readonly 'settings.plugins.grid.empty': 'Ainda não há plugins.';
+        readonly 'settings.plugins.grid.scope.project': 'Projeto';
+        readonly 'settings.plugins.page.back': 'Todos os plugins';
+    };
+    readonly tr: {
+        readonly 'settings.plugins.grid.actionsAria': '{name} için işlemler';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'Ara';
+        readonly 'settings.common.sidebar.noMatches': '“{query}” ile eşleşen bir şey yok.';
+        readonly 'settings.plugins.grid.description': 'npm, yerel yollar ve eklenti dosyalarından gelen OpenCode eklentileri. Düzenlemek için birini açın.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'Eklenti ara';
+        readonly 'settings.plugins.grid.addHint': 'npm paketi veya yerel yol';
+        readonly 'settings.plugins.grid.noMatches': '“{query}” ile eşleşen eklenti yok.';
+        readonly 'settings.plugins.grid.empty': 'Henüz eklenti yok.';
+        readonly 'settings.plugins.grid.scope.project': 'Proje';
+        readonly 'settings.plugins.page.back': 'Tüm eklentiler';
+    };
+    readonly 'zh-CN': {
+        readonly 'settings.plugins.grid.actionsAria': '{name} 的操作';
+        readonly 'settings.common.sidebar.searchPlaceholder': '搜索';
+        readonly 'settings.common.sidebar.noMatches': '没有与“{query}”匹配的内容。';
+        readonly 'settings.plugins.grid.description': '来自 npm、本地路径和插件文件的 OpenCode 插件。打开一个即可编辑。';
+        readonly 'settings.plugins.grid.searchPlaceholder': '搜索插件';
+        readonly 'settings.plugins.grid.addHint': 'npm 包或本地路径';
+        readonly 'settings.plugins.grid.noMatches': '没有与“{query}”匹配的插件。';
+        readonly 'settings.plugins.grid.empty': '还没有插件。';
+        readonly 'settings.plugins.grid.scope.project': '项目';
+        readonly 'settings.plugins.page.back': '所有插件';
+    };
+    readonly 'zh-TW': {
+        readonly 'settings.plugins.grid.actionsAria': '{name} 的操作';
+        readonly 'settings.common.sidebar.searchPlaceholder': '搜尋';
+        readonly 'settings.common.sidebar.noMatches': '沒有符合「{query}」的內容。';
+        readonly 'settings.plugins.grid.description': '來自 npm、本機路徑和外掛檔案的 OpenCode 外掛。開啟一個即可編輯。';
+        readonly 'settings.plugins.grid.searchPlaceholder': '搜尋外掛';
+        readonly 'settings.plugins.grid.addHint': 'npm 套件或本機路徑';
+        readonly 'settings.plugins.grid.noMatches': '沒有符合「{query}」的外掛。';
+        readonly 'settings.plugins.grid.empty': '還沒有外掛。';
+        readonly 'settings.plugins.grid.scope.project': '專案';
+        readonly 'settings.plugins.page.back': '所有外掛';
+    };
+    readonly ar: {
+        readonly 'settings.plugins.grid.actionsAria': 'إجراءات {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'بحث';
+        readonly 'settings.common.sidebar.noMatches': 'لا شيء يطابق “{query}”.';
+        readonly 'settings.plugins.grid.description': 'مكوّنات OpenCode الإضافية من npm والمسارات المحلية وملفات المكوّنات. افتح أحدها لتعديله.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'البحث في المكوّنات الإضافية';
+        readonly 'settings.plugins.grid.addHint': 'حزمة npm أو مسار محلي';
+        readonly 'settings.plugins.grid.noMatches': 'لا توجد مكوّنات إضافية تطابق “{query}”.';
+        readonly 'settings.plugins.grid.empty': 'لا توجد مكوّنات إضافية بعد.';
+        readonly 'settings.plugins.grid.scope.project': 'المشروع';
+        readonly 'settings.plugins.page.back': 'كل المكوّنات الإضافية';
+    };
+    readonly he: {
+        readonly 'settings.plugins.grid.actionsAria': 'פעולות עבור {name}';
+        readonly 'settings.common.sidebar.searchPlaceholder': 'חיפוש';
+        readonly 'settings.common.sidebar.noMatches': 'אין תוצאות עבור “{query}”.';
+        readonly 'settings.plugins.grid.description': 'תוספים של OpenCode מ-npm, מנתיבים מקומיים ומקובצי תוספים. אפשר לפתוח תוסף כדי לערוך אותו.';
+        readonly 'settings.plugins.grid.searchPlaceholder': 'חיפוש תוספים';
+        readonly 'settings.plugins.grid.addHint': 'חבילת npm או נתיב מקומי';
+        readonly 'settings.plugins.grid.noMatches': 'אין תוספים שתואמים ל-“{query}”.';
+        readonly 'settings.plugins.grid.empty': 'אין עדיין תוספים.';
+        readonly 'settings.plugins.grid.scope.project': 'פרויקט';
+        readonly 'settings.plugins.page.back': 'כל התוספים';
+    };
+};
