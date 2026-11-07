@@ -443,6 +443,24 @@ const readQuotaBytes = async (response: Response): Promise<Uint8Array> => {
 const ollamaApiKeyFrom = (entry: ReturnType<typeof normalizeAuthEntry>): string | null =>
   asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 
+/**
+ * The shared credential selection for the key/token and access/token
+ * provider families (#1759): the first field holding a real value,
+ * trimmed, or null. listConfiguredQuotaProviders and every fetch path
+ * select through these, so an empty or whitespace-only first field
+ * falls through to the second field identically on both sides, and a
+ * blank credential is never sent as a bearer.
+ */
+const keyOrTokenFrom = (entry: unknown): string | null => {
+  const record = asObject(entry);
+  return asNonEmptyString(record?.key) ?? asNonEmptyString(record?.token);
+};
+
+const accessOrTokenFrom = (entry: unknown): string | null => {
+  const record = asObject(entry);
+  return asNonEmptyString(record?.access) ?? asNonEmptyString(record?.token);
+};
+
 const parseGoogleRefreshToken = (rawRefreshToken: unknown) => {
   const refreshToken = asNonEmptyString(rawRefreshToken);
   if (!refreshToken) {
@@ -920,7 +938,7 @@ const readCodexInstanceIds = (): string[] => {
 
 const codexEntryWithToken = (auth: AuthFile, aliases: string[]) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases)) as Record<string, unknown> | null;
-  return entry && (entry.access || entry.token) ? entry : null;
+  return entry && accessOrTokenFrom(entry) ? entry : null;
 };
 
 /**
@@ -965,7 +983,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   }
 
   const anthropicAuth = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude']));
-  if (anthropicAuth && ((anthropicAuth as Record<string, unknown>).access || (anthropicAuth as Record<string, unknown>).token)) {
+  if (accessOrTokenFrom(anthropicAuth)) {
     configured.add('claude');
   }
 
@@ -981,12 +999,12 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   }
 
   const zaiAuth = normalizeAuthEntry(getAuthEntry(auth, ['zai-coding-plan', 'zai', 'z.ai']));
-  if (zaiAuth && ((zaiAuth as Record<string, unknown>).key || (zaiAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(zaiAuth)) {
     configured.add('zai-coding-plan');
   }
 
   const zhipuaiAuth = normalizeAuthEntry(getAuthEntry(auth, ['zhipuai-coding-plan']));
-  if (zhipuaiAuth && ((zhipuaiAuth as Record<string, unknown>).key || (zhipuaiAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(zhipuaiAuth)) {
     configured.add('zhipuai-coding-plan');
   }
 
@@ -1010,17 +1028,17 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   }
 
   const openrouterAuth = normalizeAuthEntry(getAuthEntry(auth, ['openrouter']));
-  if (openrouterAuth && ((openrouterAuth as Record<string, unknown>).key || (openrouterAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(openrouterAuth)) {
     configured.add('openrouter');
   }
 
   const nanopgAuth = normalizeAuthEntry(getAuthEntry(auth, ['nano-gpt', 'nanogpt', 'nano_gpt']));
-  if (nanopgAuth && ((nanopgAuth as Record<string, unknown>).key || (nanopgAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(nanopgAuth)) {
     configured.add('nano-gpt');
   }
 
   const copilotAuth = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot']));
-  if (copilotAuth && ((copilotAuth as Record<string, unknown>).access || (copilotAuth as Record<string, unknown>).token)) {
+  if (accessOrTokenFrom(copilotAuth)) {
     configured.add('github-copilot');
     configured.add('github-copilot-addon');
   }
@@ -1037,17 +1055,17 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   }
 
   const neuralwattAuth = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt']));
-  if (neuralwattAuth && ((neuralwattAuth as Record<string, unknown>).key || (neuralwattAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(neuralwattAuth)) {
     configured.add('neuralwatt');
   }
 
   const deepseekAuth = normalizeAuthEntry(getAuthEntry(auth, ['deepseek']));
-  if (deepseekAuth && ((deepseekAuth as Record<string, unknown>).key || (deepseekAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(deepseekAuth)) {
     configured.add('deepseek');
   }
 
   const deepinfraAuth = normalizeAuthEntry(getAuthEntry(auth, ['deepinfra', 'deep-infra', 'deep_infra']));
-  if (deepinfraAuth && ((deepinfraAuth as Record<string, unknown>).key || (deepinfraAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(deepinfraAuth)) {
     configured.add('deepinfra');
   }
 
@@ -1105,7 +1123,7 @@ const toCodexUsedPercent = (value: number | string | null | undefined): number |
 const fetchCodexQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = resolveCodexEntry(auth);
-  const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
+  const accessToken = accessOrTokenFrom(entry);
   const accountId = entry?.accountId as string | undefined;
 
   if (!accessToken) {
@@ -1879,7 +1897,7 @@ const buildClaudeUsage = (payload: Record<string, unknown>): ProviderUsage => {
 const fetchClaudeQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude'])) as Record<string, unknown> | null;
-  const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
+  const accessToken = accessOrTokenFrom(entry);
 
   if (!accessToken) {
     return buildResult({
@@ -2061,7 +2079,7 @@ const copilotUserUrl = (enterpriseUrl: string | undefined): string => {
 const fetchCopilotQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
-  const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
+  const accessToken = accessOrTokenFrom(entry);
   // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
   // login targets GitHub Enterprise Server. A value that is not a usable host is refused by
   // `copilotUserUrl` before any request is made, so it cannot redirect the credential.
@@ -2121,7 +2139,7 @@ const fetchCopilotQuota = async (): Promise<ProviderResult> => {
 const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
-  const accessToken = (entry?.access as string | undefined) ?? (entry?.token as string | undefined);
+  const accessToken = accessOrTokenFrom(entry);
   // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
   // login targets GitHub Enterprise Server. A value that is not a usable host is refused by
   // `copilotUserUrl` before any request is made, so it cannot redirect the credential.
@@ -2802,7 +2820,7 @@ const resolveOpenRouterConfigBase = (): string | null => {
 const fetchOpenRouterQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['openrouter'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3041,7 +3059,7 @@ const attachZaiGiftResets = async (windows: Record<string, UsageWindow>, apiKey:
 const fetchZaiQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES)) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3139,7 +3157,7 @@ const activateZaiGiftReset = async (input: { recordId: number; resetType: QuotaG
   const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES)) as { key?: unknown; token?: unknown } | null;
   // SAFETY: a non-string key/token becomes an unusable bearer that the
   // !apiKey check rejects before any request leaves the host.
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     throw new Error('Not configured');
@@ -3184,7 +3202,7 @@ export const activateQuotaGiftReset = async (
 const fetchZhipuaiCodingPlanQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['zhipuai-coding-plan'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3313,7 +3331,7 @@ const NANO_GPT_DAILY_WINDOW_SECONDS = 86400;
 const fetchNanoGptQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['nano-gpt', 'nanogpt', 'nano_gpt'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3550,7 +3568,7 @@ const neuralwattWindowSeconds = (period: string | null | undefined): number | nu
 const fetchNeuralwattQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3809,10 +3827,10 @@ type DeepinfraQuotaDependencies = {
   readAuth?: () => AuthFile | Promise<AuthFile>;
 };
 
-const fetchDeepinfraQuota = async ({ readAuth = readOpenCodeCredentials }: DeepinfraQuotaDependencies = {}): Promise<ProviderResult> => {
+export const fetchDeepinfraQuota = async ({ readAuth = readOpenCodeCredentials }: DeepinfraQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepinfra', 'deep-infra', 'deep_infra'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3910,7 +3928,7 @@ const DEEPSEEK_QUOTA_URL = 'https://api.deepseek.com/user/balance';
 const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepseek'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
