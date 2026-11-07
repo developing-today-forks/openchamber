@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createOverrideStore, resolveOpenCodeDataDir } from './route-overrides-store.js';
 
+const isWindows = process.platform === 'win32';
+
 const override = (overrides) => ({
   id: 'interpreter:1:0:avoid',
   action: 'avoid',
@@ -120,5 +122,35 @@ describe('override store', () => {
 
   it('places the data under XDG_DATA_HOME', () => {
     expect(resolveOpenCodeDataDir({ XDG_DATA_HOME: '/x/data' })).toBe(path.join('/x/data', 'opencode'));
+  });
+
+  it('enforces growth bound on feedback log by rotating when over cap', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+    const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+    
+    // Add many feedback entries to exceed the cap
+    for (let i = 0; i < 1000; i++) {
+      store.recordFeedback({ key: 'test', option: `option-${i}`, accepted: true });
+    }
+    
+    const feedback = store.readFeedback();
+    // Should have bounded the feedback to the cap
+    expect(feedback.length).toBeLessThan(1000);
+    // Newest entries should be preserved
+    expect(feedback[feedback.length - 1].option).toBe('option-999');
+  });
+
+  it.skipIf(isWindows)('refuses a FIFO route-feedback.jsonl file without blocking', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+    const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+    const file = store.feedbackFile;
+    
+    // Create FIFO
+    const { execFileSync } = require('node:child_process');
+    execFileSync('mkfifo', [file]);
+    
+    // Should not block and should return empty array
+    const feedback = store.readFeedback();
+    expect(feedback).toEqual([]);
   });
 });

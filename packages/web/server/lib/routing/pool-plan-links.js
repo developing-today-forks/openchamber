@@ -32,23 +32,34 @@ const linksFileSchema = z.object({ version: z.literal(1), links: z.record(nonBla
 
 const linkRequestSchema = z.object({ target: nonBlank, planID: z.string().nullish() });
 
+const MAX_POOL_PLAN_LINKS_BYTES = 1024 * 1024; // 1 MiB: generous cap for pool-plan-links.json
+
 const validate = (value) => linksFileSchema.safeParse(value).data ?? null;
 
 /** The target→plan map. A missing file reads as empty; a malformed one throws, never silently drops links. */
 export const readPoolPlanLinks = (dataDir) => {
   const file = linksPath(dataDir);
-  if (!fs.existsSync(file)) return emptyPoolPlanLinks();
-  let parsed;
+  const result = readBoundedFileSync(file, MAX_POOL_PLAN_LINKS_BYTES);
+  if (!result.ok) {
+    if (result.reason === 'missing') return emptyPoolPlanLinks();
+    if (result.reason === 'not-regular') {
+      throw httpError(409, `${file} is not a regular file.`, 'POOL_LINKS_MALFORMED');
+    }
+    if (result.reason === 'too-large') {
+      throw httpError(409, `${file} exceeds the ${MAX_POOL_PLAN_LINKS_BYTES}-byte limit.`, 'POOL_LINKS_MALFORMED');
+    }
+    throw httpError(409, `${file} could not be read.`, 'POOL_LINKS_MALFORMED');
+  }
   try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-  } catch {
+    const parsed = JSON.parse(result.buffer.toString('utf8'));
+    const valid = validate(parsed);
+    if (!valid) {
+      throw httpError(409, `${file} does not match the pool-plan-links format.`, 'POOL_LINKS_MALFORMED');
+    }
+    return valid;
+  } catch (error) {
     throw httpError(409, `${file} is not valid JSON. Fix or move it before linking pool targets to plans.`, 'POOL_LINKS_MALFORMED');
   }
-  const valid = validate(parsed);
-  if (!valid) {
-    throw httpError(409, `${file} does not match the pool-plan-links format.`, 'POOL_LINKS_MALFORMED');
-  }
-  return valid;
 };
 
 export const writePoolPlanLinks = (value, dataDir) => {

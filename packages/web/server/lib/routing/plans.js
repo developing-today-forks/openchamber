@@ -21,6 +21,7 @@ const PERIODS = ['monthly', 'yearly', 'once'];
 const NOTE_KINDS = ['experience', 'expectation', 'plan-change', 'correction', 'other'];
 const NOTE_SOURCES = ['user', 'model', 'ui'];
 const MAX_PLAN_NOTES_BYTES = 8 * 1024 * 1024;
+const MAX_PLANS_JSON_BYTES = 1024 * 1024; // 1 MiB: generous cap for plans.json with models and pools
 
 const text = z.string();
 const finite = z.number().finite();
@@ -104,18 +105,27 @@ const planStoreFiles = (dataDir = resolveOpenCodeDataDir()) => ({
 
 export const readPlanStore = (dataDir) => {
   const { store } = planStoreFiles(dataDir);
-  if (!fs.existsSync(store)) return emptyPlanStore();
-  let parsed;
+  const result = readBoundedFileSync(store, MAX_PLANS_JSON_BYTES);
+  if (!result.ok) {
+    if (result.reason === 'missing') return emptyPlanStore();
+    if (result.reason === 'not-regular') {
+      throw httpError(409, `${store} is not a regular file.`, 'PLAN_STORE_MALFORMED');
+    }
+    if (result.reason === 'too-large') {
+      throw httpError(409, `${store} exceeds the ${MAX_PLANS_JSON_BYTES}-byte limit.`, 'PLAN_STORE_MALFORMED');
+    }
+    throw httpError(409, `${store} could not be read.`, 'PLAN_STORE_MALFORMED');
+  }
   try {
-    parsed = JSON.parse(fs.readFileSync(store, 'utf8'));
-  } catch {
+    const parsed = JSON.parse(result.buffer.toString('utf8'));
+    const validated = storeSchema.safeParse(parsed);
+    if (!validated.success) {
+      throw httpError(409, `${store} does not match the plan store format: ${validated.error.issues[0]?.message ?? 'invalid'}`, 'PLAN_STORE_MALFORMED');
+    }
+    return validated.data;
+  } catch (error) {
     throw httpError(409, `${store} is not valid JSON. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
   }
-  const result = storeSchema.safeParse(parsed);
-  if (!result.success) {
-    throw httpError(409, `${store} does not match the plan store format: ${result.error.issues[0]?.message ?? 'invalid'}`, 'PLAN_STORE_MALFORMED');
-  }
-  return result.data;
 };
 
 export const writePlanStore = (value, dataDir) => {

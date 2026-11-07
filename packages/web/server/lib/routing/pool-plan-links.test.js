@@ -86,4 +86,14 @@ describe('PUT /api/model-routes/plan-links', () => {
     const response = await request(appFor(dir())).get('/api/model-routes/plan-links');
     expect(response.status).toBe(404);
   });
+
+  it('refuses an oversized pool-plan-links.json file with a coded 409', () => {
+    const data = dir();
+    const bigLinks = { version: 1, links: { target: 'plan-id' } };
+    fs.writeFileSync(path.join(data, 'pool-plan-links.json'), JSON.stringify(bigLinks).repeat(1000));
+
+    expect(() => readPoolPlanLinks(data)).toThrow(
+      expect.objectContaining({ status: 409, code: 'POOL_LINKS_MALFORMED' }),
+    );
+  });
 });

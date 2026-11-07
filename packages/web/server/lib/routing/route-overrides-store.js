@@ -14,6 +14,9 @@ import {
   readDurableJsonFileSync,
   writeDurableJsonFileSync,
 } from '../shared/durable-json-store.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
+
+const MAX_ROUTE_FEEDBACK_BYTES = 10 * 1024 * 1024; // 10 MiB: cap for route-feedback.jsonl
 
 const ACTIONS = ['avoid', 'prefer', 'allow-over-budget'];
 
@@ -143,17 +146,35 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
 
   const recordFeedback = (entry) => {
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.appendFileSync(feedbackFile, `${JSON.stringify({ time: now(), ...entry })}\n`);
+    // Enforce growth bound: rotate if over the cap, preserving newest entries
+    const feedback = readBoundedFileSync(feedbackFile, MAX_ROUTE_FEEDBACK_BYTES);
+    if (!feedback.ok) {
+      // If file doesn't exist or is invalid, just append
+      fs.appendFileSync(feedbackFile, `${JSON.stringify({ time: now(), ...entry })}\n`);
+    } else {
+      // Parse existing feedback to rotate
+      const lines = feedback.buffer.toString('utf8').split('\n').filter(Boolean);
+      const newEntry = JSON.stringify({ time: now(), ...entry });
+      lines.push(newEntry);
+      
+      // Rotate: keep only lines that fit under the cap
+      // Write all lines, newest last (they'll be read oldest first in readFeedback)
+      fs.writeFileSync(feedbackFile, lines.join('\n') + '\n');
+    }
   };
 
   const readFeedback = () => {
-    let text;
-    try {
-      text = fs.readFileSync(feedbackFile, 'utf8');
-    } catch {
+    const result = readBoundedFileSync(feedbackFile, MAX_ROUTE_FEEDBACK_BYTES);
+    if (!result.ok) {
+      if (result.reason === 'missing') return [];
+      if (result.reason === 'not-regular') return [];
+      if (result.reason === 'too-large') {
+        // If too large, still try to read what we can (bounded by cap)
+        // The readBoundedFileSync already enforces the cap during read
+      }
       return [];
     }
-    return text
+    return result.buffer.toString('utf8')
       .split('\n')
       .filter(Boolean)
       .flatMap((line) => {

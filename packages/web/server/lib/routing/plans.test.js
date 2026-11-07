@@ -107,4 +107,29 @@ describe('plan store', () => {
   it('refuses a blank note', () => {
     expect(() => addNote({ text: '   ' }, NOW, dir())).toThrow('some text');
   });
+
+  it('refuses an oversized plans.json file with a coded 409', () => {
+    const root = dir();
+    const bigPlan = {
+      version: 1,
+      plans: [{ id: 'big-plan', providerID: 'test', label: 'Big Plan', coverage: 'subscription', quotas: [], createdAt: NOW, updatedAt: NOW }],
+      models: {},
+      pools: {},
+    };
+    fs.writeFileSync(path.join(root, 'plans.json'), JSON.stringify(bigPlan).repeat(1000));
+
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED' }),
+    );
+  });
+
+  it.skipIf(isWindows)('refuses a FIFO plans.json file without blocking', () => {
+    const root = dir();
+    const file = path.join(root, 'plans.json');
+    execFileSync('mkfifo', [file]);
+
+    expect(() => readPlanStore(root)).toThrow(
+      expect.objectContaining({ status: 409, code: 'PLAN_STORE_MALFORMED' }),
+    );
+  });
 });
