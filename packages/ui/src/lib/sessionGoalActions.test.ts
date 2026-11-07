@@ -1,8 +1,54 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import type { Metadata } from '@/lib/opencode/model';
 import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
 
-const { nextGoalRecord } = await import('./sessionGoalActions');
+// In-memory stand-ins for the three boundaries setSessionGoal crosses: the
+// session metadata store, the opencode client reading it back, and the
+// objective-file HTTP endpoint (keyed by session id, one file per session).
+const goalFiles = new Map<string, string>();
+let storedMetadata: Record<string, unknown> = {};
+let interveneBeforePatch: (() => void) | null = null;
+
+mock.module('@/sync/session-actions', () => ({
+  abortCurrentOperation: async () => undefined,
+  getSessionLastAssistantModel: async () => null,
+  patchSessionMetadata: async (
+    _sessionId: string,
+    _directory: string | undefined,
+    updater: (metadata: Record<string, unknown>) => Record<string, unknown>,
+  ) => {
+    interveneBeforePatch?.();
+    interveneBeforePatch = null;
+    storedMetadata = updater(storedMetadata);
+  },
+}));
+
+mock.module('@/lib/opencode/client', () => ({
+  opencodeClient: {
+    getSession: async () => ({ metadata: storedMetadata }),
+  },
+}));
+
+mock.module('@/lib/runtime-fetch', () => ({
+  runtimeFetch: async (url: string, init?: { method?: string; body?: string }) => {
+    const sessionId = decodeURIComponent(url.split('/').pop() ?? '');
+    const method = init?.method ?? 'GET';
+    if (method === 'PUT') {
+      const { content } = JSON.parse(init?.body ?? '{}') as { content: string };
+      goalFiles.set(sessionId, content);
+      return { ok: true, json: async () => ({ length: content.length }) };
+    }
+    if (method === 'DELETE') {
+      goalFiles.delete(sessionId);
+      return { ok: true, json: async () => ({}) };
+    }
+    const content = goalFiles.get(sessionId);
+    if (content === undefined) return { ok: false, json: async () => ({}) };
+    return { ok: true, json: async () => ({ content }) };
+  },
+}));
+
+const { nextGoalRecord, setSessionGoal, goalObjectiveRevision } = await import('./sessionGoalActions');
 
 const existing: SessionGoalPayload = {
   id: 'goal-1',
@@ -110,5 +156,62 @@ describe('goal record for a save', () => {
       changed: false,
       record: { id: 'goal-2', ignoreObjectiveLimit: false, tokensUsed: 0, turnsUsed: 0, statusReason: '' },
     });
+  });
+});
+
+describe('setSessionGoal objective file ordering', () => {
+  const sessionId = 'session-1';
+  const storedGoal = {
+    id: 'goal-1',
+    status: 'active',
+    objective: '',
+    objectiveFile: true,
+    objectiveRevision: goalObjectiveRevision('Old objective'),
+    ignoreObjectiveLimit: false,
+    tokenBudget: null,
+    tokensUsed: 900,
+    turnsUsed: 4,
+    statusReason: '',
+    lastAccountedMessageID: 'msg-9',
+    createdAt: 1,
+    updatedAt: 50,
+  };
+  const existingPayload: SessionGoalPayload = {
+    ...existing,
+    objective: '',
+    objectiveRevision: goalObjectiveRevision('Old objective'),
+  };
+  const seed = () => {
+    storedMetadata = { openchamber: { goal: { ...storedGoal } } };
+    goalFiles.set(sessionId, 'Old objective');
+  };
+
+  // #1372: an intervening save lands between this save's pre-check and its
+  // metadata write. The metadata write aborts as `changed` — and the
+  // intervening save's objective file must survive byte-identical (the old
+  // order wrote this save's file first and clobbered it).
+  test('an intervening save keeps its objective file when this save aborts as changed', async () => {
+    seed();
+    interveneBeforePatch = () => {
+      storedMetadata = {
+        openchamber: {
+          goal: { ...storedGoal, objectiveRevision: goalObjectiveRevision('Intervening objective'), updatedAt: 99 },
+        },
+      };
+      goalFiles.set(sessionId, 'Intervening objective');
+    };
+    const result = await setSessionGoal(sessionId, undefined, { objective: 'My new objective', tokenBudget: null }, existingPayload);
+    expect(result.outcome).toBe('changed');
+    expect(goalFiles.get(sessionId)).toBe('Intervening objective');
+  });
+
+  test('a clean save writes its objective file and stamps its revision', async () => {
+    seed();
+    const result = await setSessionGoal(sessionId, undefined, { objective: 'My new objective', tokenBudget: null }, existingPayload);
+    expect(result.outcome).toBe('saved');
+    expect(goalFiles.get(sessionId)).toBe('My new objective');
+    const goal = (storedMetadata.openchamber as { goal: Metadata }).goal;
+    expect(goal.objectiveFile).toBe(true);
+    expect(goal.objectiveRevision).toBe(goalObjectiveRevision('My new objective'));
   });
 });

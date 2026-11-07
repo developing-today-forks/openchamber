@@ -226,10 +226,11 @@ export const nextGoalRecord = (input: {
  * An edit is saved only over the goal it started from: a rewrite can take
  * minutes, and in that time the check may complete the goal, the user may
  * pause it, or another window may replace it. Then nothing is written and the
- * result says so. The stored goal is read before the objective file is
- * written and again inside the metadata write; between those two a change
- * made elsewhere can still lose its objective file to this one, a window of
- * one request.
+ * result says so. The objective file is written only after the guarded
+ * metadata write succeeds, so a save that aborts as `changed` leaves the
+ * previously stored objective file byte-identical (#1372). Between the
+ * record write and the file write, a reader of the file briefly still sees
+ * the previous objective under the new record's revision.
  */
 export async function setSessionGoal(
   sessionId: string,
@@ -255,25 +256,22 @@ export async function setSessionGoal(
     return { outcome: 'changed' };
   }
   signal?.throwIfAborted();
-  const fileWrite = await writeGoalObjectiveFile(sessionId, objective);
-  if (fileWrite.saved && fileWrite.truncated) {
-    const dictionary = useI18nStore.getState().dictionary;
-    toast.error(formatMessage(dictionary, 'chat.goal.toast.serverTruncated'));
-  }
-  const objectiveFile = fileWrite.saved;
-  // Inline (the objective file failed) the text rides every session event,
-  // so it stays within the limit even when the goal ignores it.
-  const inline = objectiveFile ? '' : objective.slice(0, useUIStore.getState().sessionGoalObjectiveCharLimit);
   const now = Date.now();
   const newId = createGoalId();
+  const objectiveRevision = goalObjectiveRevision(objective);
   let changed = false;
+  let savedGoalId = '';
+  // The guarded metadata write goes first, the record already claiming the
+  // objective file: a save that aborts here as `changed` must not have
+  // touched the file (#1372), so the file is written only once this write
+  // has succeeded.
   await writeGoal(sessionId, directory, (currentGoal) => {
     const next = nextGoalRecord({
       currentGoal,
       existing,
-      objective: inline,
-      objectiveFile,
-      objectiveRevision: goalObjectiveRevision(objective),
+      objective: '',
+      objectiveFile: true,
+      objectiveRevision,
       ignoreLimit,
       tokenBudget,
       kickoff: input.kickoff !== false,
@@ -284,9 +282,31 @@ export async function setSessionGoal(
       changed = true;
       return currentGoal;
     }
+    savedGoalId = typeof next.record.id === 'string' ? next.record.id : '';
     return next.record;
   });
-  return changed ? { outcome: 'changed' } : { outcome: 'saved', rewrittenSpec };
+  if (changed) {
+    return { outcome: 'changed' };
+  }
+  const fileWrite = await writeGoalObjectiveFile(sessionId, objective);
+  if (fileWrite.saved && fileWrite.truncated) {
+    const dictionary = useI18nStore.getState().dictionary;
+    toast.error(formatMessage(dictionary, 'chat.goal.toast.serverTruncated'));
+  }
+  if (!fileWrite.saved) {
+    // Inline (the objective file failed) the text rides the record instead:
+    // restate it on the record this save just wrote — and only that record,
+    // a later save may already have replaced it — within the limit even
+    // when the goal ignores it.
+    const inline = objective.slice(0, useUIStore.getState().sessionGoalObjectiveCharLimit);
+    await writeGoal(sessionId, directory, (currentGoal) => {
+      if (!currentGoal || currentGoal.id !== savedGoalId || currentGoal.objectiveRevision !== objectiveRevision) {
+        return currentGoal;
+      }
+      return { ...currentGoal, objective: inline, objectiveFile: false };
+    });
+  }
+  return { outcome: 'saved', rewrittenSpec };
 }
 
 export async function setSessionGoalStatus(
