@@ -2337,6 +2337,8 @@ export type LinearMappingResult = {
   connected: boolean;
   defaultProjectPath?: string | null;
   teams?: LinearTeamMapping[];
+  /** True when the workspace holds more teams than the pages fetched. */
+  teamsMore?: boolean;
 };
 
 export type LinearMappingWrite = {
