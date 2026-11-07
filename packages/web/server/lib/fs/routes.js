@@ -1569,9 +1569,15 @@ export const registerFsRoutes = (app, dependencies) => {
       const contentByteLength = Buffer.byteLength(content, 'utf8');
       let existing = null;
       if (contentByteLength <= MAX_READ_BYTES && typeof fsPromises.open === 'function') {
+        const constants = fsPromises.constants ?? {};
+        const openFlags = platform === 'win32'
+          || constants.O_NONBLOCK === undefined
+          || constants.O_RDONLY === undefined
+          ? 'r'
+          : constants.O_RDONLY | constants.O_NONBLOCK;
         let handle;
         try {
-          handle = await fsPromises.open(writePath, 'r');
+          handle = await fsPromises.open(writePath, openFlags);
         } catch (error) {
           if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error;
         }

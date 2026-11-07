@@ -558,6 +558,53 @@ describe('fs write', () => {
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
   });
 
+  it.skipIf(process.platform === 'win32')('replaces a FIFO target without waiting for a writer', async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), 'openchamber-fs-write-fifo-'));
+    const fifoPath = path.join(workspace, 'fifo.txt');
+    let writePromise;
+    try {
+      execFileSync('mkfifo', [fifoPath]);
+      const { app, getRoute } = createRouteRegistry();
+      registerFsRoutes(app, {
+        os: { homedir: () => workspace },
+        path,
+        fsPromises: nativeFs,
+        spawn: vi.fn(),
+        crypto: { randomUUID: () => 'job-0' },
+        normalizeDirectoryPath: (targetPath) => targetPath,
+        resolveProjectDirectory: async () => ({ directory: workspace }),
+        buildAugmentedPath: () => '/usr/bin',
+        resolveGitBinaryForSpawn: () => 'git',
+        openchamberUserConfigRoot: path.join(workspace, '.config'),
+      });
+      writePromise = callWrite(getRoute('POST', '/api/fs/write'), { path: fifoPath, content: 'new' });
+      let timeoutID;
+      const outcome = await Promise.race([
+        writePromise.then((response) => ({ type: 'response', response })),
+        new Promise((resolve) => {
+          timeoutID = setTimeout(() => resolve({ type: 'timeout' }), 1000);
+        }),
+      ]);
+      clearTimeout(timeoutID);
+      if (outcome.type === 'timeout') {
+        const writer = await nativeFs.open(
+          fifoPath,
+          nativeFs.constants.O_WRONLY | nativeFs.constants.O_NONBLOCK,
+        );
+        await writer.close();
+        await writePromise;
+        throw new Error('saving to a FIFO waited for a writer');
+      }
+
+      expect(outcome.response.statusCode).toBe(200);
+      expect(outcome.response.body).toEqual({ success: true, path: fifoPath });
+      expect((await nativeFs.stat(fifoPath)).isFile()).toBe(true);
+      expect(await nativeFs.readFile(fifoPath, 'utf8')).toBe('new');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('writes a file when content changed', async () => {
     const fsPromises = {
       open: openText('old'),
