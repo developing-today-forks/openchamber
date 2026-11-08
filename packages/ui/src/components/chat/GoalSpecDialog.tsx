@@ -53,9 +53,78 @@ const SEND_LABEL_KEYS = {
 /** Cheap chars/4 heuristic - an estimate only, labelled as such in the UI; no tokenizer runs per keystroke. */
 export const estimateGoalSpecTokens = (spec: string): number => Math.ceil(spec.length / 4);
 
+export type GoalSpecDiffLine = { kind: 'same' | 'add' | 'remove'; text: string };
+
+/**
+ * Line diff between the spec a rewrite replaced and the spec it produced, so the
+ * dialog can show what changed before it is accepted. Specs are a few thousand
+ * characters at most, so the plain LCS table stays small.
+ */
+export const diffGoalSpecLines = (previous: string, next: string): GoalSpecDiffLine[] => {
+  const before = previous === '' ? [] : previous.split('\n');
+  const after = next === '' ? [] : next.split('\n');
+  const lcs: number[][] = Array.from({ length: before.length + 1 }, () => new Array<number>(after.length + 1).fill(0));
+  for (let i = before.length - 1; i >= 0; i -= 1) {
+    for (let j = after.length - 1; j >= 0; j -= 1) {
+      lcs[i][j] = before[i] === after[j]
+        ? lcs[i + 1][j + 1] + 1
+        : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    }
+  }
+  const lines: GoalSpecDiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < before.length && j < after.length) {
+    if (before[i] === after[j]) {
+      lines.push({ kind: 'same', text: before[i] });
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      lines.push({ kind: 'remove', text: before[i] });
+      i += 1;
+    } else {
+      lines.push({ kind: 'add', text: after[j] });
+      j += 1;
+    }
+  }
+  while (i < before.length) { lines.push({ kind: 'remove', text: before[i] }); i += 1; }
+  while (j < after.length) { lines.push({ kind: 'add', text: after[j] }); j += 1; }
+  return lines;
+};
+
 const otherSendMode = (mode: SessionGoalWriterSendMode): SessionGoalWriterSendMode => (
   mode === 'with-message' ? 'goal-as-message' : 'with-message'
 );
+
+/** The rewrite's old-versus-new spec, so the change is readable before it is accepted. */
+function GoalSpecDiff({ previous, next }: { previous: string; next: string }) {
+  const { t } = useI18n();
+  const lines = diffGoalSpecLines(previous, next);
+  return (
+    <div className="flex min-h-0 flex-col gap-1">
+      <span className="typography-micro text-muted-foreground/70">{t('chat.goal.writer.diff.title')}</span>
+      <div
+        className="max-h-40 overflow-auto rounded-lg border border-border bg-[var(--surface-2)] p-2 font-mono typography-micro"
+        role="group"
+        aria-label={t('chat.goal.writer.diff.title')}
+      >
+        {lines.map((line, index) => (
+          <div key={index} className={line.kind === 'add'
+            ? 'whitespace-pre-wrap break-words text-status-success'
+            : line.kind === 'remove'
+              ? 'whitespace-pre-wrap break-words text-status-warning'
+              : 'whitespace-pre-wrap break-words text-muted-foreground/70'}
+          >
+            <span aria-hidden="true">{line.kind === 'add' ? '+ ' : line.kind === 'remove' ? '- ' : '  '}</span>
+            {line.kind === 'same'
+              ? line.text
+              : <><span className="sr-only">{t(line.kind === 'add' ? 'chat.goal.writer.diff.added' : 'chat.goal.writer.diff.removed')}: </span>{line.text}</>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /**
  * The goal writer's step between pressing send and the message going out:
@@ -85,10 +154,14 @@ function GoalSpecDialogBody({
   const { t } = useI18n();
   const [state, setState] = React.useState<WriterState>({ status: 'writing' });
   const [spec, setSpec] = React.useState('');
+  const [previousSpec, setPreviousSpec] = React.useState<string | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [writer, setWriter] = React.useState<GoalWriterChoice | null>(null);
   const [ignoreLimit, setIgnoreLimit] = React.useState(false);
   const charLimit = useUIStore((state) => state.sessionGoalObjectiveCharLimit);
+  // The spec as it stood when the latest run started; a rewrite diffs against it.
+  const specRef = React.useRef(spec);
+  specRef.current = spec;
   const onSubmitRef = React.useRef(onSubmit);
   onSubmitRef.current = onSubmit;
   // A writing run reads the picks made when it starts; changing them asks for
@@ -105,6 +178,7 @@ function GoalSpecDialogBody({
     const controller = new AbortController();
     setState({ status: 'writing' });
     const run = async () => {
+      const priorSpec = specRef.current;
       const { writer: picked } = writeOptionsRef.current;
       const pickedKey = picked ? `${picked.providerID}/${picked.modelID}:${picked.variant ?? ''}` : null;
       if (picked && pickedKey !== recordedWriterRef.current) {
@@ -131,6 +205,9 @@ function GoalSpecDialogBody({
         onSubmitRef.current({ kind: 'spec', spec: result.spec, sendMode: request.defaultSendMode, ignoreLimit: writeOptionsRef.current.ignoreLimit });
         return;
       }
+      // A rewrite shows what changed; the first write (nothing prior) and an
+      // unchanged rewrite show no diff at all.
+      setPreviousSpec(priorSpec.trim() && priorSpec.trim() !== result.spec.trim() ? priorSpec : null);
       setSpec(result.spec);
       setState({ status: 'ready', model: `${result.providerID}/${result.modelID}${result.variant ? ` · ${result.variant}` : ''}` });
     };
@@ -210,6 +287,7 @@ function GoalSpecDialogBody({
               </span>
             </span>
           </div>
+          {previousSpec !== null ? <GoalSpecDiff previous={previousSpec} next={spec} /> : null}
           <Textarea
             value={spec}
             onChange={(event) => setSpec(event.target.value)}

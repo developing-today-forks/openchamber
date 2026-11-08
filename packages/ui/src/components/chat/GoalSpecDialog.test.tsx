@@ -18,7 +18,7 @@ Object.defineProperty(globalThis, 'window', { value: importWindow, configurable:
 Object.defineProperty(globalThis, 'document', { value: importWindow.document, configurable: true, writable: true });
 Object.defineProperty(globalThis, 'localStorage', { value: importWindow.localStorage, configurable: true, writable: true });
 const { createRoot } = await import('react-dom/client');
-const { GoalSpecDialog } = await import('./GoalSpecDialog');
+const { GoalSpecDialog, diffGoalSpecLines } = await import('./GoalSpecDialog');
 for (const [name, descriptor] of previousImportGlobals) {
   if (descriptor) Object.defineProperty(globalThis, name, descriptor);
   else Reflect.deleteProperty(globalThis, name);
@@ -104,6 +104,45 @@ describe('GoalSpecDialog', () => {
     // '## Objective\nDark mode' is 22 chars; the estimate is ceil(22/4) = 6.
     expect(document.body.textContent).toContain('22/');
     expect(document.body.textContent).toContain('~6 tokens (est.)');
+  });
+
+  test('a rewrite shows a diff of the previous spec, and an unchanged rewrite shows none', async () => {
+    let run = 0;
+    await render({
+      ...base,
+      trigger: 'armed',
+      review: true,
+      defaultSendMode: 'with-message',
+      write: async () => {
+        run += 1;
+        return run === 1 ? written : { ...written, spec: '## Objective\nLight mode' };
+      },
+    });
+    // The first write has nothing to diff against.
+    expect(document.body.textContent).not.toContain('Changes in this rewrite');
+
+    await click('Write again');
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('Changes in this rewrite');
+    expect(text).toContain('Dark mode');
+    expect(text).toContain('Light mode');
+  });
+
+  test('an unchanged rewrite shows no diff', async () => {
+    await render({ ...base, trigger: 'armed', review: true, defaultSendMode: 'with-message', write: async () => written });
+
+    await click('Write again');
+    expect(document.body.textContent).not.toContain('Changes in this rewrite');
+  });
+
+  test('diffGoalSpecLines marks removed and added lines', () => {
+    expect(diffGoalSpecLines('a\nb', 'a\nc')).toEqual([
+      { kind: 'same', text: 'a' },
+      { kind: 'remove', text: 'b' },
+      { kind: 'add', text: 'c' },
+    ]);
+    expect(diffGoalSpecLines('', 'a')).toEqual([{ kind: 'add', text: 'a' }]);
+    expect(diffGoalSpecLines('a', 'a')).toEqual([{ kind: 'same', text: 'a' }]);
   });
 
   test('without review the spec goes out as soon as it is written, in the default mode', async () => {
