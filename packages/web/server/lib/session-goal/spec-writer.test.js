@@ -45,6 +45,19 @@ describe('normalizeGoalSpec', () => {
     expect(normalizeGoalSpec(oneLine)).toBe('y'.repeat(5000));
   });
 
+  it('never clips between the halves of a surrogate pair', () => {
+    // 499 BMP chars + an astral emoji at the 500 cut: the plain slice would
+    // end on the emoji's high surrogate and encode as U+FFFD downstream.
+    const text = 'a'.repeat(499) + String.fromCodePoint(0x1f600) + 'b'.repeat(2000);
+    const clamped = normalizeGoalSpec(text, 500);
+    expect(clamped).toBe('a'.repeat(499));
+    expect(clamped.length).toBeLessThanOrEqual(500);
+
+    // A pair that fits whole inside the limit survives intact.
+    const fits = 'a'.repeat(498) + String.fromCodePoint(0x1f600) + 'b'.repeat(2000);
+    expect(normalizeGoalSpec(fits, 500)).toBe('a'.repeat(498) + String.fromCodePoint(0x1f600));
+  });
+
   it('returns an empty string when nothing usable came back', () => {
     expect(normalizeGoalSpec('')).toBe('');
     expect(normalizeGoalSpec('<think>only thoughts</think>')).toBe('');

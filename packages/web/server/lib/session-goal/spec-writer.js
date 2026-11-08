@@ -83,7 +83,11 @@ export const normalizeGoalSpec = (text, charLimit = goalObjectiveLimits(null).ob
   // it when the line break is not so early that most of the spec is lost.
   const lastNewline = clipped.lastIndexOf('\n');
   const cut = lastNewline >= charLimit * 0.8 ? clipped.slice(0, lastNewline) : clipped;
-  return cut.trim();
+  // A plain slice can land between the halves of a surrogate pair, leaving a
+  // lone high surrogate at the tail that encodes as U+FFFD downstream; move
+  // the cut back to the pair boundary instead.
+  const last = cut.charCodeAt(cut.length - 1);
+  return (last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut).trim();
 };
 
 /**
