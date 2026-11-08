@@ -351,7 +351,7 @@ passkeys.
 | skills disk cache (`skills-catalog/disk-cache.js` `readDiskCache`) | sync | none — covered-by-open-issue #1627 | cache semantics: missing / unreadable / malformed → null (a cache miss) | covered-by-open-issue (#1627, bound); disposition excepted-with-reason (cache) |
 | space records (`spaces/records/<id>.json` — `spaces/space-records.js` `read`) | sync | none — covered-by-open-issue #1628 | three-state by status: `missing` / `ok` / `unreadable`; an update refuses to write over an unreadable record; unreadable grants/setup fragments are dropped with a warning | covered-by-open-issue (#1628, bound) |
 | tracked items (`tracked-items.json` — `tracked-items/persistence.js` `load`) | async | none — covered-by-open-issue #1662 | cache restore: missing → [], wrong version/shape → [], a parse error throws; the file is a rebuildable cache, never the only copy | covered-by-open-issue (#1662, bound) |
-| quota auth files (`quota/utils/auth.js` `readJsonFile` :19 and the `resolveConfigApiKey` `{file:}` read :73) | sync | none — covered-by-open-issue #1645 | read-as-empty: any failure → null (read-only lookup of credential files the server never writes) | covered-by-open-issue (#1645, bound) |
+| quota auth files (`quota/utils/auth.js` `readJsonFile` and the `resolveConfigApiKey` `{file:}` read) | sync | bound-complete (#1645): handle-judged `readBoundedFileSync`, 1 MiB cap for the JSON credential/accounts files and 64 KiB for a `{file:}` apiKey target, caps enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly | read-as-empty: any failure → null (read-only lookup of credential files the server never writes); over-cap / non-regular take the same null answer | conforming-on-both-halves |
 | OpenCode service env (`service.json` — `environment/opencode-service-env.js` `readOpenCodeServiceEnv`) | sync | none — covered-by-open-issue #1636 | read-as-empty: any failure → {} (the OpenCode CLI's file, read-only) | covered-by-open-issue (#1636, bound) |
 | environment store (`environment.json` — `environment/store.js`) | sync | conforming: `readBoundedFileSync`, 64 MiB cap derived from the write-side clamps at the read site (#1609, closed) | private three-state in place: a file that cannot be read or parsed is an error, never an empty store | conforming-on-both-halves |
 | git identity store (`git/identity-storage.js` internal `readFile`) | sync | conforming: handle-judged, `MAX_STORE_BYTES` 4 MiB enforced in flight at cap+1 (#1635, closed) | malformed → coded invalid-store throw, in place; missing → empty state / legacy migration | conforming-on-both-halves |
@@ -404,6 +404,7 @@ are named so the inventory's edge is explicit, not silent.
 | bridge settings runtime (three shared files) | covered-by-open-issue #1641 |
 | quota local-file readers (credential / auth / config) | covered-by-open-issue #1643 |
 | `opencode.ts` `readOpenChamberSettings` (shared `settings.json`) | bound-complete (#1644, closed) |
+| `openchamberSessionState.ts` (shared archive and legacy metadata files) | handle-judged regular-file reads capped at 32 MiB while reading; over-cap and non-regular files remain unknown and block writes (#1780) |
 
 Phase 3 of design #1655 (migration shape, the append-only-log answer,
 the VS Code mirror question, and a ratchet) is not decided by this

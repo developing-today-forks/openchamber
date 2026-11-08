@@ -50,6 +50,9 @@ const SEND_LABEL_KEYS = {
   'goal-as-message': 'chat.goal.writer.action.sendGoalAsMessage',
 } as const satisfies Record<SessionGoalWriterSendMode, string>;
 
+/** Cheap chars/4 heuristic - an estimate only, labelled as such in the UI; no tokenizer runs per keystroke. */
+export const estimateGoalSpecTokens = (spec: string): number => Math.ceil(spec.length / 4);
+
 const otherSendMode = (mode: SessionGoalWriterSendMode): SessionGoalWriterSendMode => (
   mode === 'with-message' ? 'goal-as-message' : 'with-message'
 );
@@ -195,11 +198,16 @@ function GoalSpecDialogBody({
             <span className="min-w-0 truncate typography-meta text-muted-foreground" title={state.model}>
               {t('chat.goal.writer.dialog.writtenBy', { model: state.model })}
             </span>
-            <span
-              className={!ignoreLimit && spec.length > charLimit ? 'flex-shrink-0 typography-micro tabular-nums text-status-warning' : 'flex-shrink-0 typography-micro tabular-nums text-muted-foreground/70'}
-              aria-label={t('chat.goal.counter.aria')}
-            >
-              {ignoreLimit ? spec.length : `${spec.length}/${charLimit}`}
+            <span className="flex flex-shrink-0 items-baseline gap-2">
+              <span className="typography-micro tabular-nums text-muted-foreground/70">
+                {t('chat.goal.counter.tokens', { count: estimateGoalSpecTokens(spec) })}
+              </span>
+              <span
+                className={!ignoreLimit && spec.length > charLimit ? 'typography-micro tabular-nums text-status-warning' : 'typography-micro tabular-nums text-muted-foreground/70'}
+                aria-label={t('chat.goal.counter.aria')}
+              >
+                {ignoreLimit ? spec.length : `${spec.length}/${charLimit}`}
+              </span>
             </span>
           </div>
           <Textarea
