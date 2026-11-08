@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fsReal from 'node:fs/promises';
 import os from 'node:os';
 import pathReal from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApnsRuntime } from './apns-runtime.js';
 import { openPushContent } from './push-seal.js';
@@ -968,5 +968,68 @@ describe('apns runtime store durability', () => {
     await expect(failing.addOrUpdateApnsToken('session-2', 'tokenB')).rejects.toThrow('rename failed');
     expect(await fsReal.readFile(filePath, 'utf8')).toBe(before);
     expect(await fsReal.readdir(dir)).toEqual(['apns-tokens.json']);
+  });
+});
+
+describe('APNs .p8 key file bounded read (#1777)', () => {
+  const ENV_KEYS = ['OPENCHAMBER_APNS_KEY_ID', 'OPENCHAMBER_APNS_TEAM_ID', 'OPENCHAMBER_APNS_P8', 'OPENCHAMBER_APNS_P8_PATH'];
+  let dir;
+  let savedEnv;
+
+  beforeEach(async () => {
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-apns-p8-'));
+    savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+    process.env.OPENCHAMBER_APNS_KEY_ID = 'KID1234567';
+    process.env.OPENCHAMBER_APNS_TEAM_ID = 'TEAM123456';
+    delete process.env.OPENCHAMBER_APNS_P8;
+  });
+
+  afterEach(async () => {
+    const fs = await import('node:fs/promises');
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const runtimeWithRealFs = async () => {
+    const fsPromises = (await import('node:fs/promises')).default;
+    const path = (await import('node:path')).default;
+    return createApnsRuntime(makeDeps({ fsPromises, path }));
+  };
+
+  it('reads a real small .p8 unchanged', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const keyPath = path.join(dir, 'AuthKey.p8');
+    const pem = '-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg\n-----END PRIVATE KEY-----';
+    await fs.writeFile(keyPath, `${pem}\n`);
+    process.env.OPENCHAMBER_APNS_P8_PATH = keyPath;
+    const config = await (await runtimeWithRealFs()).resolveApnsConfig();
+    expect(config?.p8).toBe(pem);
+  });
+
+  it('refuses an oversized file into the unconfigured path instead of buffering it whole', async () => {
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const keyPath = path.join(dir, 'big.p8');
+    await fs.writeFile(keyPath, 'A'.repeat(1024 * 1024));
+    process.env.OPENCHAMBER_APNS_P8_PATH = keyPath;
+    const config = await (await runtimeWithRealFs()).resolveApnsConfig();
+    expect(config).toBeNull();
+  });
+
+  it('refuses a FIFO promptly instead of hanging the send path', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const path = await import('node:path');
+    const keyPath = path.join(dir, 'fifo.p8');
+    execFileSync('mkfifo', [keyPath]);
+    process.env.OPENCHAMBER_APNS_P8_PATH = keyPath;
+    const config = await (await runtimeWithRealFs()).resolveApnsConfig();
+    expect(config).toBeNull();
   });
 });
