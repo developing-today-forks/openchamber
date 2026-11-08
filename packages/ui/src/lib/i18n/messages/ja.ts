@@ -1281,6 +1281,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.pr.checks.openRun': '開く',
   'gitView.pr.checks.failedAnnotations': '失敗したアノテーション',
   'gitView.pr.checks.failedAnnotationsShown': '失敗したアノテーション（{total} 件中 {shown} 件を表示）',
+  'gitView.pr.checks.annotationsTruncated': '注釈が不完全です — この実行には読み込めた数より多くの注釈があります。',
   'gitView.pr.field.baseBranch': 'ベースブランチ',
   'gitView.pr.field.description': '説明',
   'gitView.pr.field.title': 'タイトル',

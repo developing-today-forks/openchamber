@@ -1175,6 +1175,7 @@ export const dict = {
   'gitView.pr.checks.openRun': 'Aç',
   'gitView.pr.checks.failedAnnotations': 'Başarısız ek açıklamalar',
   'gitView.pr.checks.failedAnnotationsShown': 'Başarısız ek açıklamalar ({total} içinden {shown} gösteriliyor)',
+  'gitView.pr.checks.annotationsTruncated': 'Ek açıklamalar eksik — bu çalıştırmada yüklenebilenden daha fazla ek açıklama var.',
   'gitView.pr.field.baseBranch': 'Base branch',
   'gitView.pr.field.description': 'Açıklama',
   'gitView.pr.field.title': 'Başlık',

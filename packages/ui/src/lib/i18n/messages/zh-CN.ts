@@ -1285,6 +1285,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.pr.checks.openRun': '打开',
   'gitView.pr.checks.failedAnnotations': '失败的注释',
   'gitView.pr.checks.failedAnnotationsShown': '失败的注释（显示 {total} 条中的 {shown} 条）',
+  'gitView.pr.checks.annotationsTruncated': '注释不完整 — 此运行的注释数量超过了可加载的数量。',
   'gitView.pr.field.baseBranch': '基准分支',
   'gitView.pr.field.description': '描述',
   'gitView.pr.field.title': '标题',

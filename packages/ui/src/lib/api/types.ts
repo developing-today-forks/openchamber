@@ -1555,6 +1555,7 @@ export type GitHubCheckRun = {
       completedAt?: string;
     }>;
   };
+  annotationsTruncated?: boolean;
   annotations?: Array<{
     path?: string;
     startLine?: number;

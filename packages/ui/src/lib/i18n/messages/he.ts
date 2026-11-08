@@ -1225,6 +1225,7 @@ export const dict = {
   'gitView.pr.checks.openRun': 'פתח',
   'gitView.pr.checks.failedAnnotations': 'הערות על כשלים',
   'gitView.pr.checks.failedAnnotationsShown': 'הערות על כשלים (מוצגות {shown} מתוך {total})',
+  'gitView.pr.checks.annotationsTruncated': 'ההערות אינן שלמות — לריצה זו יש יותר הערות ממה שניתן היה לטעון.',
   'gitView.pr.field.baseBranch': 'ענף בסיס',
   'gitView.pr.field.description': 'תיאור',
   'gitView.pr.field.title': 'כותרת',
