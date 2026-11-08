@@ -92,7 +92,7 @@ import { seedGlobalSessionStatusFromHost } from '@/sync/host-session-status-seed
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
 import { useMobileSessionTreeStore } from '@/stores/useMobileSessionTreeStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useSessionDisplayStore, type ProjectSortOrder } from '@/stores/useSessionDisplayStore';
+import { useSessionDisplayStore, type ProjectSortOrder, type SessionRowLines } from '@/stores/useSessionDisplayStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useSessionFoldersStore, type SessionFolder } from '@/stores/useSessionFoldersStore';
 import { isSessionPinned } from '@/lib/sessionPins';
@@ -158,6 +158,8 @@ import { buildMultiRunIndex, type MultiRunSummary } from '@/lib/multirun/runs';
 import { MobileRunProviderLogos } from './MobileRunProviderLogos';
 import { MobileDisclosure } from './MobileDisclosure';
 import { MobileSessionGoalGlyph, MobileSessionPendingBadges } from './MobileSessionStateBadges';
+import { MobileSessionRowLines } from './MobileSessionRowLines';
+import { mobileSessionRowHeightClass, mobileSessionRowLinesFor, type MobileSessionRowKind } from './mobileSessionRowLayout';
 import { usePendingRequests } from './usePendingRequests';
 import { mobileSessionTitleClass } from './mobileSessionTitle';
 
@@ -390,6 +392,8 @@ const SessionRow: React.FC<{
   indent: number;
   /** When provided, shown as a small second-line subtitle below the title (e.g. "Project · branch"). */
   contextLabel?: string;
+  /** Per-kind row setting. Search context labels keep their existing height. */
+  rowLines?: SessionRowLines;
   /** When true, a chevron is shown in the left gutter to toggle nested subsessions. */
   hasChildren?: boolean;
   expanded?: boolean;
@@ -423,6 +427,7 @@ const SessionRow: React.FC<{
   active,
   indent,
   contextLabel,
+  rowLines = 'one',
   statusOnRight: flatStatusOnRight = false,
   treeDepth,
   hasChildren = false,
@@ -539,6 +544,7 @@ const SessionRow: React.FC<{
         <MobileSessionRenameForm
           initialTitle={title}
           indent={textIndent}
+          className={rowLines === 'two' ? 'h-[52px]' : undefined}
           aiRename={aiRename}
           onSubmit={onSubmitRename}
           onCancel={onCancelRename}
@@ -549,11 +555,11 @@ const SessionRow: React.FC<{
         // Single-line rows: fixed h-9 (36px) to match MobileSessionRenameForm
         // exactly — min-h-* utilities lose the specificity fight against
         // mobile.css's global 36px button floor anyway, so make the real
-        // height explicit. Two-line rows (search results with a context
-        // subtitle) keep flexible height.
+        // height explicit. Search context rows keep their 40px minimum;
+        // configured two-line rows reserve 52px.
         className={cn(
           'flex min-w-0 flex-1 items-center gap-2.5 pe-3.5 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
-          contextLabel ? 'min-h-10 py-1' : 'h-9',
+          mobileSessionRowHeightClass(rowLines, Boolean(contextLabel)),
         )}
         style={{ paddingInlineStart: textIndent, touchAction: 'manipulation' }}
         onClick={() => {
@@ -565,44 +571,39 @@ const SessionRow: React.FC<{
           onSelect();
         }}
       >
-        <span className="flex min-w-0 flex-1 flex-col">
-          <span className="flex items-center gap-2.5">
-            <span
-              dir="auto"
-              className={cn(
-                'block min-w-0 flex-1 truncate oc-ui-start-align typography-ui-label',
-                mobileSessionTitleClass({ active, unread: showUnreadDot, running: isStreaming, pending: pendingRequests }),
-              )}
-            >
-              {title}
-            </span>
-            {pin?.pinned ? (
-              <Icon name="pushpin" className="size-3 shrink-0 text-muted-foreground" aria-label={t('sessions.sidebar.session.status.pinned')} />
-            ) : null}
-            {statusOnRight && hasLiveState && !stateInSlot ? liveStateMark : null}
-            {showDoneHint ? (
-              <Icon name="check" className="size-3.5 shrink-0 text-muted-foreground" aria-label={t('sessions.sidebar.session.work.doneSuggested')} />
-            ) : null}
-            {/* Goal and waiting requests sit before the time, so the time
-                column stays aligned from row to row. */}
-            <MobileSessionGoalGlyph session={session} />
-            <MobileSessionPendingBadges {...pendingRequests} />
-            {/* The elapsed turn takes the time slot while it matters, then
-                hands it back to the relative timestamp. */}
-            {showActivityDuration ? (
-              <SessionActivityDuration
-                sessionId={session.id}
-                running={isStreaming}
-                className="typography-micro"
-              />
-            ) : time ? (
-              <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{time}</span>
-            ) : null}
+        <MobileSessionRowLines rowLines={rowLines} contextLabel={contextLabel}>
+          <span
+            dir="auto"
+            className={cn(
+              'block min-w-0 flex-1 truncate oc-ui-start-align typography-ui-label',
+              mobileSessionTitleClass({ active, unread: showUnreadDot, running: isStreaming, pending: pendingRequests }),
+            )}
+          >
+            {title}
           </span>
-          {contextLabel ? (
-            <span className="block truncate typography-micro text-muted-foreground">{contextLabel}</span>
+          {pin?.pinned ? (
+            <Icon name="pushpin" className="size-3 shrink-0 text-muted-foreground" aria-label={t('sessions.sidebar.session.status.pinned')} />
           ) : null}
-        </span>
+          {statusOnRight && hasLiveState && !stateInSlot ? liveStateMark : null}
+          {showDoneHint ? (
+            <Icon name="check" className="size-3.5 shrink-0 text-muted-foreground" aria-label={t('sessions.sidebar.session.work.doneSuggested')} />
+          ) : null}
+          {/* Goal and waiting requests sit before the time, so the time
+              column stays aligned from row to row. */}
+          <MobileSessionGoalGlyph session={session} />
+          <MobileSessionPendingBadges {...pendingRequests} />
+          {/* The elapsed turn takes the time slot while it matters, then
+              hands it back to the relative timestamp. */}
+          {showActivityDuration ? (
+            <SessionActivityDuration
+              sessionId={session.id}
+              running={isStreaming}
+              className="typography-micro"
+            />
+          ) : time ? (
+            <span className="shrink-0 typography-micro text-muted-foreground tabular-nums">{time}</span>
+          ) : null}
+        </MobileSessionRowLines>
       </button>
       )}
     </>
@@ -941,6 +942,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const setShowPinnedSection = useSessionDisplayStore((state) => state.setShowPinnedSection);
   const sidebarLayout = useSessionDisplayStore((state) => state.sidebarLayout);
   const zoneRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.zoneLines);
+  const chatsRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.chatsLines);
+  const projectRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.projectLines);
   const setSessionRowDisplay = useSessionDisplayStore((state) => state.setSessionRowDisplay);
     // Branch per directory, for the second line of timeline-style rows (In
   // work, the List view): worktree sessions read their worktree's
@@ -1500,12 +1503,15 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       alwaysVisibleIds?: Set<string>;
       /** The bucket's chat folders, shown above its other sessions in Tree. */
       folders?: readonly SessionFolder[];
+      /** The per-kind line preference owned by these rows. */
+      rowKind?: MobileSessionRowKind;
     },
   ) => {
     const pageSize = options?.pageSize ?? SESSIONS_PER_BUCKET;
     const controlIndent = depth === null ? TIMELINE_CHAT_INDENT : treeTextLeft(depth);
     const alwaysVisibleIds = options?.alwaysVisibleIds;
     const folders = options?.folders ?? EMPTY_FOLDERS;
+    const rowLines = mobileSessionRowLinesFor(options?.rowKind ?? 'other', { chatsLines: chatsRowLines, projectLines: projectRowLines });
 
     // Group children by parent within this bucket. Sessions whose parent is
     // not in this bucket count as top-level, and sessions in a parent cycle
@@ -1583,6 +1589,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             session={session}
             active={currentSessionId === session.id}
             indent={TIMELINE_CHAT_INDENT}
+            rowLines={rowLines}
+            contextLabel={rowLines === 'two' ? buildSessionContextLabel(session) : undefined}
             treeDepth={rowDepth ?? undefined}
             statusOnRight={rowDepth === null}
             hasChildren={hasChildren}
@@ -2553,7 +2561,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                 // Tree rows in Tree, state on the left as in the
                 // zones and projects below; flat rows in List.
                 sidebarViewMode === 'timeline' ? null : 0,
-                { pageSize: CHAT_PAGE_SIZE, alwaysVisibleIds: pinnedChatIds },
+                { pageSize: CHAT_PAGE_SIZE, alwaysVisibleIds: pinnedChatIds, rowKind: 'chats' },
               )
             ) : (
               <p className="px-3 pb-1 typography-micro text-muted-foreground" style={{ paddingInlineStart: sidebarViewMode === 'timeline' ? TIMELINE_CHAT_INDENT : treeTextLeft(0) }}>
@@ -3031,7 +3039,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                           return (
                             <>
                               {rootBucket && (rootBucket.sessions.length > 0 || folderListFor(rootBucket).length > 0)
-                                ? renderBucketSessions(`${node.project.id}::${rootBucket.key}`, rootBucket, 0, { folders: folderListFor(rootBucket) })
+                                ? renderBucketSessions(`${node.project.id}::${rootBucket.key}`, rootBucket, 0, { folders: folderListFor(rootBucket), rowKind: 'project' })
                                 : null}
                               {worktreeBuckets.map((bucket) => {
                                 const worktreeExpanded = isWorktreeExpanded(node, bucket);
@@ -3043,7 +3051,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                                   <div className={cn('mt-1.5', removing && 'opacity-60')} aria-busy={removing || undefined}>
                                     {renderBucketHeader(node, bucket, removing, activeWorktreePath)}
                                     <MobileDisclosure open={worktreeExpanded}>
-                                      {() => renderBucketSessions(`${node.project.id}::${bucket.key}`, bucket, 1, { folders: folderListFor(bucket) })}
+                                      {() => renderBucketSessions(`${node.project.id}::${bucket.key}`, bucket, 1, { folders: folderListFor(bucket), rowKind: 'project' })}
                                     </MobileDisclosure>
                                   </div>
                                   )}
