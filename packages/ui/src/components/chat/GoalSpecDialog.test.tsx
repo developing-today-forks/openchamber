@@ -98,6 +98,14 @@ describe('GoalSpecDialog', () => {
     ]);
   });
 
+  test('shows a labelled token estimate beside the character counter', async () => {
+    await render({ ...base, trigger: 'armed', review: true, defaultSendMode: 'with-message', write: async () => written });
+
+    // '## Objective\nDark mode' is 22 chars; the estimate is ceil(22/4) = 6.
+    expect(document.body.textContent).toContain('22/');
+    expect(document.body.textContent).toContain('~6 tokens (est.)');
+  });
+
   test('without review the spec goes out as soon as it is written, in the default mode', async () => {
     await render({ ...base, trigger: 'auto-create', review: false, defaultSendMode: 'goal-as-message', write: async () => written });
 
