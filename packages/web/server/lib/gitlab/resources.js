@@ -234,7 +234,7 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     projectId,
     scope: options.scope ?? 'all',
     reviewerUsername: options.reviewerUsername,
-    maxPages: 1,
+    maxPages: options.maxPages ?? 1,
     perPage: options.perPage ?? 100,
     page: options.page ?? 1,
     state: options.state,
@@ -305,6 +305,28 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       for (const item of items) requireMergeRequest(item, project, true);
     }
     return items;
+  };
+
+  // MergeRequests.all answers either a bare array (no expansion) or the
+  // expanded page; only the expanded shape can say whether the page is a
+  // prefix of the collection.
+  const readMergeRequestPage = (payload) => (Array.isArray(payload)
+    ? { items: payload, hasMore: false }
+    : readPage(payload));
+
+  // Reads a merge-request list as the whole set, the way readCollection
+  // reads a collection: every page within the collection bound, and a
+  // failure past it instead of a capped list passed off as complete
+  // (#1597). The branch-status scans search the list for the branch's
+  // request, so a prefix must never read as "no such request".
+  const readProjectMRsExhausted = async (projectId, options) => {
+    const perPage = options.perPage ?? COLLECTION_PER_PAGE;
+    const maxPages = Math.ceil((COLLECTION_MAX_PAGES * COLLECTION_PER_PAGE) / perPage);
+    const page = readMergeRequestPage(await listProjectMRs(projectId, {
+      ...options, perPage, maxPages, showExpanded: true,
+    }));
+    if (page.hasMore) throw new Error('GitLab merge request list has more pages than OpenChamber reads');
+    return page.items;
   };
 
   const loadCI = async (targetProjectId, rawMR, details = false) => {
@@ -793,9 +815,13 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     },
 
     async reconcileCreateMutation(providerTarget, target) {
-      const payload = readMergeRequestList(await listProjectMRs(providerTarget.targetProjectId, {
-        state: 'all', sourceBranch: target.head, perPage: 100,
-      }), target.project);
+      const page = readMergeRequestPage(await listProjectMRs(providerTarget.targetProjectId, {
+        state: 'all', sourceBranch: target.head, perPage: 100, showExpanded: true,
+      }));
+      // A prefix cannot prove exactly one match - a second match may sit
+      // on a later page - so a paged answer reconciles as unknown (#1597).
+      if (page.hasMore) return { state: 'outcome-unknown' };
+      const payload = readMergeRequestList(page.items, target.project);
       const matches = payload.filter((raw) => raw?.source_project_id === Number(providerTarget.sourceProjectId)
         && raw?.target_project_id === Number(providerTarget.targetProjectId)
         && raw?.target_branch === target.base)
@@ -828,7 +854,7 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       let selected = null;
       for (const target of targets) {
         const requests = readMergeRequestList(
-          await listProjectMRs(target.project.id, { state: 'opened', sourceBranch: branch }),
+          await readProjectMRsExhausted(target.project.id, { state: 'opened', sourceBranch: branch }),
           target.project,
         );
         const raw = requests.find((request) => sourceIds.has(request?.source_project_id)
@@ -843,7 +869,7 @@ export function createGitLabResourceService({ origin, client, download, resolveP
         const historyTargetId = firstSource.raw?.forked_from_project?.id ?? firstSource.raw.id;
         const historyTarget = targets.find((item) => item.raw.id === historyTargetId) ?? firstSource;
         const history = readMergeRequestList(
-          await listProjectMRs(historyTarget.project.id, { state: 'all', sourceBranch: branch }),
+          await readProjectMRsExhausted(historyTarget.project.id, { state: 'all', sourceBranch: branch }),
           historyTarget.project,
         );
         const raw = history.find((request) => request?.state === 'merged' || request?.state === 'closed');
