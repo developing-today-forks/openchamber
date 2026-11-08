@@ -957,3 +957,72 @@ describe('pr-status search fallback scoping (#1496)', () => {
     expect(getMock.mock.calls.every((entry) => entry[0]?.owner === 'acme')).toBe(true);
   });
 });
+
+describe('resolveGitHubPrStatus fallback search with an inaccessible network repo', () => {
+  let directory;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pr-status-422-'));
+    const gitLocal = (...args) => execFileSync('git', args, { cwd: directory, stdio: 'ignore' });
+    gitLocal('init', '-q', '-b', 'feature');
+    gitLocal('remote', 'add', 'origin', 'https://github.com/contrib/app.git');
+    invalidateRepoPullsCache('contrib', 'app');
+    invalidateRepoPullsCache('acme', 'app');
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const httpError = (status, message) => Object.assign(new Error(message), {
+    status,
+    response: { status, data: { message } },
+  });
+
+  test('a 422 from one network repo keeps the PR found in an accessible repo', async () => {
+    const foundPr = {
+      number: 7,
+      state: 'open',
+      head: { ref: 'feature', label: 'contrib:feature', user: { login: 'contrib' }, repo: { owner: { login: 'contrib' }, name: 'app' } },
+    };
+    const client = {
+      openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit('search-422-token', 'search-422-account')),
+      rest: {
+        repos: {
+          get: async ({ owner }) => ({
+            data: owner === 'contrib'
+              ? { default_branch: 'main', parent: { owner: { login: 'acme' }, name: 'app', html_url: 'https://github.com/acme/app' } }
+              : { default_branch: 'main' },
+          }),
+        },
+        pulls: {
+          // A full page of unrelated open PRs makes the per-repo list
+          // incomplete, so resolveGitHubPrStatus spends the search fallback.
+          list: async ({ head }) => (head
+            ? { data: [] }
+            : { data: Array.from({ length: 100 }, (_, index) => ({ number: index, state: 'open', head: { ref: 'other' } })) }),
+          get: async ({ owner, pull_number }) => {
+            if (owner === 'contrib' && pull_number === 7) return { data: foundPr };
+            throw httpError(404, 'Not Found');
+          },
+        },
+        search: {
+          issuesAndPullRequests: async ({ q }) => {
+            const qualifiers = q.split(' ').filter((part) => part.startsWith('repo:'));
+            // The combined query and the inaccessible parent's own query
+            // both answer 422; only the accessible repo's query succeeds.
+            if (qualifiers.length !== 1 || qualifiers[0] !== 'repo:contrib/app') {
+              throw httpError(422, 'Validation Failed: repo:acme/app is not accessible');
+            }
+            return { data: { items: [{ number: 7, repository_url: 'https://api.github.com/repos/contrib/app' }] } };
+          },
+        },
+      },
+    };
+
+    const status = await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: true });
+
+    expect(status.pr?.number).toBe(7);
+    expect(status.repo).toMatchObject({ owner: 'contrib', repo: 'app' });
+  });
+});
