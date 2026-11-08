@@ -64,3 +64,35 @@ describe('createBoundedOutputAccumulator', () => {
     expect(acc.push(Buffer.from('b\n')).lines).toEqual(['b']);
   });
 });
+
+describe('bounded output accumulator surrogate-pair tail cuts (#1803)', () => {
+  const CLEF = '\u{1D11E}'; // U+1D11E, the filed probe character
+  const roundTrips = (text) => Buffer.from(text, 'utf8').toString('utf8') === text;
+
+  it('push recentText never starts on a lone low surrogate', () => {
+    const acc = createBoundedOutputAccumulator({ maxChars: 8 });
+    const { recentText } = acc.push(`abcdefg${CLEF}hijklmn`);
+    expect(recentText).toBe('hijklmn');
+    expect(roundTrips(recentText)).toBe(true);
+  });
+
+  it('an over-cap held line is cut pair-safely and released whole by flush', () => {
+    const acc = createBoundedOutputAccumulator({ maxChars: 8 });
+    acc.push(`abcdefg${CLEF}hijklmn`);
+    expect(acc.flush()).toEqual(['hijklmn']);
+  });
+
+  it('the flush-path recentText update is pair-safe across chunks', () => {
+    const acc = createBoundedOutputAccumulator({ maxChars: 8 });
+    acc.push('abcdefg');
+    const { recentText } = acc.push(`${CLEF}hijklmn`);
+    expect(recentText.startsWith('\uDD1E')).toBe(false);
+    expect(roundTrips(recentText)).toBe(true);
+  });
+
+  it('an ASCII tail is unchanged', () => {
+    const acc = createBoundedOutputAccumulator({ maxChars: 8 });
+    const { recentText } = acc.push('abcdefghijklmnop');
+    expect(recentText).toBe('ijklmnop');
+  });
+});

@@ -15,6 +15,15 @@ export const BOUNDED_OUTPUT_MAX_CHARS = 64 * 1024;
 // held partial line, so a final unterminated line is not lost when the
 // stream ends. Oracle: StringDecoder semantics — a multi-byte character
 // split across chunks must decode whole, never as replacement chars.
+// A tail cut can land between the halves of a surrogate pair, leaving the
+// kept text starting with a lone low surrogate that re-encodes as U+FFFD;
+// drop that leading half so the kept tail starts on a character boundary.
+const dropSplitTailHead = (text) => {
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+};
+const tailBounded = (text, maxChars) => dropSplitTailHead(text.slice(-maxChars));
+
 export function createBoundedOutputAccumulator({ maxChars = BOUNDED_OUTPUT_MAX_CHARS } = {}) {
   // The bound is the contract: a non-positive or non-finite maxChars would
   // silently defeat it — slice(-0) is slice(0), which keeps the whole
@@ -30,18 +39,18 @@ export function createBoundedOutputAccumulator({ maxChars = BOUNDED_OUTPUT_MAX_C
   return {
     push(chunk) {
       const decoded = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-      recentText = (recentText + decoded).slice(-maxChars);
+      recentText = tailBounded(recentText + decoded, maxChars);
       pendingLine += decoded;
       const lines = pendingLine.split(/\r?\n/);
       pendingLine = lines.pop() ?? '';
       if (pendingLine.length > maxChars) {
-        pendingLine = pendingLine.slice(-maxChars);
+        pendingLine = tailBounded(pendingLine, maxChars);
       }
       return { decoded, lines, recentText };
     },
     flush() {
       const tail = decoder.end();
-      recentText = (recentText + tail).slice(-maxChars);
+      recentText = tailBounded(recentText + tail, maxChars);
       const line = pendingLine + tail;
       pendingLine = '';
       return line ? [line] : [];
