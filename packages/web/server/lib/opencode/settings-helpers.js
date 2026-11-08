@@ -186,6 +186,16 @@ export const createSettingsHelpers = (dependencies) => {
     return count > 0 ? result : null;
   };
 
+  // A plain slice at the cap can land between the halves of a surrogate
+  // pair, leaving a lone high surrogate that is persisted to settings and
+  // encodes as U+FFFD in the manifest and the installed app's name; move a
+  // cut that lands inside a pair back to the pair boundary.
+  const clipPairSafe = (text, limit) => {
+    const clipped = text.slice(0, limit);
+    const last = clipped.charCodeAt(clipped.length - 1);
+    return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+  };
+
   const normalizePwaAppName = (value, fallback = '') => {
     if (typeof value !== 'string') {
       return fallback;
@@ -194,7 +204,7 @@ export const createSettingsHelpers = (dependencies) => {
     if (!normalized) {
       return fallback;
     }
-    return normalized.slice(0, PWA_APP_NAME_MAX_LENGTH);
+    return clipPairSafe(normalized, PWA_APP_NAME_MAX_LENGTH);
   };
 
   const normalizePwaOrientation = (value, fallback = 'system') => {
