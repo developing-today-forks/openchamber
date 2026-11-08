@@ -1,10 +1,12 @@
 import { createHash } from 'crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 
-import { archiveMatchesPins, describeTarFailure, downloadToFile, ensureLocalSttModel } from './model-downloader.js';
+import { archiveMatchesPins, describeTarFailure, downloadToFile, ensureLocalSttModel, extractTarArchive } from './model-downloader.js';
 
 const CONTENT = Buffer.from('a fake model archive');
 const PINS = { bytes: CONTENT.length, sha256: createHash('sha256').update(CONTENT).digest('hex') };
@@ -16,6 +18,20 @@ function tempFile() {
 
 function fetchReturning(body) {
   return async () => new Response(body, { status: 200 });
+}
+
+function fakeTarSpawn(stderrChunks, exitCode) {
+  return () => {
+    const child = new EventEmitter();
+    child.stderr = new PassThrough();
+    child.pid = process.pid;
+    child.kill = () => {};
+    queueMicrotask(() => {
+      for (const chunk of stderrChunks) child.stderr.write(chunk);
+      child.emit('close', exitCode);
+    });
+    return child;
+  };
 }
 
 describe('downloadToFile', () => {
@@ -134,6 +150,34 @@ describe('describeTarFailure', () => {
   it('keeps the exit code and the last tar message otherwise', () => {
     expect(describeTarFailure(2, 'tar: Unexpected EOF in archive\n')).toBe('tar exited with code 2: tar: Unexpected EOF in archive');
     expect(describeTarFailure(1, '')).toBe('tar exited with code 1');
+  });
+});
+
+describe('extractTarArchive', () => {
+  it('preserves UTF-8 characters split across stderr chunks', async () => {
+    const archive = tempFile();
+    const text = 'tar: failed to extract "model-€-name.onnx"\n';
+    const bytes = Buffer.from(text);
+    const euro = bytes.indexOf(Buffer.from('€'));
+    const spawnImpl = fakeTarSpawn([bytes.subarray(0, euro + 1), bytes.subarray(euro + 1)], 2);
+
+    await expect(extractTarArchive(archive, `${archive}-output`, 1_000, spawnImpl))
+      .rejects.toThrow('tar exited with code 2: tar: failed to extract "model-€-name.onnx"');
+  });
+
+  it('bounds the stderr tail without retaining half of a surrogate pair', async () => {
+    const archive = tempFile();
+    const stderr = `a💩${'x'.repeat(4095)}`;
+    const spawnImpl = fakeTarSpawn([Buffer.from(stderr)], 2);
+    let failure;
+    try {
+      await extractTarArchive(archive, `${archive}-output`, 1_000, spawnImpl);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure?.message).toBe(`tar exited with code 2: ${'x'.repeat(4095)}`);
+    expect(failure?.message).not.toMatch(/[\uD800-\uDFFF]/);
   });
 });
 
