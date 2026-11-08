@@ -33,6 +33,21 @@ export const buildGoalIntroText = (tokenBudget, spec = null) => {
     + '\n</system-reminder>';
 };
 
+
+// A fixed-offset cut can land between the halves of a surrogate pair,
+// leaving a lone surrogate in the stored objective that encodes as U+FFFD
+// when the objective file is written; move a boundary that lands inside a
+// pair back to the pair boundary.
+const dropSplitHead = (text) => {
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+};
+
+const dropSplitTail = (text) => {
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+};
+
 const fitObjective = async ({ objective, charLimit, directory, sessionID, providerID, modelID, warn }) => {
   if (objective.length <= charLimit) return objective;
 
@@ -59,9 +74,9 @@ const fitObjective = async ({ objective, charLimit, directory, sessionID, provid
     warn('goal objective distillation failed', error);
   }
 
-  if (distilled) return distilled.slice(0, charLimit);
+  if (distilled) return dropSplitHead(distilled.slice(0, charLimit));
   const half = Math.max(0, Math.floor((charLimit - TRIM_MARKER.length) / 2));
-  return `${objective.slice(0, half)}${TRIM_MARKER}${objective.slice(-half)}`;
+  return `${dropSplitHead(objective.slice(0, half))}${TRIM_MARKER}${dropSplitTail(objective.slice(-half))}`;
 };
 
 export const createSessionGoal = async ({
@@ -135,7 +150,7 @@ export const createSessionGoal = async ({
     // unlimited one (up to 200,000 characters) would be resent on each update.
     // The UI's setSessionGoal does the same; the full text still went out in
     // the chat message. Deliberate: see #207 and the review on #205.
-    objective: objectiveFile ? '' : objectiveText.slice(0, charLimit),
+    objective: objectiveFile ? '' : dropSplitHead(objectiveText.slice(0, charLimit)),
     objectiveFile,
     // Stated outright: the store merges, so a flag left out would carry over
     // from the goal this one replaces.
