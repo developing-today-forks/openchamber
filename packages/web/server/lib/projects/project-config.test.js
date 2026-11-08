@@ -1001,3 +1001,35 @@ describe('project-config loop reconciliation', () => {
     }
   });
 });
+
+describe('scheduled-task clamp surrogate-pair boundary (#1976)', () => {
+  const EMOJI = '\u{1F600}';
+
+  it('a pair straddling the 80-char name cut is dropped whole, in storage and on disk', async () => {
+    const { runtime, tempRoot, cleanup } = await createRuntime();
+    try {
+      const input = { name: `${'a'.repeat(79)}${EMOJI}tail`, enabled: true, targetSessionId: 'ses_target', schedule: { kind: 'daily', time: '09:00' }, execution: { prompt: 'Continue', agent: 'plan' } };
+      const saved = await runtime.upsertScheduledTask('project-test', input);
+      expect(saved.task.name).toBe('a'.repeat(79));
+      const listed = await runtime.listScheduledTasks('project-test');
+      expect(listed[0].name).toBe('a'.repeat(79));
+      const onDisk = await readFile(path.join(tempRoot, 'project-test.json'), 'utf8');
+      expect(onDisk).not.toContain('\\ud83d');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('a pair ending exactly at the name limit is kept whole', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const name = `${'a'.repeat(78)}${EMOJI}`;
+      const input = { name, enabled: true, targetSessionId: 'ses_target', schedule: { kind: 'daily', time: '09:00' }, execution: { prompt: 'Continue', agent: 'plan' } };
+      const saved = await runtime.upsertScheduledTask('project-test', input);
+      expect(saved.task.name).toBe(name);
+      expect(saved.task.name.length).toBe(80);
+    } finally {
+      await cleanup();
+    }
+  });
+});
