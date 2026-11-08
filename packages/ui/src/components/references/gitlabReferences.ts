@@ -235,7 +235,7 @@ export const fetchGitLabReferenceDetail = async (
     return {
         number: reference.number,
         comments: comments.slice(-50),
-        commentTotal: changeRequestContext.issueComments.length,
+        commentTotal: comments.length,
         pull: pullDetail(changeRequestContext),
     };
 };

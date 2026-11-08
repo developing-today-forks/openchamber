@@ -993,6 +993,13 @@ interface UIStore {
   settingsProvidersConnectRequested: boolean;
   /** Set by links elsewhere in Settings; the Providers page opens Classification providers once and clears it. */
   settingsProvidersClassificationRequested: boolean;
+  /**
+   * One-shot request from settings search to open Settings -> Providers in
+   * custom-provider create mode (#1765): the anchored field lives only
+   * inside CustomProviderForm, which renders only in that mode. The page
+   * consumes and clears it.
+   */
+  settingsProvidersCustomRequested: boolean;
   /** A provider another Settings page asked the Providers page to open; the page opens it once and clears it. */
   settingsProvidersOpenRequested: string | null;
   /**
@@ -1331,6 +1338,7 @@ interface UIStore {
   setSettingsProjectPath: (path: string | null) => void;
   setSettingsProvidersConnectRequested: (requested: boolean) => void;
   setSettingsProvidersClassificationRequested: (requested: boolean) => void;
+  setSettingsProvidersCustomRequested: (requested: boolean) => void;
   setSettingsProvidersOpenRequested: (providerId: string | null) => void;
   setSettingsTunnelModeRequested: (mode: string | null) => void;
   requestSettingsJump: (page: string, itemId?: string | null) => void;
@@ -1587,6 +1595,7 @@ export const useUIStore = create<UIStore>()(
         settingsProjectPath: null,
         settingsProvidersConnectRequested: false,
         settingsProvidersClassificationRequested: false,
+        settingsProvidersCustomRequested: false,
         settingsProvidersOpenRequested: null,
         settingsTunnelModeRequested: null,
         settingsJumpRequest: null,
@@ -2641,6 +2650,9 @@ export const useUIStore = create<UIStore>()(
 
         setSettingsProvidersClassificationRequested: (requested) => {
           set({ settingsProvidersClassificationRequested: requested });
+        },
+        setSettingsProvidersCustomRequested: (requested) => {
+          set({ settingsProvidersCustomRequested: requested });
         },
         setSettingsProvidersOpenRequested: (providerId) => {
           set({ settingsProvidersOpenRequested: providerId });

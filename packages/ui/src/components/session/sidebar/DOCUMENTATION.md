@@ -152,6 +152,10 @@ sheet renders its nested tree. A tree row shows its live state in the slot left 
 title; a row with subsessions keeps its chevron there, since a phone has no
 hover to trade them, and shows its state on the right. Titles carry the state
 as on the desktop (`apps/mobileSessionTitle.ts`), and run titles are muted.
+Chats rows follow `sessionRowDisplay.chatsLines` in both views. Tree project
+session rows follow `projectLines`; two-line rows show a fixed context line
+under the title and reserve 52px. The sheet uses pagination in a plain scroller,
+so it has no per-row virtualizer estimate to update.
 Worktree headers are drawn as
 folder rows (chevron, 12px icon, medium-weight label a step below full
 strength), each opening with a
@@ -341,7 +345,7 @@ metadata-only changes update rows. See `lib/multirun/DOCUMENTATION.md`.
 
 ## In work
 
-A project can be hidden from the In work zone and from the List view's All sessions. Its General tab has a Sidebar section with one checkbox per view; the choice is `hiddenFromWork` and `hiddenFromAllSessions` on the project entry, stored only when true, so a project without them is shown in both. A hidden project's sessions leave that one zone or list, and the project itself stays in the Tree view and the rest of the sidebar. The List view sorted by time leaves it out too, its load-status line included. The Tree view does not read `hiddenFromAllSessions`, and VS Code shows no Sidebar section because its projects are workspace folders.
+A project can be hidden from the In work zone and from the List view's All sessions. Its General tab has a Sidebar section with one checkbox per view; the choice is `hiddenFromWork` and `hiddenFromAllSessions` on the project entry, stored only when true, so a project without them is shown in both. A hidden project's sessions leave that one zone or list, and the project itself stays in the Tree view and the rest of the sidebar. The List view sorted by time leaves it out too, its load-status line included. The Tree view does not read `hiddenFromAllSessions`, and VS Code shows no Sidebar section because its projects are workspace folders. The phone sessions sheet honours both flags (#217): a hidden project's sessions leave its In work zone and its All-sessions surfaces (grouped tree and List/timeline), while the project itself stays in the sheet.
 
 Sessions in work (`metadata.openchamber.work.state === 'open'`, see
 `packages/web/server/lib/session-work/DOCUMENTATION.md`) render in their own

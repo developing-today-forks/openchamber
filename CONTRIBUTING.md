@@ -183,8 +183,7 @@ keeps one module registry for the whole invocation, so `mock.module`
 registrations and module-level singletons leak across files: a combined run
 over parts of `packages/ui` reports phantom failures in files that pass on
 their own. Issue #46 tracks the root-cause work and names the polluting files.
-The sidebar, i18n, and hooks suites restore their module mocks and pass
-together; the other trees do not yet. To run a combined subtree outside those,
+The sidebar, i18n, and hooks suites pass together in one combined run: `bun test src/components/session/sidebar src/lib/i18n src/hooks` from `packages/ui`. A failure in that run is a real leak owned by an earlier file (a pending timer, an unrestored global, a settings write left queued) and gets fixed in that file. The other trees do not yet pass together. To run a combined subtree outside those,
 pass `--isolate` (`bun test --isolate <paths>`), which gives each file a fresh
 global object and module registry; the per-file runner above remains the
 canonical full-suite command.

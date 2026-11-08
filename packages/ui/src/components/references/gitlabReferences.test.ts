@@ -146,6 +146,55 @@ describe('GitLab references', () => {
     expect(detail.comments[0]?.thread).toMatchObject({ id: 'abc', resolved: true, canResolve: true, canReply: true, replies: [{ body: 'Done' }] });
   });
 
+  test('the merge request comment total counts the merged thread it slices (#1820)', async () => {
+    const page = await fetchGitLabReferencePage(reads(), context, 'pull', DEFAULT_REPOSITORY_FILTER, '', null);
+    if (page.kind !== 'page' || !page.items[0]) throw new Error('expected a page');
+    const note = (id: string, index: number, thread?: { id: string; resolved: boolean; resolvable: boolean; first: boolean }) => ({
+      ...identity, id, url: `u-${id}`, body: id,
+      createdAt: new Date(Date.UTC(2026, 0, 1) + index * 60_000).toISOString(),
+      ...(thread ? { thread } : {}),
+    });
+    const detailFor = (issueComments: unknown[], reviewComments: unknown[], verdicts?: unknown[]) => fetchGitLabReferenceDetail(reads({
+      changeRequestContext: async () => ({
+        identity, project, changeRequest: mergeRequest,
+        issueComments, reviewComments, files: [],
+        ...(verdicts ? { verdicts } : {}),
+      }) as ChangeRequestContext,
+    }), context, page.items[0]!);
+
+    // Mixed thread over the slice: 30 issue notes + 40 review notes merge
+    // to 70, of which the newest 50 are shown - the total is the merged 70,
+    // not the 30 raw issue notes.
+    const mixed = await detailFor(
+      Array.from({ length: 30 }, (_, i) => note(`issue-${i}`, i)),
+      Array.from({ length: 40 }, (_, i) => note(`review-${i}`, 30 + i)),
+    );
+    expect(mixed.comments).toHaveLength(50);
+    expect(mixed.commentTotal).toBe(70);
+
+    // Threaded replies fold under their openers: 30 openers + 50 replies
+    // are a 30-entry thread, so the total is 30, not the 80 raw notes.
+    const openers = Array.from({ length: 30 }, (_, i) => note(`opener-${i}`, i, { id: `t${i}`, resolved: false, resolvable: true, first: true }));
+    const replies = Array.from({ length: 50 }, (_, i) => note(`reply-${i}`, 30 + i, { id: `t${i % 30}`, resolved: false, resolvable: true, first: false }));
+    const threaded = await detailFor(openers, replies);
+    expect(threaded.comments).toHaveLength(30);
+    expect(threaded.commentTotal).toBe(30);
+
+    // A verdict is a thread entry too: 1 + 1 + verdict totals 3.
+    const withVerdict = await detailFor(
+      [note('issue-0', 0)],
+      [note('review-0', 1)],
+      [{ state: 'approved', createdAt: '2026-01-02', url: 'v' }],
+    );
+    expect(withVerdict.comments).toHaveLength(3);
+    expect(withVerdict.commentTotal).toBe(3);
+
+    // Control: 60 flat issue notes on a merge request still total 60.
+    const flat = await detailFor(Array.from({ length: 60 }, (_, i) => note(`flat-${i}`, i)), []);
+    expect(flat.comments).toHaveLength(50);
+    expect(flat.commentTotal).toBe(60);
+  });
+
   test('merge request rows carry their labels', async () => {
     const page = await fetchGitLabReferencePage(reads({
       changeRequestsList: async () => ({ items: [{ ...mergeRequest, labels: [{ name: 'bug', color: 'd73a4a' }] }], page: 1, hasMore: false }),

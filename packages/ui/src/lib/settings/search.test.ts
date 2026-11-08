@@ -398,4 +398,31 @@ describe('settings search anchors', () => {
       .find(([filePath]) => filePath.endsWith('ClassificationProvidersPage.tsx'))?.[1] ?? '';
     expect(classificationPage).toContain('settingsItem="routing.token"');
   });
+
+  test('providers.custom is pinned to Providers and its preparation enters custom-create mode (#1765)', () => {
+    const searchSource = readFileSync(join(__dirname, 'search.ts'), 'utf-8');
+    const entry = searchSource.match(/id: 'providers\.custom',\s*page: '([^']+)'/);
+    expect(entry?.[1]).toBe('providers');
+
+    const sources = readComponentSources();
+    const settingsView = sources.get(settingsViewPath) ?? '';
+    // The anchored field renders only inside CustomProviderForm, which
+    // the Providers page shows only in custom-create mode, so
+    // prepareSettingsSearchTarget must request that mode for
+    // providers.custom itself - the global anchor test above cannot see
+    // an entry whose anchor exists but renders in a flow state its
+    // result never enters.
+    expect(/result\.id === 'providers\.custom'[\s\S]{0,240}setSettingsProvidersCustomRequested\(true\)/.test(settingsView)).toBe(true);
+
+    const providersPage = [...sources.entries()]
+      .find(([filePath]) => filePath.endsWith('ProvidersPage.tsx'))?.[1] ?? '';
+    // The page consumes the request by preselecting the custom candidate
+    // in add mode (custom-create mode), then clears the one-shot flag.
+    expect(/customRequested[\s\S]{0,400}setCandidateProviderId\(CUSTOM_PROVIDER_ID\)/.test(providersPage)).toBe(true);
+    expect(providersPage).toContain('setCustomRequested(false)');
+
+    const customForm = [...sources.entries()]
+      .find(([filePath]) => filePath.endsWith('CustomProviderForm.tsx'))?.[1] ?? '';
+    expect(customForm).toContain('settingsItem="providers.custom"');
+  });
 });
