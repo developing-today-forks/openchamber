@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
@@ -128,14 +128,36 @@ const incompleteUtf8TailLength = (buffer, length) => {
 };
 
 // The managed child writes stdout and stderr to this file, not a pipe, so it outlives OpenChamber.
+// One drain never buffers the whole growth: a single call consumes at most
+// this many bytes, and later polls reach the rest through the returned
+// offset. The chunks keep a small file from pinning a cap-sized buffer.
+export const MANAGED_OPENCODE_LOG_READ_MAX_BYTES = 1024 * 1024;
+const LOG_READ_CHUNK_BYTES = 64 * 1024;
+
 export const readLogSince = (logPath, offset) => {
   let fd = null;
   try {
-    fd = openSync(logPath, 'r');
-    const length = fstatSync(fd).size - offset;
+    // O_NONBLOCK (POSIX only) keeps the open itself from blocking on a FIFO
+    // with no writer, and the opened handle is judged regular before any
+    // read — the bounded-file-read pattern. A non-regular path (a FIFO, a
+    // device) is no output, never a hang: this runs synchronously on the
+    // readiness drain, so a blocking open would freeze the whole server.
+    fd = openSync(logPath, process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return { text: '', offset };
+    const length = Math.min(stat.size - offset, MANAGED_OPENCODE_LOG_READ_MAX_BYTES);
     if (length <= 0) return { text: '', offset };
-    const buffer = Buffer.alloc(length);
-    const bytesRead = readSync(fd, buffer, 0, length, offset);
+    const chunks = [];
+    let total = 0;
+    while (total < length) {
+      const chunk = Buffer.alloc(Math.min(LOG_READ_CHUNK_BYTES, length - total));
+      const bytesRead = readSync(fd, chunk, 0, chunk.length, offset + total);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      total += bytesRead;
+    }
+    const buffer = Buffer.concat(chunks, total);
+    const bytesRead = total;
     // Hold back a trailing incomplete UTF-8 sequence: the returned offset
     // stops before it, so the next poll re-reads those bytes together with
     // their continuation instead of corrupting the character to U+FFFD and
