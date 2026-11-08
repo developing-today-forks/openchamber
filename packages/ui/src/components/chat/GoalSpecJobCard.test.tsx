@@ -33,12 +33,12 @@ for (const [name, descriptor] of previousImportGlobals) {
 }
 void importWindow.happyDOM.close();
 
-const DOM_GLOBAL_NAMES = ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'localStorage', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT'] as const;
+const DOM_GLOBAL_NAMES = ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'CustomEvent', 'localStorage', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT'] as const;
 const installDom = () => {
   const win = new Window({ url: 'http://localhost' });
   const previous = DOM_GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
   const values = { window: win, document: win.document, navigator: win.navigator, Node: win.Node, Element: win.Element,
-    HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event, localStorage: win.localStorage,
+    HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event, CustomEvent: win.CustomEvent, localStorage: win.localStorage,
     getComputedStyle: win.getComputedStyle.bind(win), requestAnimationFrame: win.requestAnimationFrame.bind(win),
     cancelAnimationFrame: win.cancelAnimationFrame.bind(win), IS_REACT_ACT_ENVIRONMENT: true };
   for (const name of DOM_GLOBAL_NAMES) Object.defineProperty(globalThis, name, { value: values[name], configurable: true, writable: true });
@@ -129,7 +129,7 @@ describe('GoalSpecJobCard', () => {
     configureRuntimeUrlResolver({ apiBaseUrl: 'http://goal-card.test' });
     useGoalSpecJobStore.getState().resetForRuntimeSwitch();
     useSessionGoalArmStore.getState().setArmed(false);
-    useInputStore.setState({ pendingComposerEdits: [] });
+    useInputStore.setState({ pendingComposerRestore: null, pendingComposerContextRestore: null });
   });
 
   afterEach(async () => {
@@ -240,11 +240,11 @@ describe('GoalSpecJobCard', () => {
     await click('Back to edit');
     listed.mockRestore();
 
-    const [edit] = useInputStore.getState().pendingComposerEdits;
-    expect(edit?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
-    expect(edit?.content).toBe('Add dark mode\nto settings');
-    expect(edit?.attachments.map((file) => file.filename)).toEqual(['mock.png']);
-    expect(edit?.context).toEqual([{ kind: 'synthetic', text: 'Resolve the conflict' }]);
+    const edit = useInputStore.getState().pendingComposerRestore;
+    expect(edit?.target).toEqual({ runtimeKey: getRuntimeKey(), directory: '/repo', sessionId: 'ses_card' });
+    expect(edit?.text).toBe('Add dark mode\nto settings');
+    expect(edit?.files).toEqual([{ url: 'data:image/png;base64,aGk=', mimeType: 'image/png', filename: 'mock.png' }]);
+    expect(useInputStore.getState().pendingComposerContextRestore?.context).toEqual([{ kind: 'synthetic', text: 'Resolve the conflict' }]);
     expect(useSessionGoalArmStore.getState().armed).toBe(true);
     // A job in a session that was there before never asks whether to remove it.
     expect(listed.mock.calls.length).toBe(0);
@@ -303,9 +303,11 @@ describe('GoalSpecJobCard', () => {
       expect(listed.mock.calls).toEqual([['ses_card', { limit: 1 }, '/repo']]);
       expect(deleted).toEqual(['ses_card']);
       expect(opened).toEqual(['/repo']);
-      const [edit] = useInputStore.getState().pendingComposerEdits;
-      expect(edit?.target).toEqual({ kind: 'draft', draftId: NEW_DRAFT_ID });
-      expect(edit?.content).toBe('Add dark mode');
+      const edit = useInputStore.getState().pendingComposerRestore;
+      expect(edit?.target.runtimeKey).toBe(getRuntimeKey());
+      expect(edit?.target.directory).not.toBe('/repo');
+      expect(edit?.target.sessionId).toBeNull();
+      expect(edit?.text).toBe('Add dark mode');
       expect(useSessionGoalArmStore.getState().armed).toBe(true);
     });
 
@@ -317,7 +319,7 @@ describe('GoalSpecJobCard', () => {
 
       expect(deleted).toEqual([]);
       expect(opened).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('when OpenCode cannot say whether anything was sent, the session stays', async () => {
@@ -330,7 +332,7 @@ describe('GoalSpecJobCard', () => {
 
       expect(deleted).toEqual([]);
       expect(opened).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('a session that could not be removed keeps the message', async () => {
@@ -340,7 +342,7 @@ describe('GoalSpecJobCard', () => {
       await click('Back to edit');
 
       expect(opened).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('a message this window holds for the session keeps it, whatever OpenCode lists', async () => {
@@ -359,7 +361,7 @@ describe('GoalSpecJobCard', () => {
       }
 
       expect(deleted).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('a message this window sends while OpenCode is asked keeps the session', async () => {
@@ -383,7 +385,7 @@ describe('GoalSpecJobCard', () => {
       expect(listed.mock.calls.length).toBe(1);
       expect(deleted).toEqual([]);
       expect(opened).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('a switch to another session while OpenCode is asked keeps the session and opens no draft', async () => {
@@ -398,7 +400,7 @@ describe('GoalSpecJobCard', () => {
       expect(listed.mock.calls.length).toBe(1);
       expect(deleted).toEqual([]);
       expect(opened).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
 
     test('a new chat\'s session in a side column stays; only the one on screen in the main chat makes way', async () => {
@@ -409,7 +411,7 @@ describe('GoalSpecJobCard', () => {
 
       expect(listed.mock.calls.length).toBe(0);
       expect(deleted).toEqual([]);
-      expect(useInputStore.getState().pendingComposerEdits[0]?.target).toEqual({ kind: 'session', sessionId: 'ses_card' });
+      expect(useInputStore.getState().pendingComposerRestore?.target.sessionId).toBe('ses_card');
     });
   });
 
@@ -688,7 +690,7 @@ describe('GoalSpecJobCard', () => {
 
       await takeGoalSpecJobBack(armed);
 
-      expect(useInputStore.getState().pendingComposerEdits.map((edit) => edit.runtimeKey)).toEqual([editRuntime]);
+      expect(useInputStore.getState().pendingComposerRestore?.target.runtimeKey).toBe(editRuntime);
       expect(useSessionGoalArmStore.getState().armed).toBe(false);
     });
   });

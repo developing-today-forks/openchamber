@@ -1,5 +1,7 @@
 import { opencodeClient } from '@/lib/opencode/client';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { createChatDraftIdentity } from '@/lib/chatDraftPersistence';
+import { CHAT_DRAFT_PROJECT_ID } from '@/lib/chatDirectories';
 import { useGoalSpecJobStore, type GoalSpecJob } from '@/stores/goalSpecJobStore';
 import { useSessionGoalArmStore } from '@/stores/useSessionGoalArmStore';
 import { useInputStore } from '@/sync/input-store';
@@ -18,13 +20,21 @@ export async function takeGoalSpecJobBack(job: GoalSpecJob): Promise<void> {
     const runtimeKey = getRuntimeKey();
     const message = await useGoalSpecJobStore.getState().editJob(job);
     const draftId = job.newSession ? await replaceEmptySessionWithDraft(job, runtimeKey) : null;
-    useInputStore.getState().requestComposerEdit({
+    const target = createChatDraftIdentity(
         runtimeKey,
-        target: draftId === null ? { kind: 'session', sessionId: job.sessionId } : { kind: 'draft', draftId },
-        content: message.content,
-        attachments: message.attachments,
-        context: message.context,
-    });
+        draftId === null ? job.directory : CHAT_DRAFT_PROJECT_ID,
+        draftId === null ? job.sessionId : null,
+    );
+    if (target) {
+        useInputStore.setState({
+            pendingComposerRestore: {
+                target,
+                text: message.content,
+                files: message.attachments.map(({ dataUrl, mimeType, filename }) => ({ url: dataUrl, mimeType, filename })),
+            },
+            pendingComposerContextRestore: message.context.length > 0 ? { target, context: message.context } : null,
+        });
+    }
     // The arm belongs to no runtime, so after a switch away from the job's it
     // would make the next send on the runtime now active a goal.
     if (job.trigger === 'armed' && getRuntimeKey() === runtimeKey) useSessionGoalArmStore.getState().setArmed(true);

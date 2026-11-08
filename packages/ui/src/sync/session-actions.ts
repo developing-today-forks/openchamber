@@ -49,7 +49,7 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import type { AttachedFile } from "@/stores/types/sessionTypes"
 import type { QueuedMessageGoal } from "@/stores/messageQueueStore"
-import { useSessionGoalArmStore } from "@/stores/useSessionGoalArmStore"
+import { useSessionGoalArmStore, type SessionGoalArm } from "@/stores/useSessionGoalArmStore"
 import { useUIStore } from "@/stores/useUIStore"
 import { selectCommandsForDirectory, useCommandsStore } from "@/stores/useCommandsStore"
 import { setSessionGoal } from "@/lib/sessionGoalActions"
@@ -2088,6 +2088,10 @@ export type SendMessageOptions = {
    * replaces the composer's armed goal, which belongs to the composer text.
    */
   queuedGoal?: QueuedMessageGoal | null
+  /** A send-specific goal that does not consume the composer's armed goal. */
+  goalArm?: SessionGoalArm
+  /** Receives the optimistic user-message ID when the prompt is inserted. */
+  onMessageID?: (messageID: string) => void
 }
 
 function notifyMessageSent(sessionId: string): void {
@@ -2129,7 +2133,7 @@ export async function sendMessage(
     const queuedGoal = options?.queuedGoal
     const goalArm = inputMode === "shell" || content.trim().length === 0
       ? { armed: false, objectiveOverride: null, settled: false, briefAgent: false, ignoreLimit: false }
-      : queuedGoal !== undefined
+      : options?.goalArm ?? (queuedGoal !== undefined
         ? {
           armed: queuedGoal !== null,
           objectiveOverride: queuedGoal?.objective ?? null,
@@ -2137,7 +2141,7 @@ export async function sendMessage(
           briefAgent: queuedGoal?.briefAgent === true,
           ignoreLimit: queuedGoal?.ignoreLimit === true,
         }
-        : useSessionGoalArmStore.getState().consume()
+        : useSessionGoalArmStore.getState().consume())
     const goalArmed = goalArm.armed
     // A queued goal keeps the budget it was queued with.
     const goalUiState = useUIStore.getState()
@@ -2174,7 +2178,7 @@ export async function sendMessage(
         rewrittenSpec = saved.outcome === 'saved' ? saved.rewrittenSpec : null
       } catch (error) {
         // A queued message keeps its goal for the retry; only the composer's arm comes back.
-        if (queuedGoal === undefined) {
+        if (queuedGoal === undefined && options?.goalArm === undefined) {
           useSessionGoalArmStore.getState().setArmed(true, goalArm.objectiveOverride, {
             settled: goalArm.settled,
             briefAgent: goalArm.briefAgent,
@@ -2246,6 +2250,7 @@ export async function sendMessage(
         delivery: options?.delivery,
         skills: options?.skills,
         knowledgeSync: draftKnowledgeSync,
+        onMessageID: options?.onMessageID,
         additionalParts: draftParts.map((p) => ({
           text: p.text,
           synthetic: p.synthetic,
@@ -2361,6 +2366,7 @@ export async function sendMessage(
       delivery: options?.delivery,
       skills: options?.skills,
       knowledgeSync,
+      onMessageID: options?.onMessageID,
       additionalParts: additionalParts?.map((p) => ({
         text: p.text,
         synthetic: p.synthetic,

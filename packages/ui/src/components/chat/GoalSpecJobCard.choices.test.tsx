@@ -12,7 +12,7 @@ import type { SessionGoalArm } from '@/stores/useSessionGoalArmStore';
 // the DOM is installed before anything that renders is imported.
 
 const DOM_GLOBAL_NAMES = [
-  'window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'KeyboardEvent',
+  'window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'HTMLTextAreaElement', 'Event', 'CustomEvent', 'KeyboardEvent',
   'MouseEvent', 'PointerEvent', 'MutationObserver', 'ResizeObserver', 'IntersectionObserver', 'localStorage', 'getComputedStyle',
   'requestAnimationFrame', 'cancelAnimationFrame', 'IS_REACT_ACT_ENVIRONMENT',
 ] as const;
@@ -21,7 +21,7 @@ const win = new Window({ url: 'http://localhost' });
 const previousGlobals = DOM_GLOBAL_NAMES.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
 const domValues = {
   window: win, document: win.document, navigator: win.navigator, Node: win.Node, Element: win.Element,
-  HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event,
+  HTMLElement: win.HTMLElement, HTMLTextAreaElement: win.HTMLTextAreaElement, Event: win.Event, CustomEvent: win.CustomEvent,
   KeyboardEvent: win.KeyboardEvent, MouseEvent: win.MouseEvent, PointerEvent: win.PointerEvent,
   MutationObserver: win.MutationObserver, ResizeObserver: win.ResizeObserver, IntersectionObserver: win.IntersectionObserver,
   localStorage: win.localStorage,
@@ -46,6 +46,7 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const request = new Request(input, init);
   const body = await request.text();
   const call: Call = { method: request.method, path: new URL(request.url).pathname, body: body ? JSON.parse(body) : undefined };
+  if (call.path.endsWith('/fs/home')) return Response.json({ home: '/home/test' });
   if (call.path === '/api/config/settings') {
     if (call.method === 'PUT') Object.assign(serverSettings, call.body);
     return Response.json(serverSettings);
@@ -326,7 +327,7 @@ describe('GoalSpecJobCard choices for this spec', () => {
   // name a writer that did not write this spec, and with every pick remembered
   // it would also become the Settings default.
   test('the writer model menu closes and stays shut while the job waits for the turn, and does not reopen by itself', async () => {
-    useConfigStore.setState({ providersLoaded: true });
+    await act(async () => { useConfigStore.setState({ providersLoaded: true }); });
     // A boolean, never the element: a failing match on a happy-dom element
     // prints the whole window graph, and the run never ends.
     const modelMenuOpen = () => document.querySelector('[role="listbox"][aria-label="Models"]') !== null;
@@ -352,7 +353,7 @@ describe('GoalSpecJobCard choices for this spec', () => {
       await act(async () => { show({ ...written, updatedAt: 3 }); });
       expect(modelMenuOpen()).toBe(false);
     } finally {
-      useConfigStore.setState({ providersLoaded: originalConfig.providersLoaded });
+      await act(async () => { useConfigStore.setState({ providersLoaded: originalConfig.providersLoaded }); });
     }
   });
 });

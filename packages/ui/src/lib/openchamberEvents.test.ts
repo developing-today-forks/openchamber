@@ -166,6 +166,24 @@ describe('openchamber events', () => {
     unsubscribe();
   });
 
+  test('dispatches valid goal writer job updates', async () => {
+    const { subscribeOpenchamberEvents } = await import('./openchamberEvents');
+    const events: unknown[] = [];
+    const unsubscribe = subscribeOpenchamberEvents((event) => events.push(event));
+    MockEventSource.instances[0].onmessage?.({
+      data: JSON.stringify({
+        type: 'openchamber:goal-spec-job.updated',
+        properties: { revision: 1, sessionId: 'ses_123', job: null },
+      }),
+    });
+
+    expect(events).toEqual([{
+      type: 'openchamber:goal-spec-job.updated',
+      properties: { revision: 1, sessionId: 'ses_123', job: null },
+    }]);
+    unsubscribe();
+  });
+
   test('a connected control SSE stream clears delivered queues without reconnecting or polling', async () => {
     const { subscribeMessageQueueSync } = await import('@/sync/message-queue-sync');
     const { getRuntimeKey } = await import('./runtime-switch');

@@ -7,7 +7,7 @@ import type { GoalSubmitChoice } from '@/lib/goalWriter';
 // sendMessage in session-ui-store, which turns the sent prompt into the
 // goal objective — unless the arming flow supplied a richer objective
 // override (e.g. the plan content instead of "Implement this plan: X").
-interface SessionGoalArm {
+export interface SessionGoalArm {
   armed: boolean;
   objectiveOverride: string | null;
   /**
