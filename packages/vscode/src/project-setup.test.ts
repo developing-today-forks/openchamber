@@ -341,3 +341,23 @@ describe('project setup bridge', () => {
     });
   });
 });
+
+describe('project setup clamp surrogate-pair boundary (#1990)', () => {
+  const EMOJI = '\u{1F600}';
+
+  test('an action name straddling the 80-char cut is dropped whole', () => {
+    const [action] = sanitizeProjectActions([{ id: 'a', name: `${'a'.repeat(79)}${EMOJI}x`, command: 'run' }]);
+    assert.equal(action?.name, 'a'.repeat(79));
+  });
+
+  test('an action name pair ending exactly at the limit is kept whole', () => {
+    const name = `${'a'.repeat(78)}${EMOJI}`;
+    const [action] = sanitizeProjectActions([{ id: 'a', name, command: 'run' }]);
+    assert.equal(action?.name, name);
+  });
+
+  test('a setup command straddling the 4,000-char cut is dropped whole', () => {
+    const [command] = sanitizeSetupCommands([`${'a'.repeat(3999)}${EMOJI}x`]);
+    assert.equal(command, 'a'.repeat(3999));
+  });
+});

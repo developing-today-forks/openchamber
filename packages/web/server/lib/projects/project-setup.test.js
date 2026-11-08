@@ -612,3 +612,24 @@ describe('project setup runtime', () => {
     }
   });
 });
+
+describe('project-setup clamp surrogate-pair boundary (#1990)', () => {
+  const EMOJI = '\u{1F600}';
+
+  it('an action name straddling the 80-char cut is dropped whole', () => {
+    const [action] = sanitizeProjectActions([{ id: 'a', name: `${'a'.repeat(79)}${EMOJI}x`, command: 'run' }]);
+    expect(action.name).toBe('a'.repeat(79));
+    expect(Buffer.from(action.name, 'utf8').toString('utf8')).toBe(action.name);
+  });
+
+  it('an action name pair ending exactly at the limit is kept whole', () => {
+    const name = `${'a'.repeat(78)}${EMOJI}`;
+    const [action] = sanitizeProjectActions([{ id: 'a', name, command: 'run' }]);
+    expect(action.name).toBe(name);
+  });
+
+  it('a setup command straddling the 4,000-char cut is dropped whole', () => {
+    const [command] = sanitizeSetupCommands([`${'a'.repeat(3999)}${EMOJI}x`]);
+    expect(command).toBe('a'.repeat(3999));
+  });
+});
