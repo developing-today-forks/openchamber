@@ -143,6 +143,10 @@ import {
   getSessionTimestamp,
 } from './mobileSessionFields';
 import { buildMobileSessionTree } from './mobileSessionTree';
+import {
+  isSessionHiddenFromWork,
+  projectVisibilitySets,
+} from './mobileProjectVisibility';
 import { buildRunLaneNode } from './mobileRunLaneTree';
 import { MobileProjectEditSurface } from './MobileProjectEditSurface';
 import { useEdgeSwipe } from './useEdgeSwipe';
@@ -222,6 +226,9 @@ type ProjectMeta = {
   iconBackground?: string | null;
   isGitRepo: boolean;
   worktrees: WorktreeMetadata[];
+  /** Project visibility flags (#217), copied from the project entry. */
+  hiddenFromWork?: boolean;
+  hiddenFromAllSessions?: boolean;
   /** Read by the 'date-added' / 'recent' project orders. */
   addedAt?: number;
   lastOpenedAt?: number;
@@ -1087,6 +1094,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             worktreeOrderByProject[project.id],
             worktreesByProject.get(normalizePath(project.path)) ?? [],
           ),
+          hiddenFromWork: project.hiddenFromWork,
+          hiddenFromAllSessions: project.hiddenFromAllSessions,
           addedAt: project.addedAt,
           lastOpenedAt: project.lastOpenedAt,
         })),
@@ -1195,6 +1204,27 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     authoritativeProjects,
     spaceList,
   ), [authoritativeProjects, projectSessions, projectsMeta, spaceList]);
+  // Project visibility (#217), mirroring the desktop List view: a
+  // hiddenFromWork project's sessions leave the In work zone, and a
+  // hiddenFromAllSessions project's sessions leave the All-sessions
+  // surfaces (grouped tree buckets and the List/timeline lists). The
+  // project itself stays in the sheet, as on the desktop sidebar.
+  const projectVisibility = React.useMemo(() => projectVisibilitySets(projectsMeta), [projectsMeta]);
+  const ownerProjectIdOf = React.useCallback(
+    (session: Session): string | null => sessionOwnership.bySessionId.get(session.id)?.projectId ?? null,
+    [sessionOwnership],
+  );
+  const visibleWorkSessionIds = React.useMemo(() => {
+    if (projectVisibility.hiddenFromWorkProjectIds.size === 0) return workSessionIds;
+    const sessionById = new Map(sessions.map((session) => [session.id, session]));
+    const visible = new Set<string>();
+    for (const id of workSessionIds) {
+      const session = sessionById.get(id);
+      if (session && isSessionHiddenFromWork(session, ownerProjectIdOf, projectVisibility)) continue;
+      visible.add(id);
+    }
+    return visible;
+  }, [ownerProjectIdOf, projectVisibility, sessions, workSessionIds]);
   // Multi-runs render as one row that opens their overview; their lanes list
   // under the project root instead of each lane's worktree, like the sidebar.
   const runIndex = React.useMemo(() => buildMultiRunIndex(projectSessions, (session) => {
@@ -1246,10 +1276,10 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     path: '',
     worktree: null,
     space: null,
-    sessions: workSessionIds.size > 0
-      ? orderSessionsByLifecycleScopes(sessions.filter((session) => workSessionIds.has(session.id) && !pinnedZoneSessionIds.has(session.id)), pinnedSessionIds, sessionOrderRanks)
+    sessions: visibleWorkSessionIds.size > 0
+      ? orderSessionsByLifecycleScopes(sessions.filter((session) => visibleWorkSessionIds.has(session.id) && !pinnedZoneSessionIds.has(session.id)), pinnedSessionIds, sessionOrderRanks)
       : [],
-  }), [pinnedSessionIds, pinnedZoneSessionIds, sessionOrderRanks, sessions, workSessionIds]);
+  }), [pinnedSessionIds, pinnedZoneSessionIds, sessionOrderRanks, sessions, visibleWorkSessionIds]);
   // Attention zones, fed by the same live states and partition as the desktop
   // sidebar. The sheet closes when a session opens, so the open session keeps
   // no held place: the partition always draws the live zone. After Done or
@@ -1261,8 +1291,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   );
   const isFollowedSession = React.useCallback((session: Session) => !isChatDirectoryPath(getSessionDirectory(session)) && (
     (showPinnedSection && isSessionPinned(pinnedSessionIds, getSessionDirectory(session), session.id))
-    || (showWorkZone && isSessionInWork(session))
-  ), [pinnedSessionIds, showPinnedSection, showWorkZone]);
+    || (showWorkZone && isSessionInWork(session) && !isSessionHiddenFromWork(session, ownerProjectIdOf, projectVisibility))
+  ), [ownerProjectIdOf, pinnedSessionIds, projectVisibility, showPinnedSection, showWorkZone]);
   const watchOthers = watchesOtherSessions(sidebarLayout);
   const watchesLiveState = sidebarLayout.attention !== 'off' || watchOthers;
   const liveStateCandidates = React.useMemo(() => {
@@ -1280,7 +1310,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       showPinnedZone: showPinnedSection,
       showWorkZone,
       isPinned: (session) => isSessionPinned(pinnedSessionIds, getSessionDirectory(session), session.id),
-      isInWork: (session) => isSessionInWork(session),
+      isInWork: (session) => isSessionInWork(session) && !isSessionHiddenFromWork(session, ownerProjectIdOf, projectVisibility),
       isChat: (session) => isChatDirectoryPath(getSessionDirectory(session)),
       liveStateById,
       held: null,
@@ -1288,7 +1318,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     const stable = reuseUnchangedPartition(previousZonePartitionRef.current, next);
     previousZonePartitionRef.current = stable;
     return stable;
-  }, [liveStateById, pinnedSessionIds, showPinnedSection, showWorkZone, sidebarLayout, zoneRoots]);
+  }, [liveStateById, ownerProjectIdOf, pinnedSessionIds, projectVisibility, showPinnedSection, showWorkZone, sidebarLayout, zoneRoots]);
   const zoneSessionIds = React.useMemo(() => new Set(zonePartition.zoneBySessionId.keys()), [zonePartition]);
   const pinnedTimelineIds = React.useMemo(
     () => new Set((zonePartition.sessionsByZone.get('pinned') ?? []).map((session) => session.id)),
@@ -1365,6 +1395,9 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     for (const session of projectSessions) {
       const owner = sessionOwnership.bySessionId.get(session.id);
       if (!owner) continue;
+      // #217: a hiddenFromAllSessions project's sessions leave the
+      // grouped tree (its All-sessions surface); the project node stays.
+      if (projectVisibility.hiddenFromAllProjectIds.has(owner.projectId)) continue;
       const node = nodes.find((entry) => entry.project.id === owner.projectId);
       if (!node) continue;
       const matchedWorktree = findProjectWorktreeMatch(node.project, owner.scopeDirectory);
@@ -1385,7 +1418,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     }
 
     return nodes;
-  }, [activeProjectId, pinnedSessionIds, projectSortOrder, projectsMeta, runIndex, projectSessions, sessionOrderRanks, sessionOwnership, spaceList, spaces, t]);
+  }, [activeProjectId, pinnedSessionIds, projectSortOrder, projectVisibility, projectsMeta, runIndex, projectSessions, sessionOrderRanks, sessionOwnership, spaceList, spaces, t]);
 
   const normalizedDirectory = normalizePath(currentDirectory);
 
@@ -2067,7 +2100,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     // A session the Pinned zone lists leaves its project in List; the other
     // zones keep it in both places, as on the desktop sidebar.
     const roots = orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id) && !timelineContextById.get(session.id)?.project.hiddenFromAllSessions),
       pinnedSessionIds,
       sessionOrderRanks,
     );
@@ -2083,7 +2116,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const combinedTimelineEntries = React.useMemo(() => {
     if (!combinedListActive) return [];
     return toTimelineEntries(orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !pinnedTimelineIds.has(session.id) && timelineContextById.has(session.id) && !timelineContextById.get(session.id)?.project.hiddenFromAllSessions),
       pinnedSessionIds,
       sessionOrderRanks,
     ));
@@ -2091,7 +2124,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const timeListEntries = React.useMemo(() => {
     if (!timeListActive) return [];
     return toTimelineEntries(orderSessionsByLifecycleScopes(
-      projectSessions.filter((session) => !getParentId(session) && !zoneSessionIds.has(session.id) && timelineContextById.has(session.id)),
+      projectSessions.filter((session) => !getParentId(session) && !zoneSessionIds.has(session.id) && timelineContextById.has(session.id) && !timelineContextById.get(session.id)?.project.hiddenFromAllSessions),
       pinnedSessionIds,
       sessionOrderRanks,
     ));
