@@ -1225,6 +1225,7 @@ export const dict = {
   'gitView.pr.checks.openRun': 'فتح',
   'gitView.pr.checks.failedAnnotations': 'التعليقات التوضيحية الفاشلة',
   'gitView.pr.checks.failedAnnotationsShown': 'التعليقات التوضيحية الفاشلة (عرض {shown} من {total})',
+  'gitView.pr.checks.annotationsTruncated': 'التعليقات التوضيحية غير مكتملة — يحتوي هذا التشغيل على تعليقات أكثر مما أمكن تحميله.',
   'gitView.pr.field.baseBranch': 'الفرع الأساسي',
   'gitView.pr.field.description': 'الوصف',
   'gitView.pr.field.title': 'العنوان',

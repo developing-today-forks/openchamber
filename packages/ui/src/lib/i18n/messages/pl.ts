@@ -2709,6 +2709,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.pr.checks.openRun': 'Otwórz',
   'gitView.pr.checks.failedAnnotations': 'Adnotacje z błędami',
   'gitView.pr.checks.failedAnnotationsShown': 'Adnotacje z błędami (pokazano {shown} z {total})',
+  'gitView.pr.checks.annotationsTruncated': 'Adnotacje są niekompletne — ten przebieg ma więcej adnotacji, niż udało się wczytać.',
   'gitView.pr.field.baseBranch': 'Gałąź bazowa',
   'gitView.pr.field.description': 'Opis',
   'gitView.pr.field.title': 'Tytuł',
