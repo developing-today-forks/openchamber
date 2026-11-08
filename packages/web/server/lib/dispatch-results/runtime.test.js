@@ -503,3 +503,32 @@ describe('dispatch results runtime', () => {
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');
   });
 });
+
+describe('buildDispatchResultMessage surrogate-pair cut (#1908)', () => {
+  const EMOJI = '\u{1F600}';
+  const build = (text) => buildDispatchResultMessage({
+    sessionId: 'ses_cut',
+    title: '',
+    outcome: { state: 'completed', text, errorMessage: '' },
+  }).text;
+
+  it('never ends the 50,000-character cut on a lone high surrogate', () => {
+    const message = build(`${'a'.repeat(49_999)}${EMOJI}${'b'.repeat(100)}`);
+    expect(message).toContain('a'.repeat(49_999));
+    expect(message).not.toContain(EMOJI);
+    expect(message).toContain('[Cut at 50000 characters; read the rest with session.messages for ses_cut.]');
+    expect(Buffer.from(message, 'utf8').toString('utf8')).toBe(message);
+  });
+
+  it('keeps a pair that fits whole inside the limit', () => {
+    const message = build(`${'a'.repeat(49_998)}${EMOJI}${'b'.repeat(100)}`);
+    expect(message).toContain(`${'a'.repeat(49_998)}${EMOJI}`);
+    expect(Buffer.from(message, 'utf8').toString('utf8')).toBe(message);
+  });
+
+  it('cuts plain text at exactly the limit', () => {
+    const message = build('a'.repeat(50_100));
+    expect(message).toContain('a'.repeat(50_000));
+    expect(message).not.toContain('a'.repeat(50_001));
+  });
+});
