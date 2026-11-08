@@ -174,3 +174,23 @@ describe('goal objective version history (#1830)', () => {
     await expect(listObjectiveVersions('../escape')).resolves.toEqual([]);
   });
 });
+
+describe('objective clamp surrogate-pair boundary (#1949)', () => {
+  const EMOJI = '\u{1F600}';
+
+  it('a pair straddling the hard cap is dropped whole and never persisted as U+FFFD', async () => {
+    const content = `${'a'.repeat(999_999)}${EMOJI}${'z'.repeat(500)}`;
+    const written = await writeObjective('ses_pair1', content);
+    expect(written.content).toBe('a'.repeat(999_999));
+    const read = await readObjective('ses_pair1');
+    expect(read).toBe('a'.repeat(999_999));
+    expect(Buffer.from(read, 'utf8').toString('utf8')).toBe(read);
+  });
+
+  it('a pair ending exactly at the cap is kept whole', async () => {
+    const content = `${'a'.repeat(999_998)}${EMOJI}`;
+    const written = await writeObjective('ses_pair2', content);
+    expect(written.content).toBe(content);
+    expect(written.content.length).toBe(1_000_000);
+  });
+});
