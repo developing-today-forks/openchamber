@@ -842,6 +842,11 @@ export function createMessageQueueRuntime({
       if ((queues.get(sessionId)?.items.length ?? 0) >= MAX_ITEMS_PER_SESSION || (!queues.has(sessionId) && queues.size >= MAX_SESSIONS)) {
         throw httpError('message queue is full', 409);
       }
+    } else if ((queues.get(sessionId)?.items.length ?? 0) >= MAX_ITEMS_PER_SESSION) {
+      // An ordinary enqueue must not evict either: the append-and-slice
+      // below would silently drop the oldest item, and dropping a
+      // scheduled head item would report that task as cancelled.
+      throw httpError('message queue is full', 409);
     }
     const item = {
       id: `queued-${now()}-${Math.random().toString(36).slice(2, 9)}`,
