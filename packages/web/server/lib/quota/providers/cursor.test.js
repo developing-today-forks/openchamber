@@ -42,6 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.CURSOR_TOKEN;
+  delete process.env.CURSOR_REFRESH_TOKEN;
 });
 
 describe('Cursor quota', () => {
@@ -429,6 +430,22 @@ describe('Cursor request deadline', () => {
     expect(result.ok).toBe(false);
     expect(result.configured).toBe(true);
     expect(result.error).toBe('Request timed out');
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('reports a stalled token refresh as a timeout result', async () => {
+    const expiredToken = `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString('base64url')}.signature`;
+    process.env.CURSOR_TOKEN = expiredToken;
+    process.env.CURSOR_REFRESH_TOKEN = 'refresh-token';
+    const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(true);
+    expect(result.error).toBe('Request timed out');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
   });
 });
