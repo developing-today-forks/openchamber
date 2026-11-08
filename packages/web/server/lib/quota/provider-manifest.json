@@ -1,0 +1,433 @@
+{
+  "contract": [
+    "1. One logical provider set: exactly one set of quota provider ids; each surface list is a view of it, stated in this manifest (id, display name, per-surface presence).",
+    "2. Landed only when landed everywhere: a new provider lands web fetcher + registration, VS Code fetcher + dispatch + configured entry, UI catalog + type, and the docs row in the same change; a surface that legitimately cannot serve a provider records a named exception with a reason in this manifest \u2014 never a silent absence.",
+    "3. Aliases are not providers: a credential alias (openai for codex) is recorded as an alias and appears in no surface provider list.",
+    "4. Configured and fetch select through one function: per provider per backend, exactly one credential-selection function serves both the configured predicate and the fetch path.",
+    "5. No distinct id for a duplicate fetcher: a behaviour-identical fetcher id is folded into its provider (alias / folded instance) or registered with the distinct data it adds stated."
+  ],
+  "design": "https://github.com/developing-today-forks/openchamber/issues/1808",
+  "issue": "https://github.com/developing-today-forks/openchamber/issues/1809",
+  "surfaces": [
+    "web",
+    "vscode_dispatch",
+    "vscode_configured",
+    "ui_catalog",
+    "ui_union",
+    "docs"
+  ],
+  "providers": [
+    {
+      "id": "antigravity",
+      "name": "Antigravity",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "claude",
+      "name": "Claude",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "cline-pass",
+      "name": "ClinePass",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "command-code",
+      "name": "Command Code",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": false,
+        "vscode_configured": false,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      },
+      "exceptions": {
+        "vscode_dispatch": {
+          "issue": 1744,
+          "reason": "No VS Code fetcher/dispatch case for Command Code yet."
+        },
+        "vscode_configured": {
+          "issue": 1744,
+          "reason": "No VS Code configured-set entry for Command Code yet (same gap as dispatch)."
+        }
+      }
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "deepinfra",
+      "name": "DeepInfra",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "exe-dev",
+      "name": "exe.dev",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "github-copilot",
+      "name": "GitHub Copilot",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "github-copilot-addon",
+      "name": "GitHub Copilot Add-on",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": false,
+        "ui_union": true,
+        "docs": true
+      },
+      "exceptions": {
+        "ui_catalog": {
+          "issue": 1738,
+          "reason": "Registered in both backends and the type union but absent from the UI catalog; register-or-retire disposition lives in #1738."
+        }
+      }
+    },
+    {
+      "id": "google",
+      "name": "Google (Code Assist, per-model)",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "hyper",
+      "name": "Charm Hyper",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "kilo",
+      "name": "Kilo Code",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "kimi-for-coding",
+      "name": "Kimi for Coding",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "meta",
+      "name": "Meta Model API",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "minimax-cn-coding-plan",
+      "name": "MiniMax Coding Plan (minimaxi.com)",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "minimax-coding-plan",
+      "name": "MiniMax Coding Plan (minimax.io)",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": false,
+        "vscode_configured": false,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      },
+      "exceptions": {
+        "vscode_dispatch": {
+          "issue": 1757,
+          "reason": "No VS Code fetcher/dispatch case for Mistral yet; the shared UI requests it in VS Code since PR #1805."
+        },
+        "vscode_configured": {
+          "issue": 1757,
+          "reason": "No VS Code configured-set entry for Mistral yet (same gap as dispatch)."
+        }
+      }
+    },
+    {
+      "id": "nano-gpt",
+      "name": "NanoGPT",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "neuralwatt",
+      "name": "NeuralWatt",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "ollama-cloud",
+      "name": "Ollama Cloud",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "opencode-go",
+      "name": "OpenCode Go",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "opendesign",
+      "name": "Open Design",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": false,
+        "vscode_configured": false,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      },
+      "exceptions": {
+        "vscode_dispatch": {
+          "issue": 1744,
+          "reason": "No VS Code fetcher/dispatch case for Open Design yet."
+        },
+        "vscode_configured": {
+          "issue": 1744,
+          "reason": "No VS Code configured-set entry for Open Design yet (same gap as dispatch)."
+        }
+      }
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "wafer",
+      "name": "Wafer.ai",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "xai",
+      "name": "xAI",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "zai-coding-plan",
+      "name": "z.ai",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "zenmux",
+      "name": "ZenMux",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    },
+    {
+      "id": "zhipuai-coding-plan",
+      "name": "Zhipu AI Coding Plan",
+      "surfaces": {
+        "web": true,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
+        "ui_catalog": true,
+        "ui_union": true,
+        "docs": true
+      }
+    }
+  ],
+  "aliases": [
+    {
+      "id": "openai",
+      "aliasOf": "codex",
+      "name": "OpenAI",
+      "surfaces": {
+        "web": false,
+        "vscode_dispatch": false,
+        "vscode_configured": false,
+        "ui_catalog": false,
+        "ui_union": true,
+        "docs": false
+      },
+      "note": "Credential alias of codex (web registry credentialAliases). Present only in the UI type union today; removing it from the union is a behaviour-adjacent change and is NOT part of phase 1 \u2014 recorded here as the alias row open note (#1809)."
+    }
+  ]
+}

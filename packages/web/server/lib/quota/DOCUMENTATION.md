@@ -48,6 +48,7 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `kimi-for-coding` | Kimi for Coding | `providers/kimi.js` | `kimi-code-plan-cn`, `kimi-for-coding`, `kimi`, `kimi-code-plan-global` (first match wins) |
 | `meta` | Meta Model API | `providers/meta.js` | `meta` (OpenCode credential; plan usage also reads the Muse CLI OAuth store, see below) |
 | `mistral` | Mistral AI | `providers/mistral.js` | `mistral` (API key under `key` or `token`) — key-validity class: usage/balance are not API-readable on a standard key (#1619) |
+| `opendesign` | Open Design | `providers/opendesign.js` | OpenChamber-managed credential (`opendesign.json` holding the AMR console session cookie and workspace id, imported in Settings) |
 | `nano-gpt` | NanoGPT | `providers/nanogpt.js` | `nano-gpt`, `nanogpt`, `nano_gpt` |
 | `openrouter` | OpenRouter | `providers/openrouter.js` | `openrouter` |
 | `zai-coding-plan` | z.ai | `providers/zai.js` | `zai-coding-plan`, `zai`, `z.ai` |
@@ -61,6 +62,16 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `kilo` | Kilo Code | `providers/kilo.js` | `kilo`, `kilocode`, `kilo-code` (API key under `key`, `token`, or OAuth `access`; organization id under `kilocodeOrganizationId`, `organizationId`, or OAuth `accountId`, else OpenCode `provider.kilo.options.kilocodeOrganizationId`) |
 | `zenmux` | ZenMux | `providers/zenmux.js` | Optional Platform API key stored under `~/.config/openchamber/quota/zenmux.json` (`platformApiKey`). The OpenCode chat key is not used. |
 | `xai` | xAI | `providers/xai.js` | `xai` OAuth entry in OpenCode `auth.json` |
+
+The provider set in this table is one of five hand-kept lists (web registry,
+VS Code dispatch + configured set, UI catalog, UI type union, this table).
+`provider-manifest.json` in this folder is the checked-in manifest of the
+whole set - every provider id, its per-surface presence, and a named
+exception (with adopting issue) or alias record for every non-uniform id -
+and each package carries a conformance test asserting its lists equal the
+manifest minus its exceptions (design #1808, phase 1: #1809). The five
+registry-contract rules live in the manifest's `contract` field; a new
+provider updates the manifest and every surface in the same change.
 
 ## Internal-only provider module
 - `providers/openai.js` exists for logic parity/reuse but is intentionally not registered for dispatcher ID routing.
