@@ -656,13 +656,14 @@ const searchFallbackPr = async ({ octokit, branch, repos }) => {
 
     // The Search API has a tiny quota, so it is only spent on live branch status.
     // Closed/merged history is resolved by the cheaper per-head repo queries.
-    let response;
+    const runSearch = async (subset) => octokit.rest.search.issuesAndPullRequests({
+      q: [`is:pr state:open head:${branch}`, ...new Set(subset.map((target) => `repo:${target.owner}/${target.repo}`))].join(' '),
+      per_page: 20,
+    });
+
+    let responses;
     try {
-      const repoQualifiers = [...new Set(targetRepos.map((target) => `repo:${target.owner}/${target.repo}`))];
-      response = await octokit.rest.search.issuesAndPullRequests({
-        q: [`is:pr state:open head:${branch}`, ...repoQualifiers].join(' '),
-        per_page: 20,
-      });
+      responses = [await runSearch(targetRepos)];
       // If we get here, search API works for this repo — clear the disabled flag
       if (repoKey) _searchApiDisabledRepos.delete(repoKey);
     } catch (error) {
@@ -675,10 +676,33 @@ const searchFallbackPr = async ({ octokit, branch, repos }) => {
         if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
         return null;
       }
-      throw error;
+      if (error?.status !== 422) {
+        throw error;
+      }
+      // GitHub Search answers 422 for the WHOLE query when one repo:
+      // qualifier names a repo the token cannot access (e.g. a private
+      // parent/source added by expandRepoNetwork). That repo must not
+      // fail the whole lookup: retry scoped per repo and keep whichever
+      // targets answer, so a PR in an accessible repo is still found.
+      if (targetRepos.length <= 1) {
+        if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
+        return null;
+      }
+      responses = [];
+      for (const target of targetRepos) {
+        try {
+          responses.push(await runSearch([target]));
+        } catch (retryError) {
+          noteIfGitHubRateLimit(retryError);
+          if (retryError?.status === 403 || retryError?.status === 404 || retryError?.status === 422) {
+            continue;
+          }
+          throw retryError;
+        }
+      }
     }
 
-    const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+    const items = responses.flatMap((entry) => (Array.isArray(entry?.data?.items) ? entry.data.items : []));
     for (const item of items) {
       const repo = parseRepoFromApiUrl(item?.repository_url);
       if (!repo) {
