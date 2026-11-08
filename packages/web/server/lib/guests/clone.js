@@ -249,7 +249,17 @@ export const runGit = (args, { gitBinary = 'git', cwd, timeoutMs = CLONE_TIMEOUT
     let stderrTail = Buffer.alloc(0);
     child.stderr?.on('data', (chunk) => {
       const joined = Buffer.concat([stderrTail, chunk]);
-      stderrTail = joined.subarray(Math.max(0, joined.length - STDERR_TAIL_BYTES));
+      const cut = Math.max(0, joined.length - STDERR_TAIL_BYTES);
+      let tail = joined.subarray(cut);
+      if (cut > 0) {
+        // The byte cut can land inside a multi-byte character; drop leading
+        // continuation bytes so the tail starts on a UTF-8 boundary instead
+        // of decoding its first character as U+FFFD at either failure site.
+        let start = 0;
+        while (start < tail.length && (tail[start] & 0xc0) === 0x80) start++;
+        tail = tail.subarray(start);
+      }
+      stderrTail = tail;
     });
     let settled = false;
     const finish = (result) => {
