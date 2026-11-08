@@ -3,6 +3,14 @@ import crypto from 'crypto';
 import path from 'path';
 import os from 'os';
 import nativeFsPromises from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+
+// readDiscoveredIcon opens with storedIconOpenFlags (#1788): 'r' on
+// Windows / when O_NONBLOCK is unavailable, O_RDONLY|O_NONBLOCK else.
+const expectedDiscoveredOpenFlags =
+  process.platform === 'win32' || fsConstants.O_NONBLOCK === undefined
+    ? 'r'
+    : fsConstants.O_RDONLY | fsConstants.O_NONBLOCK;
 import { execFileSync } from 'node:child_process';
 
 import { registerProjectIconRoutes } from './project-icon-routes.js';
@@ -331,6 +339,104 @@ describe('project icon routes', () => {
     }
   });
 
+  it('rejects a non-regular discovered favicon without reading it (#1788)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    const read = vi.fn(async () => ({ bytesRead: 0 }));
+    const handle = {
+      stat: vi.fn(async () => ({ size: 0, isFile: () => false })),
+      read,
+      close: vi.fn(async () => {}),
+    };
+    const fsPromises = {
+      open: vi.fn(async () => handle),
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async () => {}),
+      unlink: vi.fn(async () => {}),
+    };
+
+    registerProjectIconRoutes(app, {
+      fsPromises,
+      path,
+      crypto,
+      openchamberDataDir: '/tmp/openchamber-test',
+      sanitizeProjects: (projects) => projects,
+      readSettingsFromDiskMigrated: async () => ({
+        projects: [{ id: 'proj-1', path: '/repo' }],
+      }),
+      persistSettings: async () => ({ projects: [] }),
+      createFsSearchRuntime: () => ({
+        searchFilesystemFiles: async () => [
+          {
+            name: 'favicon.ico',
+            path: '/repo/favicon.ico',
+            relativePath: 'favicon.ico',
+            extension: 'ico',
+          },
+        ],
+      }),
+      spawn: vi.fn(),
+      resolveGitBinaryForSpawn: vi.fn(),
+    });
+
+    const res = createMockResponse();
+    await getRoute('POST', '/api/projects/:projectId/icon/discover')({
+      params: { projectId: 'proj-1' },
+      body: {},
+    }, res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ error: 'Discovered icon is not a regular file' });
+    expect(read).not.toHaveBeenCalled();
+    expect(handle.close).toHaveBeenCalledTimes(1);
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === 'win32')('does not block discovering a FIFO favicon with no writer (#1788)', async () => {
+    const projectDir = await nativeFsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-icon-discover-fifo-'));
+    try {
+      const fifoPath = path.join(projectDir, 'favicon.ico');
+      execFileSync('mkfifo', [fifoPath]);
+
+      const { app, getRoute } = createRouteRegistry();
+      registerProjectIconRoutes(app, {
+        fsPromises: nativeFsPromises,
+        path,
+        crypto,
+        openchamberDataDir: '/tmp/openchamber-test',
+        sanitizeProjects: (projects) => projects,
+        readSettingsFromDiskMigrated: async () => ({
+          projects: [{ id: 'proj-1', path: projectDir }],
+        }),
+        persistSettings: async () => ({ projects: [] }),
+        createFsSearchRuntime: () => ({
+          searchFilesystemFiles: async () => [
+            {
+              name: 'favicon.ico',
+              path: fifoPath,
+              relativePath: 'favicon.ico',
+              extension: 'ico',
+            },
+          ],
+        }),
+        spawn: vi.fn(),
+        resolveGitBinaryForSpawn: vi.fn(),
+      });
+
+      const res = createMockResponse();
+      await Promise.race([
+        getRoute('POST', '/api/projects/:projectId/icon/discover')({
+          params: { projectId: 'proj-1' },
+          body: {},
+        }, res),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('icon discovery blocked on FIFO open')), 3000)),
+      ]);
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({ error: 'Discovered icon is not a regular file' });
+    } finally {
+      await nativeFsPromises.rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it('discovers a favicon at a Windows project root', async () => {
     const { app, getRoute } = createRouteRegistry();
     const svgBytes = Buffer.from('svg-bytes');
@@ -374,7 +480,7 @@ describe('project icon routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.discoveredPath).toBe('C:\\repo\\favicon.svg');
-    expect(fsPromises.open).toHaveBeenCalledWith('C:\\repo\\favicon.svg', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('C:\\repo\\favicon.svg', expectedDiscoveredOpenFlags);
     expect(fileHandle.close).toHaveBeenCalledTimes(1);
   });
 
@@ -539,7 +645,7 @@ describe('project icon routes', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ error: 'Discovered icon exceeds size limit (5 MB)' });
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.png', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.png', expectedDiscoveredOpenFlags);
     expect(fileHandle.stat).toHaveBeenCalledTimes(1);
     expect(fileHandle.read).not.toHaveBeenCalled();
     expect(fileHandle.close).toHaveBeenCalledTimes(1);
@@ -636,7 +742,7 @@ describe('project icon routes', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body.discoveredPath).toBe('/repo/favicon.svg');
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.svg', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.svg', expectedDiscoveredOpenFlags);
     expect(fileHandle.close).toHaveBeenCalledTimes(1);
     expect(fsPromises.writeFile).toHaveBeenCalled();
   });
@@ -685,7 +791,7 @@ describe('project icon routes', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ error: 'Discovered icon exceeds size limit (5 MB)' });
     expect(fsPromises.open).toHaveBeenCalledTimes(1);
-    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.svg', 'r');
+    expect(fsPromises.open).toHaveBeenCalledWith('/repo/favicon.svg', expectedDiscoveredOpenFlags);
     expect(fileHandle.totalBytesRead()).toBe(maxBytes + 1);
     expect(fileHandle.close).toHaveBeenCalledTimes(1);
     expect(fsPromises.writeFile).not.toHaveBeenCalled();

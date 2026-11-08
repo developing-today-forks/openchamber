@@ -43,10 +43,17 @@ export const registerProjectIconRoutes = (app, dependencies) => {
   };
   const projectIconHexColorPattern = /^#(?:[\da-fA-F]{3}|[\da-fA-F]{4}|[\da-fA-F]{6}|[\da-fA-F]{8})$/;
 
+  // Open with the stored-icon flags (#1788): a project-controlled
+  // favicon can be a FIFO, and a plain 'r' open blocks on it forever
+  // before the handle stat can judge it non-regular - the same
+  // open-before-guard shape #1537 fixed for the stored-icon reader.
   const readDiscoveredIcon = async (filePath) => {
-    const handle = await fsPromises.open(filePath, 'r');
+    const handle = await fsPromises.open(filePath, storedIconOpenFlags(process.platform));
     try {
       const stats = await handle.stat();
+      if (stats.isFile?.() === false) {
+        return { ok: false, reason: 'not-regular' };
+      }
       if (stats.size === 0) {
         return { ok: false, reason: 'empty' };
       }
@@ -517,6 +524,9 @@ export const registerProjectIconRoutes = (app, dependencies) => {
       }
       if (!discovered.ok && discovered.reason === 'too-large') {
         return res.status(400).json({ error: 'Discovered icon exceeds size limit (5 MB)' });
+      }
+      if (!discovered.ok && discovered.reason === 'not-regular') {
+        return res.status(400).json({ error: 'Discovered icon is not a regular file' });
       }
       const { bytes } = discovered;
 
