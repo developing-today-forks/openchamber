@@ -114,6 +114,28 @@ describe('gatekeeper program', () => {
   const journal = async () => JSON.parse((await control('GET', '/journal')).body);
 
   /**
+   * One control request whose body goes out as separate Buffer parts, with a pause between
+   * them, so the program's reader really does see more than one chunk: the boundary between
+   * two parts can fall inside a multi-byte character, which is the case readBody must survive.
+   */
+  const controlInParts = (path, parts) => new Promise((resolve) => {
+    const request = track(http.request({ host: '127.0.0.1', port: ports.control, method: 'POST', path }, (answer) => {
+      let text = '';
+      answer.on('data', (chunk) => { text += chunk; });
+      answer.on('end', () => resolve({ status: answer.statusCode, body: text }));
+      answer.on('error', () => resolve({ status: 0, body: '' }));
+    }));
+    request.on('error', () => resolve({ status: 0, body: '' }));
+    (async () => {
+      for (const part of parts) {
+        request.write(part);
+        await new Promise((done) => { setTimeout(done, 150); });
+      }
+      request.end();
+    })();
+  });
+
+  /**
    * Where the journal stands now, counted in records ever written: what the ring holds plus what
    * has already fallen out of it. Monotonic, and with no clock in it anywhere.
    *
@@ -1038,6 +1060,34 @@ describe('gatekeeper program', () => {
       // The oldest records went, the newest stayed.
       expect(after.records.at(-1).host).toBe('blocked.test');
     }, 60_000);
+
+    it('reads a control body whose multi-byte character is split across chunks with the value intact', async () => {
+      // The refusal echoes the name the program parsed, so a character corrupted on the way
+      // in would come back as replacement characters here.
+      const bytes = Buffer.from(JSON.stringify({ mode: 'allowlist', domains: ['\u20acxample.com'] }), 'utf8');
+      const euro = bytes.indexOf(0xe2);
+      expect(euro).toBeGreaterThan(0);
+      const answer = await controlInParts('/network', [bytes.subarray(0, euro + 1), bytes.subarray(euro + 1)]);
+      expect(answer.status).toBe(400);
+      expect(answer.body).toContain("'\u20acxample.com' is not a domain name");
+      expect(answer.body).not.toContain('\ufffd');
+    });
+
+    it('refuses a control body over the byte cap even when it is under the cap in characters', async () => {
+      // 400,037 characters but 1,200,037 bytes: the cap is CONTROL_BODY_BYTES, in bytes.
+      const body = JSON.stringify({ mode: 'open', domains: [], pad: '\u20ac'.repeat(400_000) });
+      expect(body.length).toBeLessThan(1024 * 1024);
+      expect(Buffer.byteLength(body)).toBeGreaterThan(1024 * 1024);
+      const answer = await control('POST', '/network', JSON.parse(body));
+      expect(answer.status).toBe(400);
+      expect(answer.body).toContain('the body is not JSON');
+    });
+
+    it('still refuses an ASCII body over the cap, and accepts a valid body under it', async () => {
+      const over = await control('POST', '/network', { mode: 'open', domains: [], pad: 'a'.repeat(1_100_000) });
+      expect(over.status).toBe(400);
+      expect((await control('POST', '/network', { mode: 'open', domains: [] })).status).toBe(200);
+    });
   });
 });
 
