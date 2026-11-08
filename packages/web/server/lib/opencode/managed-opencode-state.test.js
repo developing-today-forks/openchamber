@@ -282,6 +282,31 @@ describe('managed OpenCode log cursor', () => {
     expect(result.text).toBe('a\ufffd');
   });
 
+  it('delivers never-valid UTF-8 lead bytes instead of holding them back forever (#1790)', () => {
+    // Oracle: Buffer.prototype.toString('utf8') is the reference decoder. Every
+    // byte that is not a valid lead (overlong 0xC0/0xC1, never-valid 0xF5-0xFF)
+    // must be delivered in the same poll it was written, with the offset
+    // advanced past it — no later byte can complete it, so holding it back
+    // stalls the cursor for good.
+    for (const lead of [0xc0, 0xc1, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff]) {
+      const bytes = Buffer.from([0x61, lead]);
+      fs.writeFileSync(logPath, bytes);
+      const result = readLogSince(logPath, 0);
+      expect(result.offset).toBe(bytes.length);
+      expect(result.text).toBe(bytes.toString('utf8'));
+      expect(result.text).toBe('a\ufffd');
+    }
+  });
+
+  it('delivers a never-valid lead byte followed by continuation bytes in one poll (#1790)', () => {
+    // The held-back shape the bug produced: the lead byte plus the continuation
+    // bytes that follow it. None of these can ever form a character.
+    fs.writeFileSync(logPath, Buffer.from([0x61, 0xc0, 0x80, 0x80]));
+    const result = readLogSince(logPath, 0);
+    expect(result.offset).toBe(4);
+    expect(result.text).toBe('a\ufffd\ufffd\ufffd');
+  });
+
   it('returns empty text for a missing log', () => {
     expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
   });

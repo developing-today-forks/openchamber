@@ -109,14 +109,18 @@ export const decideManagedOpenCodeLaunch = ({ state, ownsPid, binary, args, fing
 
 // Length of a trailing incomplete UTF-8 sequence in buffer[0, length), i.e. a
 // valid lead byte followed by fewer continuation bytes than it declares.
-// Invalid bytes (lone continuations, overlong leads) are not a prefix of any
-// sequence and return 0 — they decode to U+FFFD exactly as before.
+// Invalid bytes (lone continuations, overlong leads 0xC0/0xC1, never-valid
+// leads 0xF5-0xFF) are not a prefix of any sequence and return 0 — they decode
+// to U+FFFD exactly as before. Holding one back would never complete: no later
+// byte can turn it into a character, so the cursor would stall on it forever.
 const incompleteUtf8TailLength = (buffer, length) => {
   for (let i = length - 1, scanned = 0; i >= 0 && scanned < 4; i--, scanned++) {
     const byte = buffer[i];
     if ((byte & 0xc0) === 0x80) continue;
     if (byte < 0x80) return 0;
-    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    // Valid lead ranges only: 0xC2-0xDF, 0xE0-0xEF, 0xF0-0xF4.
+    const needed = byte >= 0xf0 ? (byte <= 0xf4 ? 4 : 0) : byte >= 0xe0 ? 3 : byte >= 0xc2 ? 2 : 0;
+    if (needed === 0) return 0;
     const have = length - i;
     return have < needed ? have : 0;
   }
