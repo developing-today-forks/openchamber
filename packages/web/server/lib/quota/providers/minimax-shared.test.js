@@ -240,3 +240,38 @@ describe('MiniMax request deadline', () => {
     }
   });
 });
+
+describe('MiniMax credential selection (#1755)', () => {
+  it('falls through an empty or whitespace key to the token in isConfigured', () => {
+    expect(provider.isConfigured({ 'minimax-test': { key: '', token: 'valid-token' } })).toBe(true);
+    expect(provider.isConfigured({ 'minimax-test': { key: '   ', token: 'valid-token' } })).toBe(true);
+    expect(provider.isConfigured({ 'minimax-test': { key: 'real-key', token: 'valid-token' } })).toBe(true);
+  });
+
+  it('reports not configured in isConfigured when both fields are empty or whitespace', () => {
+    expect(provider.isConfigured({ 'minimax-test': { key: ' ', token: '' } })).toBe(false);
+    expect(provider.isConfigured({ 'minimax-test': { key: '', token: '  ' } })).toBe(false);
+  });
+
+  it('does not send a whitespace key as a bearer in fetchQuota', async () => {
+    credentialEntries = [{ active: true, integrationID: 'minimax-test', value: { type: 'key', key: '   ' } }];
+    const calls = stubFetchByUrl({ [TOKEN_URL]: okPayload([model({ model_name: 'general', current_interval_remaining_percent: 50 })]) });
+
+    const result = await provider.fetchQuota();
+
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not treat an empty key as configured in fetchQuota', async () => {
+    credentialEntries = [{ active: true, integrationID: 'minimax-test', value: { type: 'key', key: '' } }];
+    const calls = stubFetchByUrl({});
+
+    const result = await provider.fetchQuota();
+
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+    expect(calls).toHaveLength(0);
+  });
+});
