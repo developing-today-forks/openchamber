@@ -9,6 +9,7 @@ import {
   createLaunchFingerprint,
   decideManagedOpenCodeLaunch,
   hashLaunchSecret,
+  MANAGED_OPENCODE_LOG_READ_MAX_BYTES,
   readDrainingOpenCodeRecords,
   readLogSince,
   readLogTail,
@@ -309,6 +310,25 @@ describe('managed OpenCode log cursor', () => {
 
   it('returns empty text for a missing log', () => {
     expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
+  });
+
+  it.skipIf(isWindows)('treats a FIFO at the log path as no output instead of blocking (#1794)', () => {
+    // The readiness drain calls this synchronously: a plain open would block
+    // the whole server event loop on the FIFO forever. The call returning at
+    // all is the assertion; the result must be the no-output answer.
+    execFileSync('mkfifo', [logPath]);
+    expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
+    expect(readLogSince(logPath, 7)).toEqual({ text: '', offset: 7 });
+  });
+
+  it('caps one call at the per-call byte limit and leaves the rest for later polls (#1794)', () => {
+    const total = MANAGED_OPENCODE_LOG_READ_MAX_BYTES + 100;
+    fs.writeFileSync(logPath, 'x'.repeat(total));
+    const first = readLogSince(logPath, 0);
+    expect(first.text.length).toBe(MANAGED_OPENCODE_LOG_READ_MAX_BYTES);
+    expect(first.offset).toBe(MANAGED_OPENCODE_LOG_READ_MAX_BYTES);
+    const second = readLogSince(logPath, first.offset);
+    expect(second).toEqual({ text: 'x'.repeat(100), offset: total });
   });
 
   it('returns the tail of the log from the cursor, capped at maxBytes', () => {
