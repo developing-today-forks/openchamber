@@ -1,4 +1,4 @@
-import { GOAL_OBJECTIVE_CHAR_LIMIT, writeObjective } from './objectives.js';
+import { appendObjectiveVersion, GOAL_OBJECTIVE_CHAR_LIMIT, writeObjective } from './objectives.js';
 import { readGoalWriterSettings, writeGoalSpec } from './spec-writer.js';
 
 const TRIM_MARKER = '\n\n[… objective trimmed for the auditor — the full prompt was delivered in the chat message …]\n\n';
@@ -116,6 +116,11 @@ export const createSessionGoal = async ({
   let objectiveFile = false;
   try {
     await writeObjective(sessionID, objectiveText);
+    // The initial objective is the goal's first version (#1830). Best-effort:
+    // a history failure must not cost the user the goal.
+    await appendObjectiveVersion(sessionID, objectiveText).catch((error) => {
+      warn('goal objective version record failed', error);
+    });
     objectiveFile = true;
   } catch (error) {
     warn('goal objective file write failed, falling back to inline', error);

@@ -14,7 +14,11 @@ let winnerSaveBeforeMetadataWrite: string | null = null;
 let snapshotReadFails = false;
 let snapshotReadHook: (() => void) | null = null;
 const objectiveFileWrites: string[] = [];
+/** The `record` option of each write; true when not passed. */
+const objectiveFileWriteRecords: boolean[] = [];
 let objectiveFileDeletes = 0;
+const objectiveVersionDeletes: string[] = [];
+let nextVersionId = 0;
 
 const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
   storedMetadata = { openchamber: { goal } };
@@ -24,7 +28,10 @@ const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
   snapshotReadFails = false;
   snapshotReadHook = null;
   objectiveFileWrites.length = 0;
+  objectiveFileWriteRecords.length = 0;
   objectiveFileDeletes = 0;
+  objectiveVersionDeletes.length = 0;
+  nextVersionId = 0;
 };
 
 mock.module('@/sync/session-actions', () => ({
@@ -77,10 +84,16 @@ mock.module('@/lib/goalObjectiveFiles', () => ({
       ? { kind: 'missing' }
       : { kind: 'content', content: objectiveFileContent };
   },
-  writeGoalObjectiveFile: async (_sessionId: string, content: string) => {
+  writeGoalObjectiveFile: async (_sessionId: string, content: string, options?: { record?: boolean }) => {
     objectiveFileWrites.push(content);
+    objectiveFileWriteRecords.push(options?.record !== false);
     objectiveFileContent = content;
-    return { saved: true, truncated: false };
+    // Each recording write returns a fresh version id, like the server.
+    nextVersionId += 1;
+    return { saved: true, truncated: false, versionId: options?.record === false ? null : `v${nextVersionId}` };
+  },
+  deleteGoalObjectiveVersion: (_sessionId: string, versionId: string) => {
+    objectiveVersionDeletes.push(versionId);
   },
   deleteGoalObjectiveFile: () => {
     objectiveFileDeletes += 1;
@@ -268,6 +281,19 @@ describe('session-goal save against the objective file', () => {
     expect(objectiveFileWrites).toEqual([newText]);
     expect(objectiveFileDeletes).toBe(1);
     expect(objectiveFileContent).toBeNull();
+  });
+
+  // #1830: the aborted write recorded a version the goal never held; the
+  // rollback restores the file without recording and drops that version.
+  test('an aborted save does not leave a version, and its restore records none', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    completeGoalBeforeMetadataWrite = true;
+    const result = await setSessionGoal('session-1', undefined, { objective: newText, tokenBudget: null }, editPayload());
+    expect(result).toEqual({ outcome: 'changed' });
+    // The aborted write recorded v1; the restore wrote without recording.
+    expect(objectiveFileWrites).toEqual([newText, priorText]);
+    expect(objectiveFileWriteRecords).toEqual([true, false]);
+    expect(objectiveVersionDeletes).toEqual(['v1']);
   });
 
   test('a save with no intervening change writes the new objective and keeps it', async () => {

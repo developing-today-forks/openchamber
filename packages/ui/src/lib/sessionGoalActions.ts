@@ -5,7 +5,7 @@ import { distillGoalObjective } from '@/lib/smallModel';
 import { requestGoalSpec, type GoalWriterChoice } from '@/lib/goalWriter';
 import { formatMessage, useI18nStore } from '@/lib/i18n';
 import { toast } from '@/components/ui';
-import { deleteGoalObjectiveFile, fetchGoalObjectiveContent, fetchGoalObjectiveSnapshot, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
+import { deleteGoalObjectiveFile, deleteGoalObjectiveVersion, fetchGoalObjectiveContent, fetchGoalObjectiveSnapshot, writeGoalObjectiveFile } from '@/lib/goalObjectiveFiles';
 import { SESSION_GOAL_CHAR_LIMIT_MAX } from '@/lib/sessionGoalLimits';
 import {
   getSessionGoal,
@@ -277,6 +277,7 @@ export async function setSessionGoal(
     toast.error(formatMessage(dictionary, 'chat.goal.toast.serverTruncated'));
   }
   const objectiveFile = fileWrite.saved;
+  const recordedVersionId = fileWrite.saved ? fileWrite.versionId : null;
   // Inline (the objective file failed) the text rides every session event,
   // so it stays within the limit even when the goal ignores it.
   const inline = objectiveFile ? '' : objective.slice(0, useUIStore.getState().sessionGoalObjectiveCharLimit);
@@ -317,8 +318,12 @@ export async function setSessionGoal(
       if (priorObjective === null) {
         deleteGoalObjectiveFile(sessionId);
       } else {
-        await writeGoalObjectiveFile(sessionId, priorObjective);
+        // Restoring is not a save: it puts the file back without recording a
+        // version, and the version the aborted write recorded is dropped —
+        // the goal never held that text, so it is not a prior version.
+        await writeGoalObjectiveFile(sessionId, priorObjective, { record: false });
       }
+      if (recordedVersionId) deleteGoalObjectiveVersion(sessionId, recordedVersionId);
     }
   }
   return changed ? { outcome: 'changed' } : { outcome: 'saved', rewrittenSpec };
