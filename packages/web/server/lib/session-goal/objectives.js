@@ -60,7 +60,14 @@ const isValidObjectiveKey = (sessionId) =>
 // The goal's own limit is applied before the text gets here (the UI and
 // `createSessionGoal` condense a longer one); the file only refuses runaway
 // sizes, so a goal whose limit was raised or switched off is kept whole.
-const clampContent = (content) => String(content ?? '').trim().slice(0, GOAL_OBJECTIVE_HARD_CAP);
+// The cap cut must not split a surrogate pair: a clamped text ending on a
+// high surrogate drops that half, because the text is persisted as UTF-8,
+// where a lone surrogate would be stored as U+FFFD permanently.
+const clampContent = (content) => {
+  const clamped = String(content ?? '').trim().slice(0, GOAL_OBJECTIVE_HARD_CAP);
+  const last = clamped.charCodeAt(clamped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clamped.slice(0, -1) : clamped;
+};
 
 /** Write (or overwrite — a new goal replaces the old one) the session's objective. */
 export const writeObjective = async (sessionId, content) => {
