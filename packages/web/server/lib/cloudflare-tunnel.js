@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { StringDecoder } from 'string_decoder';
 import yaml from 'yaml';
 import {
   createExecutableSearchEnv,
@@ -578,9 +579,15 @@ export async function startCloudflareManagedRemoteTunnel({ token, hostname, toke
     // Keep stream drained, but avoid logging potentially sensitive output.
   });
 
+  // Forward through a StringDecoder: a multi-byte character split
+  // across pipe chunks must reach the log whole, not as U+FFFD
+  // replacement characters from a per-chunk decode (#1734).
+  const stderrDecoder = new StringDecoder('utf8');
   child.stderr.on('data', (chunk) => {
-    const text = chunk.toString('utf8');
-    process.stderr.write(text);
+    process.stderr.write(stderrDecoder.write(chunk));
+  });
+  child.stderr.on('end', () => {
+    process.stderr.write(stderrDecoder.end());
   });
 
   const cleanupTempTokenFile = () => {
@@ -668,9 +675,15 @@ export async function startCloudflareManagedLocalTunnel({ configPath, hostname }
     // Keep stream drained, but avoid logging potentially sensitive output.
   });
 
+  // Forward through a StringDecoder: a multi-byte character split
+  // across pipe chunks must reach the log whole, not as U+FFFD
+  // replacement characters from a per-chunk decode (#1734).
+  const stderrDecoder = new StringDecoder('utf8');
   child.stderr.on('data', (chunk) => {
-    const text = chunk.toString('utf8');
-    process.stderr.write(text);
+    process.stderr.write(stderrDecoder.write(chunk));
+  });
+  child.stderr.on('end', () => {
+    process.stderr.write(stderrDecoder.end());
   });
 
   child.on('error', (error) => {
