@@ -267,25 +267,6 @@
       }
     },
     {
-      "id": "github-copilot-addon",
-      "name": "GitHub Copilot Add-on",
-      "surfaces": {
-        "web": true,
-        "vscode_dispatch": true,
-        "vscode_configured": true,
-        "ui_catalog": false,
-        "ui_union": true,
-        "docs": true
-      },
-      "exception": {
-        "absent_from": [
-          "ui_catalog"
-        ],
-        "issue": 1738,
-        "reason": "Both backends and the UI type union carry it, but the UI catalog does not list it; its fetcher duplicates the primary Copilot fetcher, so the register-or-retire pick is made under contract rule 5 in #1738."
-      }
-    },
-    {
       "id": "minimax-coding-plan",
       "name": "MiniMax Coding Plan (minimax.io)",
       "surfaces": {

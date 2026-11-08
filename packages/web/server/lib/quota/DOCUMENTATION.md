@@ -44,7 +44,6 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `google` | Google | `providers/google/index.js` | `google`, `google.oauth` |
 | `hyper` | Charm Hyper | `providers/hyper.js` | `hyper` (API key under `key` or `token`) |
 | `github-copilot` | GitHub Copilot | `providers/copilot.js` | `github-copilot`, `copilot` |
-| `github-copilot-addon` | GitHub Copilot Add-on | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `kimi-for-coding` | Kimi for Coding | `providers/kimi.js` | `kimi-code-plan-cn`, `kimi-for-coding`, `kimi`, `kimi-code-plan-global` (first match wins) |
 | `meta` | Meta Model API | `providers/meta.js` | `meta` (OpenCode credential; plan usage also reads the Muse CLI OAuth store, see below) |
 | `mistral` | Mistral AI | `providers/mistral.js` | `mistral` (API key under `key` or `token`) — key-validity class: usage/balance are not API-readable on a standard key (#1619) |

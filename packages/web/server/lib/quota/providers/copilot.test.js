@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fetchQuota } from './copilot.js';import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const copilotAuth = vi.hoisted(() => ({ enterpriseUrl: null }));
 
@@ -9,7 +9,7 @@ const readAuth = async () => ({
   },
 });
 
-import { fetchQuota, fetchQuotaAddon } from './copilot.js';
+
 
 afterEach(() => {
   copilotAuth.enterpriseUrl = null;
@@ -34,7 +34,6 @@ const mockResponse = (body = payload) => ({
 describe('GitHub Copilot quota provider', () => {
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('exposes only premium interactions for the %s', async (_name, fetchProviderQuota) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse()));
 
@@ -48,7 +47,6 @@ describe('GitHub Copilot quota provider', () => {
 
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('derives the credit label from the same used axis as VS Code on fractional credits for the %s', async (_name, fetchProviderQuota) => {
     // The live Business-plan shape: `remaining` (39078) is the integer twin of
     // `quota_remaining` (39078.5). GitHub's own Copilot panel reports
@@ -79,7 +77,6 @@ describe('GitHub Copilot quota provider', () => {
 
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('keeps the fractional credit rather than rounding it away for the %s', async (_name, fetchProviderQuota) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({
       quota_reset_date: '2026-09-01T00:00:00Z',
@@ -96,7 +93,6 @@ describe('GitHub Copilot quota provider', () => {
 
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('uses the enterprise Copilot API for the %s', async (_name, fetchProviderQuota) => {
     copilotAuth.enterpriseUrl = 'https://ghe.example.com/';
     const fetchMock = vi.fn().mockResolvedValue(mockResponse());
@@ -143,7 +139,6 @@ describe('GitHub Copilot quota provider', () => {
 
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('reports unlimited plans without a percent for the %s', async (_name, fetchProviderQuota) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({
       quota_reset_date: '2026-09-01T00:00:00Z',
@@ -161,7 +156,6 @@ describe('GitHub Copilot quota provider', () => {
 
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('falls back to percent_remaining when entitlement is unusable for the %s', async (_name, fetchProviderQuota) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({
       quota_reset_date: '2026-09-01T00:00:00Z',
@@ -181,7 +175,6 @@ describe('GitHub Copilot quota provider', () => {
 describe('GitHub Copilot request deadline', () => {
   it.each([
     ['primary provider', fetchQuota],
-    ['add-on provider', fetchQuotaAddon],
   ])('recognizes the timeout exception from AbortSignal.timeout for the %s', async (_name, fetchProviderQuota) => {
     const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
     vi.stubGlobal('fetch', fetchMock);

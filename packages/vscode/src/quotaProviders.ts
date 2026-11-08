@@ -1046,7 +1046,6 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   const copilotAuth = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot']));
   if (accessOrTokenFrom(copilotAuth)) {
     configured.add('github-copilot');
-    configured.add('github-copilot-addon');
   }
 
 
@@ -1095,11 +1094,6 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
     const disabled = readDisabledQuotaProviderIds();
     for (const id of disabled) {
       configured.delete(id);
-    }
-    // The add-on row reads the same Copilot credential, so the one
-    // `github-copilot` entry in disabled_providers governs both rows.
-    if (disabled.has('github-copilot')) {
-      configured.delete('github-copilot-addon');
     }
   }
 
@@ -2147,66 +2141,6 @@ export const fetchCopilotQuota = async ({ readAuth = readOpenCodeCredentials }: 
     return buildResult({
       providerId: 'github-copilot',
       providerName: 'GitHub Copilot',
-      ok: false,
-      configured: true,
-      error: error instanceof Error ? error.message : 'Request failed',
-    });
-  }
-};
-
-export const fetchCopilotAddonQuota = async ({ readAuth = readOpenCodeCredentials }: CopilotQuotaDependencies = {}): Promise<ProviderResult> => {
-  const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
-  const accessToken = accessOrTokenFrom(entry);
-  // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
-  // login targets GitHub Enterprise Server. A value that is not a usable host is refused by
-  // `copilotUserUrl` before any request is made, so it cannot redirect the credential.
-  const enterpriseUrl = entry?.enterpriseUrl as string | undefined;
-
-  if (!accessToken) {
-    return buildResult({
-      providerId: 'github-copilot-addon',
-      providerName: 'GitHub Copilot Add-on',
-      ok: false,
-      configured: false,
-      error: 'Not configured',
-    });
-  }
-
-  try {
-    const response = await fetch(copilotUserUrl(enterpriseUrl), {
-      method: 'GET',
-      signal: AbortSignal.timeout(15_000),
-      headers: {
-        Authorization: `token ${accessToken}`,
-        Accept: 'application/json',
-        'Editor-Version': 'vscode/1.96.2',
-        'X-Github-Api-Version': '2025-04-01',
-      },
-    });
-
-    if (!response.ok) {
-      return buildResult({
-        providerId: 'github-copilot-addon',
-        providerName: 'GitHub Copilot Add-on',
-        ok: false,
-        configured: true,
-        error: `API error: ${response.status}`,
-      });
-    }
-
-    const payload = await readQuotaJson(response) as Record<string, unknown>;
-    return buildResult({
-      providerId: 'github-copilot-addon',
-      providerName: 'GitHub Copilot Add-on',
-      ok: true,
-      configured: true,
-      usage: { windows: buildCopilotWindows(payload) },
-    });
-  } catch (error) {
-    return buildResult({
-      providerId: 'github-copilot-addon',
-      providerName: 'GitHub Copilot Add-on',
       ok: false,
       configured: true,
       error: error instanceof Error ? error.message : 'Request failed',
@@ -4919,8 +4853,6 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchCodexQuota();
     case 'github-copilot':
       return fetchCopilotQuota();
-    case 'github-copilot-addon':
-      return fetchCopilotAddonQuota();
     case 'google':
       return fetchGoogleQuota();
     case 'antigravity':
