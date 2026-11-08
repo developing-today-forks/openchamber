@@ -144,7 +144,9 @@ const CommentsSection: React.FC<{
     now: number;
     attachments?: CommentAttachments;
     threadActions?: ReferenceThreadActions;
-}> = ({ state, total, activity = false, now, attachments, threadActions }) => {
+    /** Linked note under the comments when the thread is truncated (Linear commentsMore, #1781). */
+    moreNote?: React.ReactNode;
+}> = ({ state, total, activity = false, now, attachments, threadActions, moreNote }) => {
     const { t } = useI18n();
     const shown = state.status === 'ready' ? state.value.filter((entry) => entry.kind === 'comment').length : 0;
     return (
@@ -176,6 +178,7 @@ const CommentsSection: React.FC<{
             ) : (
                 <ReferenceComments entries={state.value} now={now} onAttachComment={attachments?.onAttach} threadActions={threadActions} />
             )}
+            {state.status === 'ready' ? moreNote : null}
         </section>
     );
 };
@@ -640,7 +643,22 @@ const LinearPreview: React.FC<{
             </div>
 
             {full ? <SubIssuesSection issue={full} onOpen={onOpenIssue} /> : null}
-            {detail.status === 'ready' ? <CommentsSection state={comments} total={null} now={now} /> : null}
+            {detail.status === 'ready' ? (
+                <CommentsSection
+                    state={comments} total={null} now={now}
+                    moreNote={full?.commentsMore ? (
+                        <a
+                            href={issue.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={cn("inline-flex items-center gap-1 self-start typography-meta hover:text-foreground", REFERENCE_META_TEXT)}
+                        >
+                            {t('references.picker.preview.commentsMore', { count: full.comments?.length ?? 0 })}
+                            <Icon name="external-link" className="size-3.5" />
+                        </a>
+                    ) : undefined}
+                />
+            ) : null}
         </PreviewFrame>
     );
 };
