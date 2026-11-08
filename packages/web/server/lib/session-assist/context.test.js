@@ -198,3 +198,40 @@ describe('session assist context', () => {
     expect(trimmed).toMatch(/END$/);
   });
 });
+
+describe('excerpt surrogate-pair safety (#1911)', () => {
+  const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const expectClean = (result, limit) => {
+    expect(result).not.toMatch(loneSurrogate);
+    expect(Buffer.from(result, 'utf8').toString('utf8')).not.toContain('\uFFFD');
+    expect(result.length).toBeLessThanOrEqual(limit);
+  };
+
+  it('never splits a pair at the head or tail cut (limit 100)', () => {
+    // Marker is 19 chars: head = ceil((100 - 19) / 2) = 41, tail = 40.
+    const headStraddle = excerpt('a'.repeat(40) + '\u{1F600}' + 'b'.repeat(200), 100);
+    expectClean(headStraddle, 100);
+    expect(headStraddle).toContain('[Content omitted]');
+    expect(headStraddle.startsWith('a'.repeat(40) + '\n[Content omitted]')).toBe(true);
+
+    const tailStraddle = excerpt('a'.repeat(200) + '\u{1F600}' + 'b'.repeat(39), 100);
+    expectClean(tailStraddle, 100);
+    expect(tailStraddle).toContain('[Content omitted]');
+    expect(tailStraddle.endsWith('b'.repeat(39))).toBe(true);
+  });
+
+  it('never splits a pair at the real 16,000 assistant limit', () => {
+    // head = ceil((16000 - 19) / 2) = 7991, tail = 7990.
+    const headStraddle = excerpt('a'.repeat(7_990) + '\u{1F600}' + 'b'.repeat(9_000), 16_000);
+    expectClean(headStraddle, 16_000);
+    expect(headStraddle.startsWith('a'.repeat(7_990) + '\n[Content omitted]')).toBe(true);
+
+    const tailStraddle = excerpt('a'.repeat(9_000) + '\u{1F600}' + 'b'.repeat(7_989), 16_000);
+    expectClean(tailStraddle, 16_000);
+    expect(tailStraddle.endsWith('b'.repeat(7_989))).toBe(true);
+  });
+
+  it('never splits a pair in the small-limit branch', () => {
+    expect(excerpt('a'.repeat(10) + '\u{1F600}' + 'b'.repeat(10), 11)).toBe('a'.repeat(10));
+  });
+});

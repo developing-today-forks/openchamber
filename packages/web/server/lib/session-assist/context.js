@@ -14,13 +14,30 @@ const QUOTE_FIELDS = new Map([
 ]);
 const LINK_KINDS = new Set(['github-issue', 'github-pr', 'linear-issue']);
 
+// Pair-safe cuts: a plain slice at a fixed offset can land between the
+// halves of a surrogate pair and leave a lone surrogate that encodes to
+// U+FFFD in the model context. Move a boundary that lands inside a pair
+// back to the pair boundary; excerpts stay within the limit either way.
+const sliceHeadPairSafe = (text, limit) => {
+  const sliced = text.slice(0, limit);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
+};
+
+const sliceTailPairSafe = (text, count) => {
+  if (count <= 0) return '';
+  const sliced = text.slice(-count);
+  const first = sliced.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? sliced.slice(1) : sliced;
+};
+
 export function excerpt(text, limit) {
   if (text.length <= limit) return text;
   const marker = '\n[Content omitted]\n';
-  if (limit <= marker.length) return text.slice(0, Math.max(0, limit));
+  if (limit <= marker.length) return sliceHeadPairSafe(text, Math.max(0, limit));
   const head = Math.ceil((limit - marker.length) / 2);
   const tail = limit - marker.length - head;
-  return text.slice(0, head) + marker + (tail > 0 ? text.slice(-tail) : '');
+  return sliceHeadPairSafe(text, head) + marker + sliceTailPairSafe(text, tail);
 }
 
 function attachedText(message) {
