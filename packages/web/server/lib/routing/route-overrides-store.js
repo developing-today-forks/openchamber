@@ -20,23 +20,78 @@ import {
 const ACTIONS = ['avoid', 'prefer', 'allow-over-budget'];
 const MAX_ROUTE_FEEDBACK_BYTES = 4 * 1024 * 1024;
 const RETAIN_ROUTE_FEEDBACK_BYTES = 3 * 1024 * 1024;
+const MAX_COMPACT_RETRIES = 3;
 const ROUTE_FEEDBACK_OPEN_FLAGS = fs.constants.O_RDWR
   | fs.constants.O_APPEND
   | fs.constants.O_CREAT
   | (process.platform === 'win32' ? 0 : fs.constants.O_NONBLOCK);
 
-const writeFeedbackSnapshot = (file, buffer, mode) => {
-  const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+const discardFeedbackSnapshot = (temporary) => {
   try {
-    fs.writeFileSync(temporary, buffer, { mode });
-    renameSyncWithRetry((from, to) => fs.renameSync(from, to), temporary, file);
-  } catch (error) {
-    try {
-      fs.unlinkSync(temporary);
-    } catch {
-      // The rename may already have consumed the temporary path.
+    fs.unlinkSync(temporary);
+  } catch {
+    // The rename or another cleanup may already have consumed the temporary path.
+  }
+};
+
+const writeFeedbackSnapshot = (file, initialBuffer, initialExpectedSize, mode) => {
+  let buffer = initialBuffer;
+  let expectedSize = initialExpectedSize;
+  let currentMode = mode;
+
+  for (let attempt = 0; attempt < MAX_COMPACT_RETRIES; attempt++) {
+    if (buffer === null) {
+      let fd;
+      try {
+        fd = fs.openSync(file, fs.constants.O_RDONLY | (process.platform === 'win32' ? 0 : fs.constants.O_NONBLOCK));
+        try {
+          const stat = fs.fstatSync(fd);
+          if (!stat.isFile() || stat.size <= MAX_ROUTE_FEEDBACK_BYTES) return;
+          expectedSize = stat.size;
+          buffer = feedbackTail(fd, expectedSize);
+          currentMode = stat.mode & 0o777;
+        } finally {
+          fs.closeSync(fd);
+        }
+      } catch (error) {
+        if (error?.code === 'ENOENT') return;
+        throw error;
+      }
     }
-    throw error;
+
+    const temporary = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    try {
+      fs.writeFileSync(temporary, buffer, { mode: currentMode });
+
+      let statBeforeRename;
+      try {
+        statBeforeRename = fs.statSync(file);
+      } catch (error) {
+        discardFeedbackSnapshot(temporary);
+        if (error?.code === 'ENOENT') return;
+        throw error;
+      }
+
+      if (!statBeforeRename.isFile() || statBeforeRename.size <= MAX_ROUTE_FEEDBACK_BYTES) {
+        // The file was already compacted by another process, or is no longer a regular file.
+        discardFeedbackSnapshot(temporary);
+        return;
+      }
+
+      if (statBeforeRename.size !== expectedSize) {
+        // Another process appended while the snapshot was prepared.
+        // Discard this snapshot and retry so the newer append is retained.
+        discardFeedbackSnapshot(temporary);
+        buffer = null;
+        continue;
+      }
+
+      renameSyncWithRetry((from, to) => fs.renameSync(from, to), temporary, file);
+      return;
+    } catch (error) {
+      discardFeedbackSnapshot(temporary);
+      throw error;
+    }
   }
 };
 
@@ -191,6 +246,7 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
 
     const fd = fs.openSync(feedbackFile, ROUTE_FEEDBACK_OPEN_FLAGS, 0o666);
     let retained = null;
+    let initialSize = 0;
     let mode = 0o666;
     try {
       if (!fs.fstatSync(fd).isFile()) throw new Error(`Route feedback file is not a regular file: ${feedbackFile}`);
@@ -203,6 +259,7 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
       const stat = fs.fstatSync(fd);
       if (stat.size > MAX_ROUTE_FEEDBACK_BYTES) {
         retained = feedbackTail(fd, stat.size);
+        initialSize = stat.size;
         mode = stat.mode & 0o777;
       }
     } finally {
@@ -210,7 +267,7 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
     }
     if (retained !== null) {
       try {
-        writeFeedbackSnapshot(feedbackFile, retained, mode);
+        writeFeedbackSnapshot(feedbackFile, retained, initialSize, mode);
       } catch (error) {
         console.warn(`Failed to compact route feedback file: ${error?.code ?? 'I/O failure'}`);
       }

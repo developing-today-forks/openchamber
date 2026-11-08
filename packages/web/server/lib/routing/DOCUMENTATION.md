@@ -91,9 +91,16 @@ history. `addNote` stays append-only; the read cap is the visible growth bound.
 skipped. An over-cap or non-regular file logs a warning and returns no learned
 choices for that request. After an append takes the log past 4 MiB, the store
 atomically keeps the newest complete lines within 3 MiB. This also trims an
-older over-cap log on the next recorded correction or undo. If compaction
-fails, the store logs the failure and leaves the log intact; a later append can
-retry it.
+older over-cap log on the next recorded correction or undo. Before replacing the
+file via atomic rename, snapshot compaction re-stats the live file. If a
+concurrent writer appended entries during snapshot preparation, compaction
+discards the snapshot and retries (up to 3 attempts) so the newer append is
+retained in the compacted tail. If another process already compacted the log
+below the cap, the redundant snapshot is cleanly discarded. An append in the
+small interval between the final pre-rename stat check and the filesystem rename
+can still be overwritten; this residual loss window is accepted in exchange for
+atomic log replacement without cross-process locks. If compaction fails, the
+store logs the failure and leaves the log intact; a later append can retry it.
 
 ## Invariants
 
