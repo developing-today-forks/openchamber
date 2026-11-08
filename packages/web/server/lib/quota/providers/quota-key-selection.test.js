@@ -9,7 +9,6 @@ import { fetchQuota as zaiFetch, isConfigured as zaiConfigured, useZaiGiftReset 
 import { fetchQuota as codexFetch, isConfigured as codexConfigured } from './codex.js';
 import {
   fetchQuota as copilotFetch,
-  fetchQuotaAddon as copilotAddonFetch,
   isConfigured as copilotConfigured
 } from './copilot.js';
 
@@ -99,17 +98,6 @@ for (const spec of SPECS) {
 }
 
 describe('second fetch paths (#1751)', () => {
-  it('copilot add-on fetch falls through a whitespace access field to the token', async () => {
-    const auth = { 'github-copilot': { access: ' ', token: 'valid-token' } };
-    const fetchMock = vi.fn().mockResolvedValue(okResponse());
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await copilotAddonFetch({ readAuth: async () => auth });
-
-    expect(sentAuthorization(fetchMock)).toBe('token valid-token');
-    expect(result.configured).toBe(true);
-  });
-
   it('zai gift-reset use falls through an empty key to the valid token', async () => {
     const auth = { zai: { key: '', token: 'valid-token' } };
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true }) });

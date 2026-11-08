@@ -209,16 +209,6 @@ const registry = {
     fetchQuota: copilot.fetchQuota,
     disabledBy: ['github-copilot']
   },
-  'github-copilot-addon': {
-    providerId: copilot.providerIdAddon,
-    providerName: copilot.providerNameAddon,
-    aliases: copilot.aliases,
-    isConfigured: copilot.isConfigured,
-    fetchQuota: copilot.fetchQuotaAddon,
-    // The add-on row reads the same Copilot credential, so the one
-    // `github-copilot` entry in disabled_providers governs both rows.
-    disabledBy: ['github-copilot']
-  },
   'minimax-coding-plan': {
     providerId: minimaxCodingPlan.providerId,
     providerName: minimaxCodingPlan.providerName,
@@ -691,7 +681,6 @@ export const fetchDeepinfraQuota = deepinfra.fetchQuota;
 export const fetchDeepseekQuota = deepseek.fetchQuota;
 export const fetchHyperQuota = hyper.fetchQuota;
 export const fetchCopilotQuota = copilot.fetchQuota;
-export const fetchCopilotAddonQuota = copilot.fetchQuotaAddon;
 export const fetchKimiQuota = kimi.fetchQuota;
 export const fetchOpenRouterQuota = openrouter.fetchQuota;
 export const fetchZaiQuota = zai.fetchQuota;
