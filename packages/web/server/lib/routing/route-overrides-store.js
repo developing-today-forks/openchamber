@@ -240,6 +240,8 @@ export const createOverrideStore = ({ dataDir = resolveOpenCodeDataDir(), now = 
   const recordFeedback = (entry) => {
     fs.mkdirSync(dataDir, { recursive: true });
     const line = Buffer.from(`${JSON.stringify({ time: now(), ...entry })}\n`);
+    // An entry larger than the compaction retention window cannot survive
+    // compaction as a complete line.
     if (line.length > RETAIN_ROUTE_FEEDBACK_BYTES) {
       throw new RangeError(`Route feedback entries must fit within ${RETAIN_ROUTE_FEEDBACK_BYTES} bytes`);
     }

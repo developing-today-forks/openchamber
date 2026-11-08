@@ -108,6 +108,27 @@ describe('override store', () => {
     }
   });
 
+  it('enforces the 3 MiB per-entry limit on recorded feedback', () => {
+    // Oracle: the 3 MiB per-entry limit documented in packages/web/server/lib/routing/DOCUMENTATION.md.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+    const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+    const retainBytes = 3 * 1024 * 1024;
+
+    expect(() => {
+      store.recordFeedback({ key: 'oversized', note: 'x'.repeat(retainBytes) });
+    }).toThrow(RangeError);
+    expect(() => {
+      store.recordFeedback({ key: 'oversized', note: 'x'.repeat(retainBytes) });
+    }).toThrow(`Route feedback entries must fit within ${retainBytes} bytes`);
+
+    const overhead = Buffer.byteLength(JSON.stringify({ time: 5_000, key: 'exact', note: '' }) + '\n');
+    store.recordFeedback({ key: 'exact', note: 'x'.repeat(retainBytes - overhead) });
+
+    const feedback = store.readFeedback();
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0].key).toBe('exact');
+  });
+
   it('keeps the newest complete feedback lines when the log reaches its cap', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
