@@ -257,10 +257,66 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
     }
   };
 
-  const sweepDeadHolderClaims = async () => {
+  // Bounded-read outcomes that can never succeed on a later sweep: the
+  // file is not a regular file, or it is over the claim cap. Every other
+  // failure (a vanished file, EACCES/EIO) is transient and keeps the
+  // leave-for-a-later-sweep behaviour.
+  const PERMANENT_CLAIM_READ_CODES = new Set(['BOUNDED_FILE_NOT_REGULAR', 'BOUNDED_FILE_TOO_LARGE']);
+
+  const sweepDeadHolderClaims = async ({ log } = {}) => {
+    let reapedClaims = 0;
+    let unreadableClaims = 0;
     for (const claim of await listClaimFiles()) {
+      let holder;
       try {
-        const holder = Number.parseInt((await readBoundedText(claim.filePath, MANAGED_PROCESS_CLAIM_MAX_BYTES)).trim(), 10);
+        holder = Number.parseInt((await readBoundedText(claim.filePath, MANAGED_PROCESS_CLAIM_MAX_BYTES)).trim(), 10);
+      } catch (error) {
+        if (!PERMANENT_CLAIM_READ_CODES.has(error?.code)) {
+          // Transiently unreadable claim files are left for a later sweep,
+          // never guessed at.
+          continue;
+        }
+        unreadableClaims += 1;
+        // The claim's content can never be read, so judge it by the pid
+        // its filename encodes (#1822): a claim for a dead pid hands over
+        // nothing, whatever its unreadable content says. A live filename
+        // pid keeps its claim - the content may be a live holder's record
+        // in a shape this reader rejects.
+        if (isPidAlive(claim.pid)) {
+          log?.(`[lifecycle] permanently unreadable claim for live pid ${claim.pid} left in place (${error.code})`);
+          continue;
+        }
+        // Same move-aside caution as the readable path: a claimant may
+        // have replaced the unreadable file with a readable claim since
+        // the read above. Reap only when the moved file is still
+        // permanently unreadable; restore anything else untouched.
+        const asidePath = `${claim.filePath}.sweeping-${process.pid}`;
+        try {
+          await fs.rename(claim.filePath, asidePath);
+        } catch {
+          continue;
+        }
+        let stillUnreadable = false;
+        try {
+          await readBoundedText(asidePath, MANAGED_PROCESS_CLAIM_MAX_BYTES);
+        } catch (movedError) {
+          stillUnreadable = PERMANENT_CLAIM_READ_CODES.has(movedError?.code);
+        }
+        if (!stillUnreadable || isPidAlive(claim.pid)) {
+          try {
+            await fs.rename(asidePath, claim.filePath);
+          } catch {
+            // Slot taken while restoring; the newer claim wins.
+            await fs.rm(asidePath, { force: true }).catch(() => {});
+          }
+          continue;
+        }
+        await fs.rm(asidePath, { force: true });
+        reapedClaims += 1;
+        log?.(`[lifecycle] reaped permanently unreadable claim for dead pid ${claim.pid} (${error.code})`);
+        continue;
+      }
+      try {
         if (!Number.isInteger(holder) || isPidAlive(holder)) continue;
         // Same race as claim supersession: a claimant may have replaced the
         // stale file with a live claim since the read above. Move the file
@@ -285,10 +341,15 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
           continue;
         }
         await fs.rm(asidePath, { force: true });
+        reapedClaims += 1;
       } catch {
         // Unreadable claim files are left for a later sweep, never guessed at.
       }
     }
+    if (unreadableClaims > 0) {
+      log?.(`[lifecycle] claim sweep: ${unreadableClaims} permanently unreadable claim(s) seen, ${reapedClaims} dead-holder claim(s) reaped`);
+    }
+    return { reapedClaims, unreadableClaims };
   };
 
   const writeEntryFile = async (entry) => {
@@ -476,7 +537,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
    * server. Returns { inspected, reaped }.
    */
   const reapOrphanedProcesses = async ({ log, keepPids = [] } = {}) => {
-    await sweepDeadHolderClaims();
+    await sweepDeadHolderClaims({ log });
     const records = await readAllEntries();
     if (records.length === 0) return { inspected: 0, reaped: 0 };
 
