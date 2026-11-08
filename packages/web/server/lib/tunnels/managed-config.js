@@ -1,9 +1,17 @@
 import {
+  DEFAULT_DURABLE_JSON_MAX_BYTES,
   isJsonObject,
   preserveMalformedJsonFile,
   readDurableJsonFile,
   writeDurableJsonFile,
 } from '../shared/durable-json-store.js';
+
+// The legacy migration source is bounded by the same cap as the store
+// it migrates into: the durable-store default the managed file's own
+// reader enforces. A larger legacy file could never be re-read once
+// migrated, so refusing it at migration time is the managed store's
+// own bound applied one step earlier, not a new, unrelated cap (#1692).
+export const LEGACY_NAMED_TUNNELS_MAX_BYTES = DEFAULT_DURABLE_JSON_MAX_BYTES;
 
 export const createManagedTunnelConfigRuntime = (deps) => {
   const {
@@ -29,8 +37,6 @@ export const createManagedTunnelConfigRuntime = (deps) => {
   };
 
   const emptyConfig = () => ({ version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] });
-
-  const isEnoent = (error) => Boolean(error) && typeof error === 'object' && error.code === 'ENOENT';
 
   const sanitizeManagedRemoteTunnelConfigEntries = (value) => {
     if (!Array.isArray(value)) {
@@ -126,6 +132,28 @@ export const createManagedTunnelConfigRuntime = (deps) => {
     return 'failed';
   };
 
+  // Bounded, handle-judged read of the legacy named-tunnels file
+  // (#1692), through the same durable-store primitive as the managed
+  // file: opened once and judged from the handle (a non-regular file
+  // is refused, and the primitive's O_NONBLOCK open keeps a FIFO from
+  // wedging the persist lock this migration runs under), with the cap
+  // enforced in flight. No validateValue: the legacy parse semantics
+  // are unchanged (any JSON value is accepted and its `tunnels`
+  // entries sanitized, exactly as the old whole-file read + JSON.parse
+  // did). An empty legacy file answers 'missing', per the primitive's
+  // contract. A coded refusal (over-cap, non-regular) or any other
+  // read failure answers 'error' here so the migration can degrade.
+  const readLegacyFile = async () => {
+    try {
+      return await readDurableJsonFile(CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH, {
+        fs: fsPromises,
+        maxBytes: LEGACY_NAMED_TUNNELS_MAX_BYTES,
+      });
+    } catch (error) {
+      return { state: 'error', error };
+    }
+  };
+
   const writeManagedRemoteTunnelConfigToDisk = async (data) => {
     await writeDurableJsonFile(
       CLOUDFLARE_MANAGED_REMOTE_TUNNELS_FILE_PATH,
@@ -172,23 +200,37 @@ export const createManagedTunnelConfigRuntime = (deps) => {
       console.warn('Failed to read managed remote tunnel config file:', current.error);
       return emptyConfig();
     }
-    try {
-      const legacyRaw = await fsPromises.readFile(CLOUDFLARE_LEGACY_NAMED_TUNNELS_FILE_PATH, 'utf8');
-      const parsed = JSON.parse(legacyRaw);
-      const tunnels = sanitizeManagedRemoteTunnelConfigEntries(parsed?.tunnels);
+    const legacy = await readLegacyFile();
+    if (legacy.state === 'missing') {
+      return emptyConfig();
+    }
+    if (legacy.state === 'valid') {
       const migrated = {
         version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION,
-        tunnels,
+        tunnels: sanitizeManagedRemoteTunnelConfigEntries(legacy.value?.tunnels),
       };
-      await writeManagedRemoteTunnelConfigToDisk(migrated);
-      return migrated;
-    } catch (error) {
-      if (isEnoent(error)) {
-        return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
+      try {
+        await writeManagedRemoteTunnelConfigToDisk(migrated);
+      } catch (error) {
+        console.warn('Failed to migrate legacy named tunnel config file:', error);
+        return emptyConfig();
       }
-      console.warn('Failed to migrate legacy named tunnel config file:', error);
-      return { version: CLOUDFLARE_MANAGED_REMOTE_TUNNELS_VERSION, tunnels: [] };
+      return migrated;
     }
+    // Malformed, over-cap, non-regular, or unreadable: degrade exactly
+    // as an unreadable legacy file always has (empty config, a warning,
+    // nothing written over anything) and return promptly, so the
+    // persist lock is never wedged. The warning never carries a parse
+    // error: JSON.parse messages quote the file content, and this file
+    // holds tunnel tokens; the primitive's coded refusals name only
+    // the path, the size, and the limit.
+    console.warn(
+      'Failed to migrate legacy named tunnel config file:',
+      legacy.state === 'malformed'
+        ? new Error('the legacy named tunnel config file does not contain valid JSON')
+        : legacy.error,
+    );
+    return emptyConfig();
   };
 
   // Locked migration on the read paths degrades to an empty config when the
