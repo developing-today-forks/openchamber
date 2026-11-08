@@ -178,9 +178,19 @@ export const readDispatchOutcome = (records, dispatchedAt, afterIdleId) => {
   };
 };
 
+// Keep the cut bound without leaving a lone surrogate at its end: a plain
+// slice at the limit can land between the halves of a pair, and the delivered
+// message would carry the broken half (U+FFFD once encoded). Drop back to the
+// pair boundary — the cut still happens at the limit, one code unit earlier.
+const cutAnswer = (text) => {
+  const sliced = text.slice(0, ANSWER_CHAR_LIMIT);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
+};
+
 const outcomeBody = ({ state, text, errorMessage }, sessionId) => {
   const answer = text.length > ANSWER_CHAR_LIMIT
-    ? `${text.slice(0, ANSWER_CHAR_LIMIT)}\n\n[Cut at ${ANSWER_CHAR_LIMIT} characters; read the rest with session.messages for ${sessionId}.]`
+    ? `${cutAnswer(text)}\n\n[Cut at ${ANSWER_CHAR_LIMIT} characters; read the rest with session.messages for ${sessionId}.]`
     : text;
   if (state === 'completed') return answer || 'The session finished without a text reply.';
   if (state === 'error') {

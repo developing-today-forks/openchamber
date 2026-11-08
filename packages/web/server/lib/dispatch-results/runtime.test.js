@@ -163,6 +163,21 @@ describe('buildDispatchResultMessage', () => {
     expect(message.description).toBe('Say "hi" <now>');
   });
 
+  it('never leaves a lone surrogate when the cut lands inside a pair (#1908)', () => {
+    const straddle = 'a'.repeat(49_999) + '\u{1F600}' + 'b'.repeat(100);
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    for (const outcome of [
+      { state: 'completed', text: straddle, errorMessage: '' },
+      { state: 'error', text: straddle, errorMessage: 'boom' },
+      { state: 'cancelled', text: straddle, errorMessage: '' },
+    ]) {
+      const message = buildDispatchResultMessage({ sessionId: 'ses_c', title: '', outcome });
+      expect(message.text).not.toMatch(loneSurrogate);
+      expect(Buffer.from(message.text, 'utf8').toString('utf8')).not.toContain('\uFFFD');
+      expect(message.text).toContain('a'.repeat(49_999) + '\n\n[Cut at 50000 characters;');
+    }
+  });
+
   it('states a failure and a stop instead of an empty answer', () => {
     expect(buildDispatchResultMessage({ sessionId: 'ses_c', title: '', outcome: { state: 'error', text: '', errorMessage: 'boom' } }).text)
       .toContain('The session failed: boom');
