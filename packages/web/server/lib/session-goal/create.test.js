@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const writeObjectiveMock = vi.fn(async () => undefined);
+const appendObjectiveVersionMock = vi.fn(async () => ({ versions: [], versionId: null }));
 const generateSmallModelTextMock = vi.fn(async () => ({ text: '' }));
 
 vi.mock('./objectives.js', () => ({
@@ -8,6 +9,7 @@ vi.mock('./objectives.js', () => ({
   GOAL_OBJECTIVE_HARD_CAP: 1_000_000,
   goalObjectiveLimits: () => ({ objective: 5_000, check: 20_000 }),
   writeObjective: writeObjectiveMock,
+  appendObjectiveVersion: appendObjectiveVersionMock,
 }));
 
 vi.mock('../small-model/index.js', () => ({
@@ -22,7 +24,19 @@ const { buildGoalIntroText, createSessionGoal } = await import('./create.js');
 describe('session goal creation', () => {
   beforeEach(() => {
     writeObjectiveMock.mockReset().mockResolvedValue(undefined);
+    appendObjectiveVersionMock.mockReset().mockResolvedValue({ versions: [], versionId: null });
     generateSmallModelTextMock.mockReset().mockResolvedValue({ text: '' });
+  });
+
+  it('records the initial objective as the goal\'s first version (#1830)', async () => {
+    await createSessionGoal({
+      sessionID: 'ses_123',
+      directory: '/repo',
+      objective: 'Finish and verify the migration',
+      persistSessionGoal: vi.fn(async () => undefined),
+      goalWriterSettings: WRITER_OFF,
+    });
+    expect(appendObjectiveVersionMock).toHaveBeenCalledWith('ses_123', 'Finish and verify the migration');
   });
 
   it('saves the goal in OpenChamber\'s own store, never through OpenCode', async () => {

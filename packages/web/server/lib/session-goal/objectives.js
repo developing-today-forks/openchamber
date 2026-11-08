@@ -8,6 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { z } from 'zod';
 
 export const GOAL_OBJECTIVE_CHAR_LIMIT = 5_000;
 // The Settings bounds for both limits below; the upper one also caps a goal
@@ -21,6 +22,10 @@ const GOAL_OBJECTIVE_MAX_READ_BYTES = GOAL_OBJECTIVE_HARD_CAP * 4 + 4;
 // How much of the objective the progress check reads. Above the goal limit by
 // default, so a goal within its limit reaches the check whole.
 const GOAL_CHECK_OBJECTIVE_CHAR_LIMIT = 20_000;
+// How many prior objective versions a session keeps (#1830). Every save that
+// changes the text appends a version and the oldest beyond this cap is pruned,
+// so the history file stays bounded next to the objective it describes.
+export const GOAL_OBJECTIVE_VERSION_CAP = 20;
 
 const asCharLimit = (value, fallback) => (
   Number.isInteger(value) && value >= MIN_CHAR_LIMIT && value <= GOAL_OBJECTIVE_HARD_CAP ? value : fallback
@@ -110,4 +115,115 @@ export const readObjective = async (sessionId) => {
 export const deleteObjective = async (sessionId) => {
   if (!isValidObjectiveKey(sessionId)) return;
   await fs.promises.unlink(objectiveFilePath(sessionId)).catch(() => undefined);
+};
+
+// --- Objective version history (#1830) -------------------------------------
+// Every save that changes the text appends a version, so a goal can be listed,
+// read back, and restored. The history lives beside the objective it
+// describes (`<data-dir>/goals/<sessionId>.versions.json`) and is capped at
+// GOAL_OBJECTIVE_VERSION_CAP with the oldest pruned first, so it never grows
+// without bound. A restore is an ordinary save of an older text, which appends
+// the restored text as a new version rather than rewriting the past.
+
+const versionsFilePath = (sessionId) => path.join(goalsDir(), `${sessionId}.versions.json`);
+
+const VERSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+const VersionIdSchema = z.string().regex(VERSION_ID_PATTERN);
+
+const isValidVersionId = (versionId) => VersionIdSchema.safeParse(versionId).success;
+
+const createVersionId = () => `v${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
+// A stored version is judged by schema, once: a token id, string text, and a
+// finite timestamp. Anything else in the file is dropped rather than trusted.
+const StoredVersionSchema = z.object({
+  id: z.string().regex(VERSION_ID_PATTERN),
+  content: z.string(),
+  savedAt: z.number().finite(),
+});
+
+// A history file is user-reachable on disk, so a malformed one reads as empty
+// history rather than failing the save it accompanies, and one corrupt entry
+// drops on its own instead of erasing the good versions beside it: losing the
+// past must never lose the present objective or its healthy neighbours.
+const readVersionList = async (sessionId) => {
+  let raw;
+  try {
+    raw = await fs.promises.readFile(versionsFilePath(sessionId), 'utf8');
+  } catch {
+    return [];
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const versions = [];
+  for (const entry of parsed) {
+    const result = StoredVersionSchema.safeParse(entry);
+    if (result.success) versions.push(result.data);
+  }
+  return versions;
+};
+
+const writeVersionList = async (sessionId, versions) => {
+  await fs.promises.mkdir(goalsDir(), { recursive: true });
+  await fs.promises.writeFile(versionsFilePath(sessionId), JSON.stringify(versions), 'utf8');
+};
+
+/**
+ * Appends `content` as a new version of the session's objective and prunes the
+ * oldest beyond the cap. A save whose text equals the newest version records
+ * nothing new — an unchanged rewrite is not a version. Returns the recorded
+ * version id (null when nothing was recorded) and the retained versions,
+ * newest first.
+ */
+export const appendObjectiveVersion = async (sessionId, content, now = Date.now()) => {
+  if (!isValidObjectiveKey(sessionId)) {
+    throw Object.assign(new Error('invalid session id'), { statusCode: 400 });
+  }
+  const text = clampContent(content);
+  if (!text) {
+    throw Object.assign(new Error('objective content is required'), { statusCode: 400 });
+  }
+  const versions = await readVersionList(sessionId);
+  if (versions[0]?.content === text) return { versions, versionId: null };
+  const version = { id: createVersionId(), content: text, savedAt: now };
+  const next = [version, ...versions].slice(0, GOAL_OBJECTIVE_VERSION_CAP);
+  await writeVersionList(sessionId, next);
+  return { versions: next, versionId: version.id };
+};
+
+/** The retained versions, newest first; empty when the session has none. */
+export const listObjectiveVersions = async (sessionId) => {
+  if (!isValidObjectiveKey(sessionId)) return [];
+  return readVersionList(sessionId);
+};
+
+/** One retained version by id, or null when missing. */
+export const readObjectiveVersion = async (sessionId, versionId) => {
+  if (!isValidObjectiveKey(sessionId) || !isValidVersionId(versionId)) return null;
+  const versions = await readVersionList(sessionId);
+  return versions.find((version) => version.id === versionId) ?? null;
+};
+
+/**
+ * Drops one version by id; a missing id is a no-op. Used to undo a version
+ * recorded for a write that was then rolled back — the goal never held it, so
+ * it must not appear as a prior version.
+ */
+export const deleteObjectiveVersion = async (sessionId, versionId) => {
+  if (!isValidObjectiveKey(sessionId) || !isValidVersionId(versionId)) return;
+  const versions = await readVersionList(sessionId);
+  const next = versions.filter((version) => version.id !== versionId);
+  if (next.length !== versions.length) await writeVersionList(sessionId, next);
+};
+
+/** Best-effort delete of the history alongside the objective it describes. */
+export const deleteObjectiveVersions = async (sessionId) => {
+  if (!isValidObjectiveKey(sessionId)) return;
+  await fs.promises.unlink(versionsFilePath(sessionId)).catch(() => undefined);
 };
