@@ -392,7 +392,7 @@ describe('settings search anchors', () => {
     // prepareSettingsSearchTarget must request that sub-page for
     // routing.token itself — the global anchor test above cannot see a
     // wrong-page entry whose anchor exists on another page.
-    expect(settingsView).toMatch(/result\.id === 'routing\.token'[\s\S]{0,240}setSettingsProvidersClassificationRequested\(true\)/);
+    expect(/result\.id === 'routing\.token'[\s\S]{0,240}setSettingsProvidersClassificationRequested\(true\)/.test(settingsView)).toBe(true);
 
     const classificationPage = [...sources.entries()]
       .find(([filePath]) => filePath.endsWith('ClassificationProvidersPage.tsx'))?.[1] ?? '';
@@ -415,7 +415,11 @@ describe('settings search anchors', () => {
     expect(/result\.id === 'providers\.custom'[\s\S]{0,240}setSettingsProvidersCustomRequested\(true\)/.test(settingsView)).toBe(true);
 
     const providersPage = [...sources.entries()]
-      .find(([filePath]) => filePath.endsWith('ProvidersPage.tsx'))?.[1] ?? '';
+      // The suffix must name the providers directory as well: plain
+      // 'ProvidersPage.tsx' also matches ClassificationProvidersPage.tsx,
+      // and which of the two the find returns depends on readdir order,
+      // so the assertion passed or failed with the filesystem (#13655).
+      .find(([filePath]) => /[\\/]providers[\\/]ProvidersPage\.tsx$/.test(filePath))?.[1] ?? '';
     // The page consumes the request by preselecting the custom candidate
     // in add mode (custom-create mode), then clears the one-shot flag.
     expect(/customRequested[\s\S]{0,400}setCandidateProviderId\(CUSTOM_PROVIDER_ID\)/.test(providersPage)).toBe(true);
