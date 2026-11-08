@@ -563,6 +563,7 @@ const LinearPreview: React.FC<{
     // A parent or sub-issue opened from another preview comes without its
     // labels and parent; its own detail brings them.
     const labels = (full?.labels ?? issue.labels ?? []).map((label) => ({ name: label.name, color: labelColor(label.color) }));
+    const labelsMore = full?.labelsMore ?? issue.labelsMore ?? false;
     const parent = full?.parent ?? issue.parent ?? null;
     const updated = relative(issue.updatedAt);
     const assignee = issue.assignee?.displayName || issue.assignee?.name;
@@ -622,7 +623,20 @@ const LinearPreview: React.FC<{
                     ) : null}
                     {updated ? <MetaRow label={t('references.picker.preview.updated')}>{updated}</MetaRow> : null}
                     {labels.length > 0 ? (
-                        <MetaRow label={t('references.picker.preview.labels')}><ReferenceLabelChips labels={labels} /></MetaRow>
+                        <MetaRow label={t('references.picker.preview.labels')}>
+                            <ReferenceLabelChips labels={labels} />
+                            {labelsMore ? (
+                                <a
+                                    href={issue.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={cn("ml-1 inline-flex items-center gap-1 typography-meta hover:text-foreground", REFERENCE_META_TEXT)}
+                                >
+                                    {t('references.picker.preview.labelsMore', { count: labels.length })}
+                                    <Icon name="external-link" className="size-3.5" />
+                                </a>
+                            ) : null}
+                        </MetaRow>
                     ) : null}
                 </dl>
             }
