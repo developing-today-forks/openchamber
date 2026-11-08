@@ -18,15 +18,16 @@ export const aliases = ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai'];
 const WAFER_QUOTA_URL = 'https://pass.wafer.ai/v1/inference/quota';
 const WAFER_WINDOW_SECONDS = 5 * 3600;
 
-export const isConfigured = (auth) => {
+const getApiKey = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  return Boolean(entry?.key || entry?.token);
+  return asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 };
+
+export const isConfigured = (auth) => Boolean(getApiKey(auth));
 
 export const fetchQuota = async () => {
   const auth = await readOpenCodeCredentials();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  const apiKey = entry?.key ?? entry?.token;
+  const apiKey = getApiKey(auth);
 
   if (!apiKey) {
     return buildResult({

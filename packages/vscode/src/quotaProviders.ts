@@ -1018,12 +1018,12 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   }
 
   const minimaxAuth = normalizeAuthEntry(getAuthEntry(auth, ['minimax-coding-plan']));
-  if (minimaxAuth && ((minimaxAuth as Record<string, unknown>).key || (minimaxAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(minimaxAuth)) {
     configured.add('minimax-coding-plan');
   }
 
   const minimaxCnAuth = normalizeAuthEntry(getAuthEntry(auth, ['minimax-cn-coding-plan']));
-  if (minimaxCnAuth && ((minimaxCnAuth as Record<string, unknown>).key || (minimaxCnAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(minimaxCnAuth)) {
     configured.add('minimax-cn-coding-plan');
   }
 
@@ -1045,7 +1045,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
 
 
   const waferAuth = normalizeAuthEntry(getAuthEntry(auth, ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai']));
-  if (waferAuth && ((waferAuth as Record<string, unknown>).key || (waferAuth as Record<string, unknown>).token)) {
+  if (keyOrTokenFrom(waferAuth)) {
     configured.add('wafer');
   }
 
@@ -2402,7 +2402,7 @@ const fetchMiniMaxQuota = async (data: {
 }): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, [data.providerId])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({
@@ -3439,7 +3439,7 @@ const WAFER_WINDOW_SECONDS = 5 * 3600;
 const fetchWaferQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai'])) as Record<string, unknown> | null;
-  const apiKey = (entry?.key as string | undefined) ?? (entry?.token as string | undefined);
+  const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
     return buildResult({

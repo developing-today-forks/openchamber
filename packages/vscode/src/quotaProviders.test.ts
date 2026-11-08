@@ -3530,6 +3530,9 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'neuralwatt', listedAs: 'neuralwatt', credential: (b) => blankKey('neuralwatt', b) },
     { provider: 'deepseek', listedAs: 'deepseek', credential: (b) => blankKey('deepseek', b) },
     { provider: 'deepinfra', listedAs: 'deepinfra', credential: (b) => blankKey('deepinfra', b) },
+    { provider: 'minimax-coding-plan', listedAs: 'minimax-coding-plan', credential: (b) => blankKey('minimax-coding-plan', b) },
+    { provider: 'minimax-cn-coding-plan', listedAs: 'minimax-cn-coding-plan', credential: (b) => blankKey('minimax-cn-coding-plan', b) },
+    { provider: 'wafer', listedAs: 'wafer', credential: (b) => blankKey('wafer', b) },
   ];
 
   for (const { provider, listedAs, credential } of cases) {

@@ -7,6 +7,7 @@ import {
   toUsageWindow,
   toNumber,
   toTimestamp,
+  asNonEmptyString,
 } from '../utils/index.js';
 
 // Status 3 indicates the window is not applicable for the current plan tier.
@@ -138,15 +139,16 @@ const calculateUsage = (model, isTokenPlan) => {
 };
 
 export const createMiniMaxCodingPlanProvider = ({ providerId, providerName, aliases, tokenPlanUrl, codingPlanUrl }) => {
-  const isConfigured = (auth) => {
+  const getApiKey = (auth) => {
     const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-    return Boolean(entry?.key || entry?.token);
+    return asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
   };
+
+  const isConfigured = (auth) => Boolean(getApiKey(auth));
 
   const fetchQuota = async () => {
     const auth = await readOpenCodeCredentials();
-    const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-    const apiKey = entry?.key ?? entry?.token;
+    const apiKey = getApiKey(auth);
 
     if (!apiKey) {
       return buildResult({
