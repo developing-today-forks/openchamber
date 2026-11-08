@@ -64,7 +64,7 @@ const pngBytes = new Uint8Array([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
 describe("input-store composer restore", () => {
   beforeEach(() => {
-    useInputStore.setState({ pendingComposerRestore: null })
+    useInputStore.setState({ pendingComposerRestore: null, pendingComposerContextRestore: null })
   })
 
   test("only the destination can consume a restore, and only once", () => {
@@ -92,6 +92,17 @@ describe("input-store composer restore", () => {
     expect(useInputStore.getState().consumePendingInputText()).toEqual({ text: "ordinary insertion", mode: "append" })
     expect(useInputStore.getState().consumePendingComposerRestore(target)).toBe(pending)
   })
+
+  test("only the matching composer consumes restored context, once", () => {
+    const target = { runtimeKey: "runtime", directory: "/repo", sessionId: "session" }
+    const pending = { target, context: [{ kind: "synthetic" as const, text: "Resolve the conflict" }] }
+    useInputStore.setState({ pendingComposerContextRestore: pending })
+
+    expect(useInputStore.getState().consumePendingComposerContextRestore({ ...target, sessionId: "other" })).toBeNull()
+    expect(useInputStore.getState().pendingComposerContextRestore).toBe(pending)
+    expect(useInputStore.getState().consumePendingComposerContextRestore(target)).toBe(pending)
+    expect(useInputStore.getState().consumePendingComposerContextRestore(target)).toBeNull()
+  })
 })
 
 describe("input-store attachments", () => {
@@ -99,6 +110,8 @@ describe("input-store attachments", () => {
     pendingReaders.length = 0
     installMockFileReader()
     useInputStore.setState({
+      pendingComposerRestore: null,
+      pendingComposerContextRestore: null,
       pendingInputText: null,
       pendingInputMode: "replace",
       pendingSyntheticParts: null,

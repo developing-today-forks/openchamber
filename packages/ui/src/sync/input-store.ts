@@ -7,6 +7,7 @@ import { create } from "zustand"
 import type { AttachIssueRequest } from '@openchamber/sdk'
 import type { ContextPartMetadata } from '@/lib/messages/contextParts'
 import type { AttachedFile } from "@/stores/types/sessionTypes"
+import type { QueuedContextPart } from '@/stores/messageQueueStore'
 import { prepareAttachmentFiles } from "./attachment-files"
 import { getChatDraftIdentityKey, subscribeChatDraftDeletion, type ChatDraftIdentity } from "@/lib/chatDraftPersistence"
 
@@ -141,6 +142,8 @@ export type InputState = {
     files: Array<{ url: string; mimeType: string; filename: string }>
   } | null
   consumePendingComposerRestore: (target: ChatDraftIdentity | null) => InputState["pendingComposerRestore"]
+  pendingComposerContextRestore: { target: ChatDraftIdentity; context: QueuedContextPart[] } | null
+  consumePendingComposerContextRestore: (target: ChatDraftIdentity | null) => InputState["pendingComposerContextRestore"]
   pendingInputText: string | null
   pendingInputMode: "replace" | "append" | "append-inline"
   /**
@@ -223,6 +226,13 @@ export const useInputStore = create<InputState>()((set, get) => ({
     const pending = get().pendingComposerRestore
     if (!pending || !target || getChatDraftIdentityKey(pending.target) !== getChatDraftIdentityKey(target)) return null
     set({ pendingComposerRestore: null })
+    return pending
+  },
+  pendingComposerContextRestore: null,
+  consumePendingComposerContextRestore: (target) => {
+    const pending = get().pendingComposerContextRestore
+    if (!pending || !target || getChatDraftIdentityKey(pending.target) !== getChatDraftIdentityKey(target)) return null
+    set({ pendingComposerContextRestore: null })
     return pending
   },
   pendingInputText: null,
