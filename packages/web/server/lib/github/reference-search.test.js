@@ -232,6 +232,21 @@ describe('toReference', () => {
     expect(issue?.bodyTruncated).toBe(true);
   });
 
+  it('never splits a surrogate pair at the preview cut (#1957)', () => {
+    const emoji = String.fromCodePoint(0x1f600);
+    const body = 'a'.repeat(19_999) + emoji + 'b'.repeat(100);
+    const issue = toReference({ __typename: 'Issue', ...common(6), body, state: 'OPEN', stateReason: null }, repos);
+    expect(issue?.body).toBe('a'.repeat(19_999));
+    expect(issue?.bodyTruncated).toBe(true);
+    // The UTF-8-encode oracle: a lone surrogate would come back as U+FFFD.
+    expect(new TextDecoder().decode(new TextEncoder().encode(issue?.body ?? ''))).toBe(issue?.body);
+    expect(issue?.body).not.toContain('�');
+    // A pair that fits whole inside the cap survives intact.
+    const fits = toReference({ __typename: 'Issue', ...common(7), body: 'a'.repeat(19_998) + emoji + 'b'.repeat(100), state: 'OPEN', stateReason: null }, repos);
+    expect(fits?.body).toHaveLength(20_000);
+    expect(fits?.body.endsWith(emoji)).toBe(true);
+  });
+
   it('rejects nodes from other repos and malformed nodes', () => {
     expect(toReference({ __typename: 'Issue', ...common(5, { name: 'other', owner: { login: 'x' } }), state: 'OPEN', stateReason: null }, repos)).toBeNull();
     expect(toReference({ __typename: 'Issue', number: 'five' }, repos)).toBeNull();

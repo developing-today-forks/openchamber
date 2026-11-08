@@ -352,9 +352,14 @@ const repoKey = (owner, repo) => `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 
 const previewBody = (body) => {
   const text = body ?? '';
-  return text.length > BODY_PREVIEW_MAX
-    ? { body: text.slice(0, BODY_PREVIEW_MAX), bodyTruncated: true }
-    : { body: text, bodyTruncated: false };
+  if (text.length <= BODY_PREVIEW_MAX) return { body: text, bodyTruncated: false };
+  let cut = text.slice(0, BODY_PREVIEW_MAX);
+  // A cut at the cap can land between the halves of a surrogate pair,
+  // leaving a lone high surrogate that encodes as U+FFFD downstream; move
+  // a boundary that lands inside a pair back to the pair boundary.
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return { body: cut, bodyTruncated: true };
 };
 
 /**
