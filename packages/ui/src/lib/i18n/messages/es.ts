@@ -1276,6 +1276,7 @@ export const dict: Record<I18nKey, string> = {
   "gitView.pr.checks.openRun": "Abrir",
   "gitView.pr.checks.failedAnnotations": "Anotaciones fallidas",
   "gitView.pr.checks.failedAnnotationsShown": "Anotaciones fallidas (se muestran {shown} de {total})",
+  "gitView.pr.checks.annotationsTruncated": "Las anotaciones están incompletas: esta ejecución tiene más anotaciones de las que pudieron cargarse.",
   "gitView.pr.field.baseBranch": "Rama base",
   "gitView.pr.field.description": "Descripción",
   "gitView.pr.field.title": "Título",

@@ -1284,6 +1284,7 @@ export const dict = {
   'gitView.pr.checks.openRun': 'Open',
   'gitView.pr.checks.failedAnnotations': 'Failed annotations',
   'gitView.pr.checks.failedAnnotationsShown': 'Failed annotations (showing {shown} of {total})',
+  'gitView.pr.checks.annotationsTruncated': 'Annotations are incomplete — this run has more annotations than could be loaded.',
   'gitView.pr.field.baseBranch': 'Base branch',
   'gitView.pr.field.description': 'Description',
   'gitView.pr.field.title': 'Title',

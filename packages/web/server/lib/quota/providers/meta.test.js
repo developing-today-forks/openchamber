@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { fetchQuota, isConfigured, readMuseAccountToken, resetMetaQuotaCache } from './meta.js';
 
@@ -47,6 +51,62 @@ describe('Meta quota provider configuration', () => {
 
   it('answers null for a missing Muse CLI store instead of throwing', () => {
     expect(readMuseAccountToken({ filePath: '/nonexistent/muse-auth.json' })).toBeNull();
+  });
+
+  it('reads the account token from a small Muse CLI store', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-meta-auth-'));
+    const filePath = path.join(dir, 'auth.json');
+    const token = 'dca:test-muse-account-token';
+    try {
+      fs.writeFileSync(filePath, JSON.stringify({ providers: { meta: { access_token: token } } }));
+
+      expect(readMuseAccountToken({ filePath })).toBe(token);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers null for a non-regular Muse CLI store path', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-meta-auth-'));
+    try {
+      expect(readMuseAccountToken({ filePath: dir })).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers null for an over-cap Muse CLI store without returning its token', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-meta-auth-'));
+    const filePath = path.join(dir, 'auth.json');
+    const token = 'dca:test-muse-account-token';
+    try {
+      fs.writeFileSync(filePath, JSON.stringify({
+        providers: { meta: { access_token: token } },
+        padding: 'x'.repeat(64 * 1024),
+      }));
+
+      expect(readMuseAccountToken({ filePath })).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('answers null promptly for a FIFO Muse CLI store', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-meta-auth-'));
+    const filePath = path.join(dir, 'auth.json');
+    try {
+      execFileSync('mkfifo', [filePath]);
+      const output = execFileSync(process.execPath, [
+        '--input-type=module',
+        '-e',
+        'import { readMuseAccountToken } from "./server/lib/quota/providers/meta.js"; process.stdout.write(String(readMuseAccountToken({ filePath: process.argv.at(-1) })));',
+        filePath,
+      ], { cwd: process.cwd(), encoding: 'utf8', timeout: 5_000 });
+
+      expect(output).toBe('null');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

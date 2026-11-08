@@ -1285,6 +1285,7 @@ export const dict: Record<I18nKey, string> = {
   'gitView.pr.checks.openRun': '열기',
   'gitView.pr.checks.failedAnnotations': '실패한 주석',
   'gitView.pr.checks.failedAnnotationsShown': '실패한 주석 ({total}개 중 {shown}개 표시)',
+  'gitView.pr.checks.annotationsTruncated': '주석이 불완전합니다 — 이 실행에는 로드할 수 있었던 것보다 많은 주석이 있습니다.',
   'gitView.pr.field.baseBranch': '기본 브랜치',
   'gitView.pr.field.description': '설명',
   'gitView.pr.field.title': '제목',
