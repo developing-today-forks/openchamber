@@ -347,4 +347,16 @@ describe('client auth pairing store durability', () => {
     expect(await fs.readdir(dir)).toEqual(['pairing.json']);
     await fs.rm(dir, { recursive: true, force: true });
   });
+
+  it('cuts a pairing label that straddles the 80-char cap at the surrogate pair boundary', async () => {
+    const { dir, runtime } = await makeRuntime();
+    const created = await runtime.createPairingSession({ label: `${'d'.repeat(79)}\u{1F600}x` });
+    expect(created.pairing.label).toBe('d'.repeat(79));
+    expect(created.pairing.label.isWellFormed()).toBe(true);
+    expect(Buffer.from(created.pairing.label, 'utf8').toString('utf8')).toBe(created.pairing.label);
+
+    const ascii = await runtime.createPairingSession({ label: 'b'.repeat(120) });
+    expect(ascii.pairing.label).toBe('b'.repeat(80));
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });
