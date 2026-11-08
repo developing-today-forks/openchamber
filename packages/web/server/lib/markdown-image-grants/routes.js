@@ -273,7 +273,15 @@ const inspectImage = async ({ source, directory, fsPromises, path }) => {
       fsPromises.realpath(sourcePath),
     ]);
     if (!outsideWorkspace && !isWithin(canonicalPath, canonicalRoot, path)) return { status: 'error' };
-    const handle = await fsPromises.open(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    // O_NONBLOCK (POSIX) keeps the open itself from blocking on a FIFO at
+    // the referenced path: the isFile judgement below can only refuse a
+    // non-regular file after the open settles (#1785; the house pattern in
+    // shared/bounded-file-read.js). NOFOLLOW stays: a symlinked source is
+    // judged by its canonical path above, never followed twice.
+    const handle = await fsPromises.open(
+      canonicalPath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK),
+    );
     try {
       // The chat draws a clip or a picture by the name the message gave; a
       // link under one name to a file of the other kind gets neither limit.
