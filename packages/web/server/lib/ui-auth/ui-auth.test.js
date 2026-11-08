@@ -607,3 +607,64 @@ describe('ui auth jwt-secret bounded read (issue #1778)', () => {
     }
   });
 });
+
+// issue #1940: the jwt-secret write paths are regular-file-judged on
+// the opened handle — persistJwtSecret (rotation) had no guard at
+// all, and getOrCreateJwtSecret probed by path then wrote by path.
+describe('ui auth jwt-secret handle-judged write (issue #1940)', () => {
+  const secretPath = path.join(dataDir, 'jwt-secret');
+
+  const login = async (auth) => {
+    const res = createResponse();
+    await auth.handleSessionCreate(
+      { method: 'POST', headers: { host: '127.0.0.1' }, body: { password: 'secret' } },
+      res,
+    );
+    return res;
+  };
+
+  const resetAuth = async (auth) => {
+    const res = createResponse();
+    await auth.handleResetAuth(
+      { method: 'POST', headers: { host: '127.0.0.1' } },
+      res,
+    );
+    return res;
+  };
+
+  it('rotates and persists a regular secret file with mode 0o600', async () => {
+    const known = 'd'.repeat(64);
+    fs.rmSync(secretPath, { force: true });
+    fs.writeFileSync(secretPath, known, { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    const res = await resetAuth(auth);
+    expect(res.body?.signedOutEverywhere).toBe(true);
+    const persisted = fs.readFileSync(secretPath, 'utf8');
+    expect(persisted).toMatch(/^[0-9a-f]{64}$/);
+    expect(persisted).not.toBe(known);
+    expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
+  });
+
+  it('settles promptly when rotation finds a FIFO at the secret path', async () => {
+    fs.rmSync(secretPath, { force: true });
+    fs.writeFileSync(secretPath, 'e'.repeat(64), { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    // Swap the regular file for a FIFO after startup: the rotation
+    // write must refuse it on the handle, not block opening it.
+    fs.rmSync(secretPath, { force: true });
+    execFileSync('mkfifo', [secretPath]);
+    try {
+      const res = await resetAuth(auth);
+      expect(res.body?.signedOutEverywhere).toBe(true);
+      expect(fs.statSync(secretPath).isFIFO()).toBe(true);
+      // The rotated secret still serves this process.
+      const loginRes = await login(auth);
+      expect(loginRes.getHeader('set-cookie')).toBeTruthy();
+    } finally {
+      fs.rmSync(secretPath, { force: true });
+      fs.writeFileSync(secretPath, 'f'.repeat(64), { mode: 0o600 });
+    }
+  });
+});

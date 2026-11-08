@@ -466,29 +466,56 @@ function getOrCreateJwtSecret() {
 
   const secret = crypto.randomBytes(32).toString('hex');
   try {
-    fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
     // A non-regular file (e.g. a FIFO) already sitting at the secret
     // path is left alone: opening it for write would block like the
     // read did. The generated secret still serves this process.
-    let persistBlocked = false;
-    try {
-      persistBlocked = !fs.statSync(JWT_SECRET_FILE).isFile();
-    } catch {
-      persistBlocked = false;
-    }
-    if (persistBlocked) {
-      console.warn('[JWT] Secret path is not a regular file; not persisting generated secret to', JWT_SECRET_FILE);
-    } else {
-      fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
-    }
-    if (!persistBlocked) {
+    if (writeJwtSecretFile(secret)) {
       console.log('[JWT] Generated and persisted new secret to', JWT_SECRET_FILE);
+    } else {
+      console.warn('[JWT] Secret path is not a regular file; not persisting generated secret to', JWT_SECRET_FILE);
     }
   } catch (e) {
     console.warn('[JWT] Failed to persist secret:', e.message);
   }
 
   return new TextEncoder().encode(secret);
+}
+
+// Handle-judged write of the JWT secret file (#1940): the write side
+// of the #1778 hardening. Open the path once and judge from the
+// descriptor — a by-path stat followed by a by-path write races a
+// swap-in, and a bare by-path write blocks forever opening a FIFO.
+// O_NONBLOCK (POSIX only) keeps open() itself from blocking on a
+// FIFO with no reader before the handle stat can reject it as
+// non-regular; a FIFO with no reader fails the open with ENXIO,
+// which is the same refusal. Returns false when the path is not a
+// regular file (the caller degrades: the secret still serves this
+// process, nothing is persisted); genuine I/O errors throw.
+// Mode 0o600 applies on create, exactly as the writeFileSync
+// { mode } this replaces behaved.
+function writeJwtSecretFile(secret) {
+  fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
+  const flags = process.platform === 'win32'
+    ? fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC
+    : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NONBLOCK;
+  let fd;
+  try {
+    fd = fs.openSync(JWT_SECRET_FILE, flags, 0o600);
+  } catch (e) {
+    if (e?.code === 'ENXIO') {
+      return false;
+    }
+    throw e;
+  }
+  try {
+    if (!fs.fstatSync(fd).isFile()) {
+      return false;
+    }
+    fs.writeFileSync(fd, secret);
+    return true;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function persistJwtSecret(secret) {
@@ -498,8 +525,12 @@ function persistJwtSecret(secret) {
     throw error;
   }
 
-  fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
-  fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+  if (!writeJwtSecretFile(secret)) {
+    // Mirror the getOrCreateJwtSecret degradation (#1940): rotation
+    // keeps serving the new secret in-process rather than blocking
+    // on — or writing into — a non-regular path.
+    console.warn('[JWT] Secret path is not a regular file; not persisting rotated secret to', JWT_SECRET_FILE);
+  }
   return new TextEncoder().encode(secret);
 }
 
