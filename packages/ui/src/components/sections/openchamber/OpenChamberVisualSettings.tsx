@@ -83,6 +83,15 @@ const THEME_MODE_OPTIONS: Array<{ value: ThemeMode; labelKey: string; descriptio
 ];
 
 const DEFAULT_PWA_INSTALL_NAME = 'OpenChamber - AI Coding Assistant';
+
+// Same pair-safe cap as the server's normalizePwaAppName: a plain slice at
+// 64 can land between the halves of a surrogate pair and hand the server a
+// name whose last code unit is a lone high surrogate (U+FFFD once encoded).
+const clipPwaInstallName = (value: string): string => {
+    const clipped = value.slice(0, 64);
+    const last = clipped.charCodeAt(clipped.length - 1);
+    return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
 const PWA_ORIENTATION_OPTIONS: Option<'system' | 'portrait' | 'landscape'>[] = [
     {
         id: 'system',
@@ -354,7 +363,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         }
 
         const win = window as PwaInstallNameWindow;
-        const normalized = value.trim().replace(/\s+/g, ' ').slice(0, 64);
+        const normalized = clipPwaInstallName(value.trim().replace(/\s+/g, ' '));
         const persistedValue = normalized;
 
         await updateDesktopSettings({ pwaAppName: persistedValue });
@@ -408,7 +417,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                 }
 
                 const raw = settings.pwaAppName ?? '';
-                const normalized = raw.trim().replace(/\s+/g, ' ').slice(0, 64);
+                const normalized = clipPwaInstallName(raw.trim().replace(/\s+/g, ' '));
                 const orientation = normalizePwaOrientation(settings.pwaOrientation);
                 const nextMobileKeyboardMode = normalizeMobileKeyboardMode(settings.mobileKeyboardMode);
 

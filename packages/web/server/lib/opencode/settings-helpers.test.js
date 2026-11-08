@@ -77,6 +77,21 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ gitlabClientId: 42 })).toEqual({});
   });
 
+  it('never splits a surrogate pair at the PWA app-name cap (oracle: astral char straddling offset 64)', () => {
+    const helpers = createTestHelpers();
+    const name = 'a'.repeat(63) + '😀' + 'tail';
+    const sanitized = helpers.sanitizeSettingsUpdate({ pwaAppName: name });
+    expect(sanitized.pwaAppName).toBe('a'.repeat(63));
+    expect(helpers.normalizePwaAppName(name, undefined)).toBe('a'.repeat(63));
+    // A lone surrogate would encode as U+FFFD and not round-trip.
+    expect(new TextDecoder().decode(new TextEncoder().encode(sanitized.pwaAppName))).toBe(sanitized.pwaAppName);
+  });
+
+  it('still cuts an over-cap ASCII PWA app name at exactly 64 code units', () => {
+    const helpers = createTestHelpers();
+    expect(helpers.sanitizeSettingsUpdate({ pwaAppName: 'a'.repeat(80) }).pwaAppName).toBe('a'.repeat(64));
+  });
+
   it('keeps the machine of the Docker over SSH place as an SSH destination, and takes it away with an empty string', () => {
     const helpers = createTestHelpers();
     expect(helpers.sanitizeSettingsUpdate({ isolatedSpacesSshHost: ' debian-box ' })).toEqual({ isolatedSpacesSshHost: 'debian-box' });
