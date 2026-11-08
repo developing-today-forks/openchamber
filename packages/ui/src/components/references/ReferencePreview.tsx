@@ -546,6 +546,34 @@ const SubIssuesSection: React.FC<{
     );
 };
 
+/**
+ * The truncation note beside a Linear issue's label chips (#1782): PR
+ * #1721 plumbed labelsMore from the server, but nothing rendered it,
+ * so a 50+ label list looked complete. Mirrors the subIssuesMore /
+ * commentsMore notes: the first page is shown, all of them are in
+ * Linear, behind the issue link. Renders nothing when the flag is
+ * false or absent.
+ */
+export const LinearLabelsMoreNote: React.FC<{
+    labelsMore?: boolean;
+    count: number;
+    href: string;
+}> = ({ labelsMore, count, href }) => {
+    const { t } = useI18n();
+    if (!labelsMore) return null;
+    return (
+        <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn('inline-flex items-center gap-1 typography-meta hover:text-foreground', REFERENCE_META_TEXT)}
+        >
+            {t('references.picker.preview.labelsMore', { count })}
+            <Icon name="external-link" className="size-3.5" />
+        </a>
+    );
+};
+
 const LinearPreview: React.FC<{
     issue: LinearIssueSummary;
     detail: CachedValue<LinearIssue>;
@@ -563,6 +591,7 @@ const LinearPreview: React.FC<{
     // A parent or sub-issue opened from another preview comes without its
     // labels and parent; its own detail brings them.
     const labels = (full?.labels ?? issue.labels ?? []).map((label) => ({ name: label.name, color: labelColor(label.color) }));
+    const labelsMore = full?.labelsMore ?? issue.labelsMore;
     const parent = full?.parent ?? issue.parent ?? null;
     const updated = relative(issue.updatedAt);
     const assignee = issue.assignee?.displayName || issue.assignee?.name;
@@ -622,7 +651,12 @@ const LinearPreview: React.FC<{
                     ) : null}
                     {updated ? <MetaRow label={t('references.picker.preview.updated')}>{updated}</MetaRow> : null}
                     {labels.length > 0 ? (
-                        <MetaRow label={t('references.picker.preview.labels')}><ReferenceLabelChips labels={labels} /></MetaRow>
+                        <MetaRow label={t('references.picker.preview.labels')}>
+                            <span className="inline-flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                <ReferenceLabelChips labels={labels} />
+                                <LinearLabelsMoreNote labelsMore={labelsMore} count={labels.length} href={issue.url} />
+                            </span>
+                        </MetaRow>
                     ) : null}
                 </dl>
             }
