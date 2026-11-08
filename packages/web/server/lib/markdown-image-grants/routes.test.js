@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -129,6 +130,21 @@ describe('session image assets', () => {
     expect(response.body.results).toEqual([
       expect.objectContaining({ source: 'present.png', status: 'ready' }),
       { source: 'deleted.png', status: 'missing' },
+    ]);
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO referenced as an image promptly and still prepares later sources (#1785)', async () => {
+    const fixture = await createFixture({ sources: ['fifo.png', 'present.png'] });
+    execFileSync('mkfifo', [path.join(fixture.directory, 'fifo.png')]);
+    await fs.writeFile(path.join(fixture.directory, 'present.png'), PNG);
+
+    // Without O_NONBLOCK the open of the FIFO never settles, so this
+    // request would hang instead of answering.
+    const response = await prepare(fixture.app, fixture.directory, fixture.sources);
+
+    expect(response.body.results).toEqual([
+      { source: 'fifo.png', status: 'error' },
+      expect.objectContaining({ source: 'present.png', status: 'ready' }),
     ]);
   });
 
