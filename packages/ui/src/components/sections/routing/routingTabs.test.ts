@@ -15,4 +15,8 @@ describe('routingTabForSearchTarget', () => {
     expect(routingTabForSearchTarget('providers.connect')).toBeNull();
     expect(routingTabForSearchTarget('projects.default-agent')).toBeNull();
   });
+
+  test('routing.token lives on Providers > Classification, not the Routing page (#1762)', () => {
+    expect(routingTabForSearchTarget('routing.token')).toBeNull();
+  });
 });

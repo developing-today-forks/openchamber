@@ -96,6 +96,15 @@ describe('settings search', () => {
     expect(results.some((result) => result.id === 'integrations.linear.mapping')).toBe(true);
   });
 
+  test('routing.token is a Providers result and providers.classification is unchanged (#1762)', () => {
+    const ctx = { ...runtimeCtx, routingAvailable: true };
+    const tokenResults = buildSettingsSearchResults({ query: 'typesafe', runtimeCtx: ctx, t, getPageTitle: (page) => page });
+    expect(tokenResults.find((result) => result.id === 'routing.token')?.page).toBe('providers');
+
+    const classificationResults = buildSettingsSearchResults({ query: 'classification', runtimeCtx: ctx, t, getPageTitle: (page) => page });
+    expect(classificationResults.find((result) => result.id === 'providers.classification')?.page).toBe('providers');
+  });
+
   test('finds the chat input history scope setting', () => {
     const results = buildSettingsSearchResults({
       query: 'input history scope',
@@ -370,5 +379,23 @@ describe('settings search anchors', () => {
       return !redirect || !anchors.has(redirect);
     });
     expect(unanchored).toEqual([]);
+  });
+
+  test('routing.token is pinned to Providers and its preparation opens the Classification gate (#1762)', () => {
+    const searchSource = readFileSync(join(__dirname, 'search.ts'), 'utf-8');
+    const entry = searchSource.match(/id: 'routing\.token',\s*page: '([^']+)'/);
+    expect(entry?.[1]).toBe('providers');
+
+    const sources = readComponentSources();
+    const settingsView = sources.get(settingsViewPath) ?? '';
+    // The token field renders only behind the Classification gate, so
+    // prepareSettingsSearchTarget must request that sub-page for
+    // routing.token itself — the global anchor test above cannot see a
+    // wrong-page entry whose anchor exists on another page.
+    expect(settingsView).toMatch(/result\.id === 'routing\.token'[\s\S]{0,240}setSettingsProvidersClassificationRequested\(true\)/);
+
+    const classificationPage = [...sources.entries()]
+      .find(([filePath]) => filePath.endsWith('ClassificationProvidersPage.tsx'))?.[1] ?? '';
+    expect(classificationPage).toContain('settingsItem="routing.token"');
   });
 });
