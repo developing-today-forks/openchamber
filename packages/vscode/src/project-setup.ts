@@ -106,7 +106,16 @@ export class ProjectSetupValidationError extends Error {}
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-const clamp = (value: string, maxLength: number): string => (value.length > maxLength ? value.slice(0, maxLength) : value);
+// The clamp must not split a surrogate pair: a value cut right after a high
+// surrogate drops that half, because the clamped value is persisted, where
+// a lone surrogate becomes U+FFFD for every reader. Mirror of the web
+// store's clamp in packages/web/server/lib/projects/project-setup.js.
+const clamp = (value: string, maxLength: number): string => {
+  if (value.length <= maxLength) return value;
+  const cut = value.slice(0, maxLength);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+};
 
 const trimmedString = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
