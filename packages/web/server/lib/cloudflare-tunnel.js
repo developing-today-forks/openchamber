@@ -9,6 +9,7 @@ import {
   resolveExecutableLaunchTarget,
 } from './tunnels/executable-search.js';
 import { createBoundedOutputAccumulator } from './shared/bounded-output-accumulator.js';
+import { readBoundedFileSync } from './shared/bounded-file-read.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -210,14 +211,38 @@ function assertReadableFile(filePath, contextLabel) {
   }
 }
 
-function extractHostnameFromCloudflaredConfigDetailed(configPath) {
+// Exported for tests: the read is the seam the grown-after-stat and
+// FIFO-swap regressions pin. The bounded sync reader opens the file once
+// and judges it from the handle, so a file that grows past the cap after
+// assertReadableFile's stat — or is swapped for a FIFO — is refused here
+// instead of being read whole or blocking the server on the read.
+export function extractHostnameFromCloudflaredConfigDetailed(configPath, contextLabel = 'Managed local tunnel config') {
   if (typeof configPath !== 'string' || configPath.trim().length === 0) {
     return { hostname: null, parseError: null };
   }
 
   let raw;
   try {
-    raw = fs.readFileSync(configPath, 'utf8');
+    const result = readBoundedFileSync(configPath, MANAGED_LOCAL_CONFIG_MAX_BYTES);
+    if (!result.ok) {
+      if (result.reason === 'too-large') {
+        return {
+          hostname: null,
+          parseError: new Error(`${contextLabel} file is too large (max ${MANAGED_LOCAL_CONFIG_MAX_BYTES} bytes).`),
+        };
+      }
+      if (result.reason === 'not-regular') {
+        return {
+          hostname: null,
+          parseError: new Error(`${contextLabel} path is not a file. Select a cloudflared config file.`),
+        };
+      }
+      return {
+        hostname: null,
+        parseError: new Error('Could not read the managed local tunnel config file. Check that the file exists and is accessible.'),
+      };
+    }
+    raw = result.buffer.toString('utf8');
   } catch {
     return {
       hostname: null,
@@ -271,7 +296,7 @@ export function inspectManagedLocalCloudflareConfig({ configPath, hostname } = {
     };
   }
 
-  const configHostnameResult = extractHostnameFromCloudflaredConfigDetailed(effectiveConfigPath);
+  const configHostnameResult = extractHostnameFromCloudflaredConfigDetailed(effectiveConfigPath, requestedPath ? 'Managed local tunnel config' : 'Managed local tunnel default config');
   if (configHostnameResult.parseError) {
     return {
       ok: false,
@@ -619,7 +644,7 @@ export async function startCloudflareManagedLocalTunnel({ configPath, hostname }
     assertReadableFile(effectiveConfigPath, 'Managed local tunnel default config');
   }
 
-  const configHostnameResult = extractHostnameFromCloudflaredConfigDetailed(effectiveConfigPath);
+  const configHostnameResult = extractHostnameFromCloudflaredConfigDetailed(effectiveConfigPath, requestedPath ? 'Managed local tunnel config' : 'Managed local tunnel default config');
   if (configHostnameResult.parseError) {
     throw configHostnameResult.parseError;
   }
