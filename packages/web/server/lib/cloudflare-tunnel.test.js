@@ -3,8 +3,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { execFileSync } from 'node:child_process';
+
 import {
   checkCloudflaredAvailable,
+  extractHostnameFromCloudflaredConfigDetailed,
+  inspectManagedLocalCloudflareConfig,
   startCloudflareManagedRemoteTunnel,
   startCloudflareQuickTunnel,
 } from './cloudflare-tunnel.js';
@@ -216,5 +220,87 @@ describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
     expect(outcome.status).toBe('resolved');
     expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
     outcome.value.stop();
+  });
+
+  it('rejects naming the line when a fatal log line is unterminated and the child exits', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\"\nsleep 0.2\nexit 1');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  });
+
+  it('rejects naming the line when a fatal log line is unterminated, its stream ends, and the child lingers', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\" >&2\nexec 2>&-\nsleep 5');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  });
+
+  it('does not resolve as ready at the liveness fallback when a fatal log line is unterminated and the child lingers', async () => {
+    installFakeCloudflared('printf %s \"invalid token supplied\"\nexec sleep 10');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }), 9000);
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('invalid token supplied');
+  }, 12000);
+
+  it('resolves when a ready log line is unterminated and the child exits', async () => {
+    installFakeCloudflared('printf %s \"Registered tunnel connection connIndex=0\"\nsleep 0.2\nexit 0');
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
+    outcome.value.stop();
+  });
+});
+
+describe('managed local config bounded read', () => {
+  const tempDirs = [];
+  const makeDir = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-config-'));
+    tempDirs.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+  const CONFIG = 'ingress:\n  - hostname: example.com\n    service: http://localhost:3000\n  - service: http_status:404\n';
+
+  it('resolves the ingress hostname of a valid config (control)', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    fs.writeFileSync(configPath, CONFIG);
+    expect(inspectManagedLocalCloudflareConfig({ configPath })).toMatchObject({ ok: true, resolvedHostname: 'example.com' });
+  });
+
+  it('refuses a config grown past the cap after the stat point instead of parsing it whole', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    // The state the extractor faces when the file grew between
+    // assertReadableFile's stat and the read: over the 256 KiB cap with a
+    // valid ingress hostname at the top. Pre-fix this returned the hostname.
+    fs.writeFileSync(configPath, `${CONFIG}\n# ${'x'.repeat(300_000)}\n`);
+    const result = extractHostnameFromCloudflaredConfigDetailed(configPath);
+    expect(result.hostname).toBeNull();
+    expect(result.parseError?.message).toBe('Managed local tunnel config file is too large (max 262144 bytes).');
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO swapped in at the config path promptly instead of blocking on the read', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    execFileSync('mkfifo', [configPath]);
+    // Pre-fix this read blocked forever; the test timeout is the guard.
+    const result = extractHostnameFromCloudflaredConfigDetailed(configPath);
+    expect(result.hostname).toBeNull();
+    expect(result.parseError?.message).toBe('Managed local tunnel config path is not a file. Select a cloudflared config file.');
+    expect(inspectManagedLocalCloudflareConfig({ configPath }).error).toContain('path is not a file');
   });
 });

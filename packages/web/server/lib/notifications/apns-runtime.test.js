@@ -165,6 +165,36 @@ describe('apns runtime relay mode (default)', () => {
     expect(JSON.parse(fetchMock.mock.calls.find(isSend)[1].body).tokens).toEqual(['tokenA']);
   });
 
+  it('truncates a non-ASCII collapse-id by UTF-8 bytes, not characters, in the relay body', async () => {
+    const fetchMock = vi.fn(async (url) =>
+      isRegister([url]) ? jsonResponse({ ok: true }) : jsonResponse({ results: [{ token: 'tokenA', ok: true, drop: false }] }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+
+    const runtime = createApnsRuntime(makeDeps());
+    await runtime.addOrUpdateApnsToken('s1', 'tokenA');
+
+    // 64 euro signs: 64 chars but 192 UTF-8 bytes — APNs rejects the header
+    // (BadCollapseId) when the collapse-id is sliced by characters.
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: '\u20ac'.repeat(64) }, {});
+    let sent = JSON.parse(fetchMock.mock.calls.find(isSend)[1].body);
+    expect(sent.collapseId).toBe('\u20ac'.repeat(21));
+    expect(Buffer.byteLength(sent.collapseId, 'utf8')).toBeLessThanOrEqual(64);
+
+    // A cut inside a surrogate pair must not leave a lone surrogate behind.
+    fetchMock.mockClear();
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: `${'a'.repeat(63)}\u{1f600}` }, {});
+    sent = JSON.parse(fetchMock.mock.calls.find(isSend)[1].body);
+    expect(sent.collapseId).toBe('a'.repeat(63));
+
+    // ASCII control: byte-identical to the old character slice.
+    fetchMock.mockClear();
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'ready-x' }, {});
+    sent = JSON.parse(fetchMock.mock.calls.find(isSend)[1].body);
+    expect(sent.collapseId).toBe('ready-x');
+  });
+
   it('reuses one persisted keypair (same serverId) across register + send', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true, results: [] }));
     vi.stubGlobal('fetch', fetchMock);
@@ -459,6 +489,45 @@ describe('apns runtime direct fallback (relay disabled)', () => {
     const byHost = Object.fromEntries(hosts.map(({ host, targeted }) => [host, targeted]));
     expect(byHost['https://api.sandbox.push.apple.com']).toEqual(['tokenXcode']);
     expect(byHost['https://api.push.apple.com']).toEqual(['tokenStore']);
+  });
+
+  it('truncates a non-ASCII collapse-id by UTF-8 bytes, not characters, in the direct header', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const seenHeaders = [];
+    const http2 = {
+      connect: () => ({
+        on: () => {},
+        close: () => {},
+        request: (headers) => {
+          seenHeaders.push(headers);
+          const listeners = {};
+          const req = {
+            on: (event, cb) => { listeners[event] = cb; return req; },
+            setEncoding: () => req,
+            end: () => {
+              queueMicrotask(() => {
+                listeners.response?.({ ':status': '200' });
+                listeners.end?.();
+              });
+            },
+          };
+          return req;
+        },
+      }),
+    };
+    const runtime = createApnsRuntime(
+      makeDeps({ http2, readSettingsFromDiskMigrated: vi.fn(async () => ({ apnsConfig: APNS_CONFIG })) }),
+    );
+    await runtime.addOrUpdateApnsToken('s', 'tokenDirect');
+
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: '\u20ac'.repeat(64) });
+    expect(seenHeaders).toHaveLength(1);
+    expect(seenHeaders[0]['apns-collapse-id']).toBe('\u20ac'.repeat(21));
+    expect(Buffer.byteLength(seenHeaders[0]['apns-collapse-id'], 'utf8')).toBeLessThanOrEqual(64);
+
+    seenHeaders.length = 0;
+    await runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: `${'a'.repeat(63)}\u{1f600}` });
+    expect(seenHeaders[0]['apns-collapse-id']).toBe('a'.repeat(63));
   });
 
   it('signs an ES256 JWT and sends over http2 when relay is disabled', async () => {

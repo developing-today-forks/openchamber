@@ -3,10 +3,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 import { readBoundedResponseText } from '../shared/response-body.js';
 
 export const MCPX_DAEMON_TIMEOUT_MS = 10_000;
 export const MCPX_DAEMON_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
+// A discovery record is a single socket path in JSON — a few KiB is
+// generous. The state dir is user-writable, so the record's size and
+// type are not under this process's control: the read is bounded and
+// handle-judged (#1773), so a FIFO or an oversize daemon-*.json is
+// skipped promptly instead of freezing the server on every mcpx call.
+export const MCPX_DAEMON_DISCOVERY_MAX_BYTES = 4 * 1024;
 
 const timeoutError = (timeoutMs) => new Error(`mcpx daemon timed out after ${timeoutMs}ms`);
 const tooLargeError = (maxBytes) => new Error(`mcpx daemon response exceeded ${maxBytes} bytes`);
@@ -31,7 +39,15 @@ const findDaemonSocket = () => {
       const files = fs.readdirSync(stateDir).filter((f) => f.startsWith('daemon-') && f.endsWith('.json'));
       for (const file of files) {
         try {
-          const info = JSON.parse(fs.readFileSync(path.join(stateDir, file), 'utf-8'));
+          // Bounded, handle-judged read (#1773): missing, non-regular
+          // (a FIFO at a daemon-*.json path) and over-cap entries are
+          // skipped exactly as unreadable/unparsable entries always
+          // were; the reader opens with O_NONBLOCK and enforces the
+          // cap during the read, so none of them can block or buffer
+          // whole.
+          const result = readBoundedFileSync(path.join(stateDir, file), MCPX_DAEMON_DISCOVERY_MAX_BYTES);
+          if (!result.ok) continue;
+          const info = JSON.parse(result.buffer.toString('utf-8'));
           if (info.socket && fs.existsSync(info.socket)) return info.socket;
         } catch {}
       }

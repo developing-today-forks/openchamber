@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -35,9 +36,20 @@ export const runGuestStorage = (persistPath, id, request, authorize) => {
     await authorize();
     let entries = new Map();
     try {
-      const stat = await fs.stat(file);
-      if (stat.size > GUEST_STORAGE_TOTAL_BYTES) throw new Error('Storage exceeds its size limit');
-      const parsed = documentSchema.parse(JSON.parse(await fs.readFile(file, 'utf8')));
+      // Open the file to judge the cap on the handle / in-flight read.
+      const stream = createReadStream(file, { encoding: 'utf8' });
+      let receivedBytes = 0;
+      const chunks = [];
+      for await (const chunk of stream) {
+        receivedBytes += Buffer.byteLength(chunk, 'utf8');
+        if (receivedBytes > GUEST_STORAGE_TOTAL_BYTES) {
+          stream.destroy();
+          throw new Error('Storage exceeds its size limit');
+        }
+        chunks.push(chunk);
+      }
+      const content = chunks.join('');
+      const parsed = documentSchema.parse(JSON.parse(content));
       entries = new Map(Object.entries(parsed));
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;

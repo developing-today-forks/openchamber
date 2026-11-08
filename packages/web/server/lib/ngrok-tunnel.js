@@ -1,5 +1,4 @@
 import { spawn, spawnSync } from 'child_process';
-import { StringDecoder } from 'string_decoder';
 import {
   createExecutableSearchEnv,
   resolveExecutableLaunchTarget,
@@ -7,6 +6,7 @@ import {
 import { getTunnelDependencyInstallInfo } from './tunnels/install-help.js';
 import { TUNNEL_PROVIDER_NGROK } from './tunnels/types.js';
 import { readBoundedResponseJson } from './shared/response-body.js';
+import { createBoundedOutputAccumulator } from './shared/bounded-output-accumulator.js';
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30000;
 // spawnSync blocks the whole server event loop while it waits, so a hung
@@ -28,42 +28,11 @@ const NGROK_POLL_INTERVAL_MS = 250;
 const NGROK_TUNNELS_RESPONSE_MAX_BYTES = 64 * 1024;
 const NGROK_PUBLIC_URL_REGEX = /https:\/\/[^\s"']+/i;
 // ngrok writes its tunnel URL and log lines with no regard for pipe chunk
-// boundaries, so output must be matched over accumulated complete lines,
-// never per chunk: a URL fragment at the end of a chunk (e.g. one ending
-// `https://abcd1234.ngrok`) would otherwise be accepted as the tunnel URL
-// and settle startup with a truncated address. The pending line is
-// bounded: once it grows past this many characters only the newest tail
-// is kept, which is all a URL or a log line can occupy.
-const NGROK_OUTPUT_BUFFER_MAX_CHARS = 64 * 1024;
-
-// Accumulates one stream's output across chunk boundaries. `push` returns
-// the decoded text of this chunk and the lines completed by it (a trailing
-// partial line is held for the next chunk); `flush` releases the held
-// partial line when the stream ends, preserving the previous behaviour of
-// seeing a final unterminated line.
-function createBoundedOutputAccumulator() {
-  const decoder = new StringDecoder('utf8');
-  let pendingLine = '';
-  return {
-    push(chunk) {
-      const decoded = decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-      pendingLine += decoded;
-      const lines = pendingLine.split(/\r?\n/);
-      pendingLine = lines.pop() ?? '';
-      if (pendingLine.length > NGROK_OUTPUT_BUFFER_MAX_CHARS) {
-        pendingLine = pendingLine.slice(-NGROK_OUTPUT_BUFFER_MAX_CHARS);
-      }
-      return { decoded, lines };
-    },
-    flush() {
-      const tail = decoder.end();
-      const line = pendingLine + tail;
-      pendingLine = '';
-      return line ? [line] : [];
-    },
-  };
-}
-
+// boundaries, so output is matched over the shared bounded accumulator
+// (lib/shared/bounded-output-accumulator.js, #1705) over complete lines,
+// never per chunk: a URL fragment at the end of a chunk would otherwise
+// be accepted as the tunnel URL and settle startup with a truncated
+// address.
 const NGROK_AUTHTOKEN_HELP = 'Run: ngrok config add-authtoken <your-ngrok-token>';
 const getNgrokInstallInfo = () => getTunnelDependencyInstallInfo(TUNNEL_PROVIDER_NGROK);
 

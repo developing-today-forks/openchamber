@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 const STATE_VERSION = 1;
+// These files contain a handful of state fields and a small draining-process list.
+// Keep enough room for long executable and instance paths while bounding sync reads.
+const MANAGED_OPENCODE_STATE_MAX_BYTES = 64 * 1024;
+const MANAGED_OPENCODE_DRAINING_MAX_BYTES = 64 * 1024;
 
 export const resolveManagedOpenCodePaths = (dataDir) => {
   const dir = path.join(dataDir, 'managed-opencode');
@@ -26,13 +31,18 @@ export const hashLaunchSecret = (value) => createHash('sha256').update(String(va
 
 export const createLaunchFingerprint = (launch) => createHash('sha256').update(canonicalize(launch)).digest('hex');
 
-export const readManagedOpenCodeState = (statePath) => {
-  let parsed;
+const readBoundedJsonFileSync = (filePath, maxBytes) => {
   try {
-    parsed = JSON.parse(readFileSync(statePath, 'utf8'));
+    const result = readBoundedFileSync(filePath, maxBytes);
+    if (!result.ok) return null;
+    return JSON.parse(result.buffer.toString('utf8'));
   } catch {
     return null;
   }
+};
+
+export const readManagedOpenCodeState = (statePath) => {
+  const parsed = readBoundedJsonFileSync(statePath, MANAGED_OPENCODE_STATE_MAX_BYTES);
   const valid = parsed?.version === STATE_VERSION
     && Number.isInteger(parsed.pid) && parsed.pid > 0
     && Number.isInteger(parsed.port) && parsed.port > 0
@@ -47,12 +57,7 @@ export const readManagedOpenCodeState = (statePath) => {
 // Replaced OpenCode processes that are still finishing their sessions. Kept apart from
 // state.json, which describes only the current process and is cleared when that one exits.
 export const readDrainingOpenCodeRecords = (drainingPath) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(drainingPath, 'utf8'));
-  } catch {
-    return [];
-  }
+  const parsed = readBoundedJsonFileSync(drainingPath, MANAGED_OPENCODE_DRAINING_MAX_BYTES);
   if (parsed?.version !== STATE_VERSION || !Array.isArray(parsed.draining)) return [];
   return parsed.draining.filter((record) => (
     Number.isInteger(record?.pid) && record.pid > 0
@@ -102,6 +107,22 @@ export const decideManagedOpenCodeLaunch = ({ state, ownsPid, binary, args, fing
   return { action: 'adopt', reason: 'matches-state' };
 };
 
+// Length of a trailing incomplete UTF-8 sequence in buffer[0, length), i.e. a
+// valid lead byte followed by fewer continuation bytes than it declares.
+// Invalid bytes (lone continuations, overlong leads) are not a prefix of any
+// sequence and return 0 — they decode to U+FFFD exactly as before.
+const incompleteUtf8TailLength = (buffer, length) => {
+  for (let i = length - 1, scanned = 0; i >= 0 && scanned < 4; i--, scanned++) {
+    const byte = buffer[i];
+    if ((byte & 0xc0) === 0x80) continue;
+    if (byte < 0x80) return 0;
+    const needed = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    const have = length - i;
+    return have < needed ? have : 0;
+  }
+  return 0;
+};
+
 // The managed child writes stdout and stderr to this file, not a pipe, so it outlives OpenChamber.
 export const readLogSince = (logPath, offset) => {
   let fd = null;
@@ -111,7 +132,12 @@ export const readLogSince = (logPath, offset) => {
     if (length <= 0) return { text: '', offset };
     const buffer = Buffer.alloc(length);
     const bytesRead = readSync(fd, buffer, 0, length, offset);
-    return { text: buffer.toString('utf8', 0, bytesRead), offset: offset + bytesRead };
+    // Hold back a trailing incomplete UTF-8 sequence: the returned offset
+    // stops before it, so the next poll re-reads those bytes together with
+    // their continuation instead of corrupting the character to U+FFFD and
+    // advancing past it for good.
+    const consumed = bytesRead - incompleteUtf8TailLength(buffer, bytesRead);
+    return { text: buffer.toString('utf8', 0, consumed), offset: offset + consumed };
   } catch {
     return { text: '', offset };
   } finally {

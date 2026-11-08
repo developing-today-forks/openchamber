@@ -996,6 +996,14 @@ interface UIStore {
   /** A provider another Settings page asked the Providers page to open; the page opens it once and clears it. */
   settingsProvidersOpenRequested: string | null;
   /**
+   * One-shot VIEW-ONLY request from settings search for the Tunnel page to
+   * reveal a managed mode section (#1764): the managed mode to display, or
+   * null. The Tunnel page consumes and clears it; revealing never persists
+   * a mode change — the saved tunnel mode is untouched until the user
+   * picks a mode in the selector themselves.
+   */
+  settingsTunnelModeRequested: string | null;
+  /**
    * A link inside Settings asking to open another page and, optionally, scroll
    * to one of its items the way a search result does. SettingsView consumes it.
    */
@@ -1324,6 +1332,7 @@ interface UIStore {
   setSettingsProvidersConnectRequested: (requested: boolean) => void;
   setSettingsProvidersClassificationRequested: (requested: boolean) => void;
   setSettingsProvidersOpenRequested: (providerId: string | null) => void;
+  setSettingsTunnelModeRequested: (mode: string | null) => void;
   requestSettingsJump: (page: string, itemId?: string | null) => void;
   clearSettingsJumpRequest: () => void;
   setSettingsRemoteInstancesSelectedId: (instanceId: string | null) => void;
@@ -1579,6 +1588,7 @@ export const useUIStore = create<UIStore>()(
         settingsProvidersConnectRequested: false,
         settingsProvidersClassificationRequested: false,
         settingsProvidersOpenRequested: null,
+        settingsTunnelModeRequested: null,
         settingsJumpRequest: null,
         settingsRemoteInstancesSelectedId: null,
         eventStreamStatus: 'idle',
@@ -2634,6 +2644,9 @@ export const useUIStore = create<UIStore>()(
         },
         setSettingsProvidersOpenRequested: (providerId) => {
           set({ settingsProvidersOpenRequested: providerId });
+        },
+        setSettingsTunnelModeRequested: (mode) => {
+          set({ settingsTunnelModeRequested: mode });
         },
         requestSettingsJump: (page, itemId = null) => {
           set({ settingsJumpRequest: { page, itemId } });

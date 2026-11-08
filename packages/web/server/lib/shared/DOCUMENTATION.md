@@ -260,14 +260,16 @@ injection. The contract rules:
 
 ## Bounded file read (design #1254, #1256 and #1255)
 
-`bounded-file-read.js` holds the one bounded read for files whose size the
-server does not control — project and user files, as opposed to response
-bodies (#802) and the server's own state files (#976). It generalises
+`bounded-file-read.js` holds one handle-judged, byte-bounded read for files
+whose caller owns the parse, retention and error policy. That includes
+project and user files and append-only logs, as opposed to response bodies
+(#802) and durable JSON stores (#976). It generalises
 `skills-catalog/scan.js`'s `readSkillMdFile`, the family's one correct
 embodiment. Phase 2 (#1255) migrated the call sites: scan's
 `readSkillMdFile`, snippets' `parseMarkdownFile`, plugins'
 `readPluginDirFile`, the guests entry-HTML read in `guestBuiltScriptsReady`,
-and git's `readFileDiffWorkingTreeFile` all read through this module now.
+git's `readFileDiffWorkingTreeFile`, and routing's `readPlanStore`,
+`readPoolPlanLinks`, and `readFeedback` all read through this module now.
 Each caller maps the coded outcomes back onto its own existing contract,
 so error surfaces and missing-file behaviour are unchanged.
 
@@ -304,12 +306,12 @@ The contract (rules 1–5 of #1254):
   are the point and stay.
 - Response bodies stay `response-body.js` (#802): a stream is not a
   file, and its cap is enforced by cancelling the stream.
-- The server's own state files stay `durable-json-store.js` (#976):
-  contents the server controls, with preserve-on-malformed semantics
-  this reader does not have. Since #1649 the durable store applies
-  the same bound-and-judge discipline internally (handle stat,
-  non-regular refusal, cap enforced in flight), so the exclusion is
-  about disposition, not about the bound.
+- Durable JSON stores stay on `durable-json-store.js` (#976): their
+  preserve-on-malformed and atomic-write contract is separate. The routing
+  plan maps keep their existing coded 409 errors through this reader, and
+  append-only logs use their own retention policy. Since #1649 the durable
+  store applies the same bound-and-judge discipline internally, so its
+  exclusion is about disposition, not about the bound.
 - Cap values, error surfaces and HTTP shapes at the call sites: the
   primitive knows paths, bytes and caps only.
 
@@ -337,8 +339,8 @@ passkeys.
 | Store (file — reader) | Sync/async | Bound half | Disposition half | Overall |
 |---|---|---|---|---|
 | routing store (`routing.json`, `routing-auth.json`, `classification.json`, `classifier-endpoint.json`, `auto-sessions.json` — `routing/store.js` `readJsonFile` / `readJsonFileSync`) | both | none — covered-by-open-issue #1608 | private: missing/empty → null, malformed → uncoded throw, no preserve | covered-by-open-issue (#1608, bound) |
-| routing plans (`plans.json` — `routing/plans.js` `readPlanStore`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `PLAN_STORE_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
-| pool plan links (`pool-plan-links.json` — `routing/pool-plan-links.js` `readPoolPlanLinks`) | sync | none — covered-by-open-issue #1624 | malformed → coded 409 `POOL_LINKS_MALFORMED` throw, in place | covered-by-open-issue (#1624, bound) |
+| routing plans (`plans.json` — `routing/plans.js` `readPlanStore`) | sync | conforming: handle-judged `readBoundedFileSync`, 8 MiB cap | malformed / over-cap / non-regular → coded 409 `PLAN_STORE_MALFORMED` throw, in place; missing → empty | conforming-on-both-halves |
+| pool plan links (`pool-plan-links.json` — `routing/pool-plan-links.js` `readPoolPlanLinks`) | sync | conforming: handle-judged `readBoundedFileSync`, 1 MiB cap | malformed / over-cap / non-regular → coded 409 `POOL_LINKS_MALFORMED` throw, in place; missing → empty | conforming-on-both-halves |
 | Linear mapping (`linear-mapping.json` — `linear/mapping.js` `readStoredLinearMapping` + the `setStoredLinearMapping` re-read) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; empty → empty mapping | covered-by-open-issue (#1621, bound) |
 | Linear session status (`linear/status.js` `readRecords`) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; records individually dropped | covered-by-open-issue (#1621, bound) |
 | model choices (`model-choices.json` — `model-choices/store.js` `read`) | async | none — covered-by-open-issue #1610 | malformed → coded store error, never an empty history (a read-modify-write never seeds from it) | covered-by-open-issue (#1610, bound) |
@@ -349,7 +351,7 @@ passkeys.
 | skills disk cache (`skills-catalog/disk-cache.js` `readDiskCache`) | sync | none — covered-by-open-issue #1627 | cache semantics: missing / unreadable / malformed → null (a cache miss) | covered-by-open-issue (#1627, bound); disposition excepted-with-reason (cache) |
 | space records (`spaces/records/<id>.json` — `spaces/space-records.js` `read`) | sync | none — covered-by-open-issue #1628 | three-state by status: `missing` / `ok` / `unreadable`; an update refuses to write over an unreadable record; unreadable grants/setup fragments are dropped with a warning | covered-by-open-issue (#1628, bound) |
 | tracked items (`tracked-items.json` — `tracked-items/persistence.js` `load`) | async | none — covered-by-open-issue #1662 | cache restore: missing → [], wrong version/shape → [], a parse error throws; the file is a rebuildable cache, never the only copy | covered-by-open-issue (#1662, bound) |
-| quota auth files (`quota/utils/auth.js` `readJsonFile` :19 and the `resolveConfigApiKey` `{file:}` read :73) | sync | none — covered-by-open-issue #1645 | read-as-empty: any failure → null (read-only lookup of credential files the server never writes) | covered-by-open-issue (#1645, bound) |
+| quota auth files (`quota/utils/auth.js` `readJsonFile` and the `resolveConfigApiKey` `{file:}` read) | sync | bound-complete (#1645): handle-judged `readBoundedFileSync`, 1 MiB cap for the JSON credential/accounts files and 64 KiB for a `{file:}` apiKey target, caps enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly | read-as-empty: any failure → null (read-only lookup of credential files the server never writes); over-cap / non-regular take the same null answer | conforming-on-both-halves |
 | OpenCode service env (`service.json` — `environment/opencode-service-env.js` `readOpenCodeServiceEnv`) | sync | none — covered-by-open-issue #1636 | read-as-empty: any failure → {} (the OpenCode CLI's file, read-only) | covered-by-open-issue (#1636, bound) |
 | environment store (`environment.json` — `environment/store.js`) | sync | conforming: `readBoundedFileSync`, 64 MiB cap derived from the write-side clamps at the read site (#1609, closed) | private three-state in place: a file that cannot be read or parsed is an error, never an empty store | conforming-on-both-halves |
 | git identity store (`git/identity-storage.js` internal `readFile`) | sync | conforming: handle-judged, `MAX_STORE_BYTES` 4 MiB enforced in flight at cap+1 (#1635, closed) | malformed → coded invalid-store throw, in place; missing → empty state / legacy migration | conforming-on-both-halves |
@@ -370,9 +372,12 @@ passkeys.
 | GitLab auth store (`gitlab/auth-storage.js` `readState`) | async | none: plain `readFile` whole, no stat, no cap, no regular-file check (credential-bearing) — covered-by-open-issue #1677 (filed by the new-issue-creator job during this audit; this audit's own duplicate filing #1679 was closed in its favour) | private three-state in place: missing → empty, malformed / wrong version → coded invalid-state throw | covered-by-open-issue (#1677, bound) |
 | guest extension storage documents (`guest-storage/<id>.json` — `guests/storage.js` `runGuestStorage`) | async | flawed: the `GUEST_STORAGE_TOTAL_BYTES` cap is judged on a stat by path, then the file is read by path — growth or a swap between the two is buffered whole (the #1605 pattern) | malformed / schema-invalid throws out of the storage lock; missing → empty entries | follow-up-filed (#1680) |
 | guest service registry records (`guests/service-registry.js`) | async | none, and none owed | excepted: ephemeral service-lifecycle records; a corrupt record is dropped by the reaper and hosts rewrite their own — losing one is free | excepted-with-reason (ephemeral registry) |
-| walkthrough cache (`walkthrough/store.js` `readJson` + the pointer prune read) | both | pre-read stat gate only (`MAX_FILE_BYTES`, stat by path), named here so the pattern is visible | excepted: a cache — missing / unreadable / corrupt all answer "no usable walkthrough" (named under the durable-store "What stays out") | excepted-with-reason (cache, already stat-gated) |
-| managed-process registry and relay host lock (`<pid>.json` entries, `<pid>.claim-from-<owner>`, relay host claim — `opencode/managed-process-registry.js`, `relay/host-lock.js`) | both | none, and none owed | excepted: coordination files whose whole content is one writer-clamped value (a pid integer, or a small fixed-shape entry); every failure answers "no claim / no owner", which is the safe answer for a liveness question | excepted-with-reason (coordination files) |
-| foreign read-only files (mcpx daemon discovery `daemon-*.json` — `opencode/mcpx-daemon.js`; Muse login store — `quota/providers/meta.js`; Cursor token files — `quota/providers/cursor.js`; cloudflared user config — `cloudflare-tunnel.js`; enterprise machine policy — `enterprise-mode.js`; the legacy named-tunnels file — `tunnels/managed-config.js`) | both | none, and none owed in this inventory | excepted: files owned by another program or the machine administrator, read read-only and never written by the server; any failure degrades to "not configured / absent" (the enterprise policy reader names its three states — absent / ok / invalid — explicitly). The managed-config main store is durable (migrated); only its one-shot legacy migration source is in this row | excepted-with-reason (foreign-owned, read-only) |
+| walkthrough cache (`walkthrough/store.js` `readJson` + the pointer prune read) | both | bound-complete: handle-judged `readBoundedFileSync` / `readBoundedFile`, with the 4 MiB cap enforced during the read | cache semantics: missing / over-cap / non-regular / unreadable / corrupt all answer "no usable walkthrough"; pruning skips unreadable pointers and deletes only for a missing repository | bound-complete; disposition excepted-with-reason (cache) |
+| managed-process registry (`<pid>.json` entries, `<pid>.claim-from-<owner>` — `opencode/managed-process-registry.js`) | both | bound-complete (#1736): handle-judged `readBoundedFileSync` / `readBoundedFile`, entry cap 64 KiB and claim cap 1 KiB enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly | every failure answers "no claim / no owner", which is the safe answer for a liveness question; over-cap / non-regular files take the same safe-default / corrupt-file path as unparseable ones | conforming-on-both-halves |
+| relay host lock (relay host claim — `relay/host-lock.js`) | sync | bound-complete (#1739): handle-judged `readBoundedFileSync`, 64 KiB cap enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly; the write path likewise refuses to open a non-regular claim path | every failure answers no claim, which is the safe answer for a liveness question; missing / over-cap / non-regular / unparsable all take that same safe answer, exactly as missing and unparsable always have | conforming |
+| mcpx daemon discovery (`daemon-*.json` — `opencode/mcpx-daemon.js`) | sync | bound-complete (#1773): handle-judged `readBoundedFileSync`, 4 KiB cap enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly | every failure answers no daemon discovered, which is the safe answer for a discovery question; missing / over-cap / non-regular / unparsable entries are skipped, exactly as missing and unparsable always have | conforming |
+| legacy named-tunnels migration source (`cloudflare-named-tunnels.json` — `tunnels/managed-config.js` legacy migration read) | async | conforming (#1692): bounded via the durable-store primitive, `LEGACY_NAMED_TUNNELS_MAX_BYTES` = `DEFAULT_DURABLE_JSON_MAX_BYTES` (32 MiB, the managed store's own bound), handle-judged with the cap enforced in flight, non-regular refused (O_NONBLOCK, so a FIFO cannot wedge the persist lock) | missing / empty → empty config, no write; malformed / over-cap / non-regular / unreadable → empty config with a warning, nothing written over anything, and no file content in the warning (the file holds tunnel tokens) | conforming-on-both-halves |
+| foreign read-only files (Muse login store — `quota/providers/meta.js`; Cursor token files — `quota/providers/cursor.js`; cloudflared user config — `cloudflare-tunnel.js`; enterprise machine policy — `enterprise-mode.js`) | both | none, and none owed in this inventory | excepted: files owned by another program or the machine administrator, read read-only and never written by the server; any failure degrades to "not configured / absent" (the enterprise policy reader names its three states — absent / ok / invalid — explicitly). The managed-config main store is durable (migrated), and its legacy migration source has its own row above (#1692) | excepted-with-reason (foreign-owned, read-only) |
 | UI auth JWT secret (`ui-auth/ui-auth.js`) | sync | none, and none owed | excepted: a raw secret file, not a JSON store; it is read as bytes for a key, and no disposition question arises | excepted-with-reason (not a JSON store) |
 
 Adjacent, deliberately not rows: project and user files (the #1254
@@ -383,12 +388,12 @@ family — `projects/project-config.js` stays covered by open #1490,
 package manifests, and test fixtures (`spaces/code-in-bait.js`). They
 are named so the inventory's edge is explicit, not silent.
 
-### Append-only logs (their own kind — the design leaves their answer open)
+### Append-only logs
 
 | Log (reader) | Bound half | Disposition |
 |---|---|---|
 | event-stream replay (`global-replay.jsonl` — `event-stream/replay-store.js` `load`) | none — covered-by-open-issue #1632 | per-record: a torn final line ends the read, a malformed record mid-file discards everything after it with a warning |
-| route feedback (`route-overrides-store.js` `readFeedback`) | none — covered-by-open-issue #1624 | per-line: unparseable lines are dropped; a missing log reads as no feedback. The store's JSON half is durable (migrated) |
+| route feedback (`route-overrides-store.js` `readFeedback`) | bound-complete (#1624): handle-judged 4 MiB read cap; append compacts over-cap logs to the newest complete lines within 3 MiB | per-line: unparseable lines are dropped; missing reads as no feedback; over-cap / non-regular warns and reads as no learned choices. The store's JSON half is durable (migrated) |
 | plan notes (`plan-notes.jsonl` — `routing/plans.js` `readNotes`) | bound-complete (#1638, closed, PR #1646): the notes read is bounded | per-line append-only semantics, as recorded on #1656 |
 
 ### VS Code mirror rows (mirror inventory — not audited as web code)
@@ -398,11 +403,102 @@ are named so the inventory's edge is explicit, not silent.
 | bridge settings runtime (three shared files) | covered-by-open-issue #1641 |
 | quota local-file readers (credential / auth / config) | covered-by-open-issue #1643 |
 | `opencode.ts` `readOpenChamberSettings` (shared `settings.json`) | bound-complete (#1644, closed) |
+| `openchamberSessionState.ts` (shared archive and legacy metadata files) | handle-judged regular-file reads capped at 32 MiB while reading; over-cap and non-regular files remain unknown and block writes (#1780) |
 
 Phase 3 of design #1655 (migration shape, the append-only-log answer,
 the VS Code mirror question, and a ratchet) is not decided by this
 inventory; rows marked as hazards or private spellings stay on the
 inventory until phase 3 answers them.
+
+## Stream-output inventory (design #1740 phase 2, #1741)
+
+Every incremental-stream consumer in `packages/web/server/lib` that turns
+child-process or pipe output into text, re-grepped on main `2ca4d6df9`
+(2026-11-07) — `data` handlers, `chunk.toString`, `+= chunk`,
+`StringDecoder`, buffer-and-decode-once captures, and every `spawn` /
+`execFile` site — not the filing-day list. Each row is dispositioned
+against the four rules of design #1740: **(1)** stream-decoded
+(`StringDecoder`, or buffered as bytes and decoded once), never per
+chunk — forwarding counts as consuming; **(2)** every cap judged in the
+unit its name claims (`*_BYTES` in bytes, `*_CHARS` in chars);
+**(3)** matching/classification on completed lines or bounded rolling
+text, never on chunk text; **(4)** flush (decoder end + held final line)
+before settlement. Phase 1 (#1705, closed) has landed: the shared
+accumulator lives at `lib/shared/bounded-output-accumulator.js`
+(`createBoundedOutputAccumulator`, `BOUNDED_OUTPUT_MAX_CHARS` judged in
+chars), and both tunnel modules import it — neither keeps a local copy.
+
+| Consumer (file — site) | 1 Decode | 2 Cap unit | 3 Match on lines | 4 Flush before settle | Overall |
+|---|---|---|---|---|---|
+| cloudflare managed-tunnel readiness (`cloudflare-tunnel.js` `waitForManagedTunnelReady`) | conforming: shared accumulator per stream | conforming: `*_MAX_CHARS` rolling text, in chars | conforming: ready/fatal matched on completed lines only | conforming: `flush()` inspected on stream `end` and on `exit` (exit can precede end) | conforming-on-all-rules |
+| cloudflare quick tunnel (`cloudflare-tunnel.js` `startCloudflareQuickTunnel`) | conforming: shared accumulator; the decoded text it forwards to the server log comes from the accumulator, not the chunk | conforming: `*_MAX_CHARS`, in chars | conforming: tunnel URL matched against bounded rolling `recentText`, never chunk text | n/a to settlement: readiness settles on the URL match or a timeout/exit error that carries no accumulated text | conforming-on-all-rules |
+| cloudflare managed starters' stderr forwarding (`cloudflare-tunnel.js` `startCloudflareManagedRemoteTunnel` / `startCloudflareManagedLocalTunnel`) | per-chunk `chunk.toString('utf8')` forwarded to `process.stderr` — covered-by-open-issue #1734 | none (unbounded forwarding) | none (no matching on this text) | none | covered-by-open-issue (#1734, rule 1) |
+| ngrok tunnel (`ngrok-tunnel.js`) | conforming: shared accumulator per stream; forwarded stderr is the accumulator's decoded text | conforming: `*_MAX_CHARS`, in chars | conforming: URL extraction and diagnostics on completed lines / rolling text | stdout and stderr flush on stream `end`; settlement on `exit` builds its error from `recentOutput` before that flush can run — covered-by-open-issue #1693; the stdout flush regression-test gap was #1694 (closed) | covered-by-open-issue (#1693, rule 4); rules 1–3 conforming |
+| content-search ripgrep stdout (`fs/content-search.js`) | conforming: `StringDecoder`; parsed on completed lines, an unfinished line held as pieces | conforming: line cap `CONTENT_SEARCH_MAX_LINE_BYTES` counted with `Buffer.byteLength` | conforming: JSON events parsed per completed line only | conforming: `decoder.end()` piece is consumed on `close` before results settle | conforming-on-all-rules |
+| content-search ripgrep stderr (`fs/content-search.js`) | per-chunk `chunk.toString` — covered-by-open-issue #1690 | byte-named `STDERR_MAX_BYTES` judged against string `.length` (chars) and sliced in bytes — covered-by-open-issue #1690 | none (diagnostic only) | none | covered-by-open-issue (#1690, rules 1–2) |
+| dictation worker stderr (`dictation/local/worker-client.js`) | conforming: `StringDecoder` | conforming: tail cap `STDERR_TAIL_MAX_CHARS` in chars, and the tail slice skips a leading low surrogate so it never splits a pair | none (diagnostic tail) | conforming: `decoder.end()` remainder is appended to the tail on worker `close`, before exit handling | conforming-on-all-rules |
+| dictation model tar extraction stderr (`dictation/local/model-downloader.js`) | per-chunk `chunk.toString()` appended to a string, tail-sliced in chars (can split a surrogate pair) — covered-by-open-issue #1695 | char slice against an unnamed 4096 bound; no byte-named cap | none (the tail is the failure message) | settles on `close` with whatever the per-chunk decode produced | covered-by-open-issue (#1695, rules 1–2) |
+| guest service collector (`guests/service.js` `collectProcessOutput`) | per-chunk `chunk.toString('utf8')` — covered-by-open-issue #1696 | conforming in isolation: the cap is a `maxChars` parameter and is sliced in chars | none (snapshot diagnostic) | no decoder to flush; the snapshot can be taken before stream end by design (startup probe) | covered-by-open-issue (#1696, rule 1) |
+| guest clone (`guests/clone.js`) | conforming: stdout buffered as bytes and decoded once on `close`; stderr kept as a byte tail and decoded once | conforming: stdout cap counted in chunk bytes; stderr tail `STDERR_TAIL_BYTES` kept in bytes | none (whole-output result) | decode-once is the flush: nothing is held by a decoder | conforming-on-all-rules (decode-once special case, rule 5) |
+| environment command runner (`environment/runtime.js` `runCommand`) | conforming: `StringDecoder` | conforming: `MAX_COMMAND_OUTPUT_BYTES` counted in chunk bytes; over-cap kills the child | none (whole-output result) | conforming: result is `stdout + decoder.end()` on `close` | conforming-on-all-rules |
+| fs exec route (`fs/routes.js` `/api/fs/exec` runner) | conforming: one `StringDecoder` per stream; a cap-truncated stream drops the decoder's held tail rather than flushing a cut character | conforming: `execOutputMaxBytes` counted in bytes per stream | none (output returned verbatim) | conforming: `flushDecoded` runs on both `error` and `close` settlement (skipped only where the cap already truncated) | conforming-on-all-rules |
+| fs search / routes git check-ignore (`fs/search.js`, and the duplicated copy in `fs/routes.js`) | conforming: `StringDecoder` | none stated (git's own output for one directory's names; timeout-bounded) | conforming: names split from the completed decoded text | conforming: settles with `stdout + stdoutDecoder.end()` on `close` | conforming-on-all-rules |
+| git untracked listing (`git/service.js` `listUntrackedFilesBounded`) | conforming: `StringDecoder` | conforming: the bound is a record count, applied per completed record | conforming: records split on `\0` from decoded text; a trailing partial record is held, never parsed early | conforming: `decoder.end()` remainder is pushed as the final record on `close` before finishing | conforming-on-all-rules |
+| git worktree start command (`git/service.js` `execWorktreeStartCommand`) | conforming: chunks buffered as bytes, decoded once in the settle function | conforming with note: `START_COMMAND_MAX_BUFFER` counted in chunk bytes; a stream stops being *kept* once the count passes the cap but is still drained, so the kept bytes can exceed the cap by less than one chunk — the cap is a memory bound on kept output, not a refusal | none (whole-output result) | decode-once is the flush; settlement is on `close` (or the timeout path, which finishes only after the kill escalation) | conforming-on-all-rules (decode-once special case) |
+| git network runner (`git/network-operations.js`, incl. the trusted-directories `git config` read) | conforming: chunks buffered as bytes, decoded once at settle (`Buffer.concat(...).toString('utf8')`) | conforming: `appendBounded` counts chunk bytes against byte-named limits and truncates the final chunk to the remaining bytes | none (whole-output result) | decode-once is the flush; settlement is on `close` | conforming-on-all-rules (decode-once special case) |
+| git credential resolver runner (`git/credential-resolver.js` `runFile`) | conforming: chunks buffered, decoded once on `close` | none stated (ssh-keygen's own bounded output; deadline-bounded) | classification is the exit code, not output text | decode-once is the flush | conforming-on-all-rules (decode-once special case) |
+| workspace file names (`fs/workspace-file-names.js`) | conforming: chunks buffered, decoded once on `close` | conforming: `maxOutputBytes` counted in chunk bytes; over-cap kills the child and yields no index | conforming: names split on `\0` from the completed decoded text | decode-once is the flush | conforming-on-all-rules (decode-once special case) |
+| dev-server listener scan (`dev-servers/routes.js` `runCommand`) | conforming: `StringDecoder` (the #1691 fix) | conforming: `MAX_SCAN_OUTPUT_BYTES` counted with `Buffer.byteLength` | conforming: listener tables parsed from the completed decoded text | conforming: `decoder.end()` appended on `close` before the result is chosen | conforming-on-all-rules |
+| spaces command runner (`spaces/run-command.js` `exec`) | conforming: chunks buffered as bytes, decoded once on `close`; the keep-tail window and the too-large gate both work on the buffered bytes | conforming: `maxOutputBytes` counted in bytes in both the gate and the tail window | none (whole-output result, plus a stderr file read back as bytes) | decode-once is the flush; settlement is on `close` | conforming-on-all-rules (decode-once special case) |
+| spaces command stream (`spaces/run-command.js` `CommandStream` / `openCommandStream`) | excepted: stdout is forwarded as raw bytes to the place transport — no text is ever decoded from it, so there is no decode to corrupt; stderr is buffered as bytes and decoded once when a failure message is built | conforming: stdout counted in bytes (flow control only); stderr held under `STREAM_STDERR_BYTES` counted in bytes | none on stdout; the failure classification is the exit code/signal | stderr decode-once is the flush | excepted-with-reason (raw-byte forwarding, no text consumer) |
+| `execFile` / `execFileSync` class (Node buffers the child's output whole and decodes it once; `maxBuffer` is a byte cap enforced by Node) — `git/service.js` runGitCommand and probe calls, `git/transport-config.js`, `skills-catalog/git.js`, `guests/service-registry.js` process probes, `terminal/shutdown.js`, `guests`/`opencode` registry and lifecycle probes, `environment/vault.js` (`op read`, output never logged), `opencode/cli-upgrade.js` (output deliberately discarded), `github/gh-cli-credential.js`, `gitlab/glab-credential.js`, `quota/providers/claude/auth.js`, `quota/providers/cursor.js` | conforming by construction: decode-once, performed by Node | conforming by construction: `maxBuffer` in bytes where set | per-site: version / token / listing parses run on the completed decoded output | decode-once is the flush | conforming-on-all-rules (decode-once special case, as a class; a site that outgrows `maxBuffer` semantics becomes its own row) |
+| spawns with no output consumed (`stdio: 'ignore'` or `'inherit'`) — `opencode/v2-install.js` installer and tar extraction, `fs/routes.js` detached file-browser and Explorer launches, `git/ssh-wrapper.js` (stdio inherited by the terminal), `opencode/self-handoff.js` (stdio inherited; readiness arrives over IPC, not a pipe), `terminal/runtime.js` PTY provider (a byte stream handed to the terminal, never decoded as text by the server) | excepted: no pipe text is consumed — output is discarded, inherited by a terminal, or carried as PTY bytes | none owed | none | none | excepted-with-reason (no text consumer) |
+
+### Body and stdin readers (recorded, not process output)
+
+Whether body readers join this contract is design #1740's phase-3
+question; the audit records these rows and decides nothing about them.
+
+| Reader (file — site) | Decode / cap | Overall |
+|---|---|---|
+| gatekeeper control body (`spaces/gatekeeper-program.cjs` `readBody`) | per-chunk `text += chunk`; `CONTROL_BODY_BYTES` (1 MiB, byte-named) judged against string `.length` — a 1,200,037-byte body was accepted at filing | body-reader row — covered-by-open-issue #1727 (rules 1–2 as they would apply) |
+| git credential broker request body (`git/credential-broker.js`) | conforming shape: chunks buffered, byte-counted against `MAX_BODY_BYTES`, decoded once on `end` | body-reader row — conforming shape, recorded only |
+| git credential helper stdin + broker response (`git/credential-helper.js`); repository credential helper stdin + broker response, and its `child.stdout.pipe(process.stdout)` delegate forwarding (`git/repository-credential-helper.js`) | conforming shape: byte-counted against `MAX_INPUT_BYTES` / `MAX_BYTES`, buffered and decoded once (the delegate path forwards raw bytes undecoded) | body-reader row — conforming shape, recorded only |
+
+Adjacent, deliberately not rows: HTTP response bodies (design #802's
+family — bounded-fetch / `shared/response-body.js` and its per-site
+relatives, including the APNs direct-request reader in
+`notifications/apns-runtime.js`, which stream-decodes via
+`setEncoding('utf8')` and counts its byte cap with `Buffer.byteLength`),
+HTTP request uploads and downloads counted as bytes and never decoded
+as text (`guests/install.js`, `guests/upload.js`,
+`dictation/local/model-downloader.js`'s download, `routing/route-local-model.js`),
+web/SSE response streams (`agent-tool/runtime.js` decodes a model
+stream with a streaming `TextDecoder`; `realtime-proxy.js` and
+`relay/tunnel-host.js` forward response bytes), socket and tunnel byte
+forwarding (`dev-tunnel/*`, `spaces/websocket.js`, `spaces/dispatcher.js`,
+`relay/tunnel-codec.js` — binary or protocol bytes, never decoded as
+text), binary audio (`dictation/stream-manager.js` reorder buffer),
+file-content streams (design #1254's family), and the generated
+test-harness scripts embedded in `spaces/code-in-bait.js`,
+`spaces/tools-filler.js` and `spaces/places/*` (strings the space
+runner writes into a sandbox, not consumers in this server). They are
+named so the inventory's edge is explicit, not silent.
+
+### Mirror rows (record only — not audited as web code)
+
+| Mirror consumer | Coverage |
+|---|---|
+| VS Code extension hand-rolled decoders | fixed per-site in #1558 / #1577 (closed); the per-runtime mirror is a phase-3 question |
+| Electron main hand-rolled decoders | fixed per-site in #1590 (closed); the per-runtime mirror is a phase-3 question |
+
+No follow-up issues were filed by this audit: every hand-rolled
+consumer found violating a rule is already covered by an open issue
+named in its row (#1734, #1690, #1695, #1696, #1693), and the one
+body-reader violation is covered by #1727. Phase 3 of design #1740
+(migration of the conforming hand-rolled decoders onto the shared
+accumulator, the VS Code / Electron mirror, the gatekeeper body-reader
+question, and a ratchet) is not decided by this inventory.
 
 ## Traversal budget (design #1391 phase 1, #1392)
 

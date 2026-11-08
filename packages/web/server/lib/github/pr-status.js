@@ -351,6 +351,38 @@ const safeListPulls = async (octokit, options) => {
   }
 };
 
+// Per-head pull list (design #1528 completeness contract, #1596): the
+// per-head query in findBranchPrCandidates feeds the branch PR verdict, so
+// it paginates to a short page under a named cap instead of treating the
+// first page as the whole set. One probe past the cap: a non-empty probe
+// means the set may be incomplete, which is an error here — a partial list
+// must never resolve to "no PR" (the verdict disposition in
+// lib/github/DOCUMENTATION.md, "Collection completeness"). Per-page error
+// semantics are safeListPulls' own: 404/403 read as an empty page, other
+// errors propagate.
+const PER_HEAD_PULLS_PAGE_SIZE = 100;
+const PER_HEAD_PULLS_MAX_PAGES = 20;
+const PER_HEAD_PULLS_MAX_COUNT = PER_HEAD_PULLS_PAGE_SIZE * PER_HEAD_PULLS_MAX_PAGES;
+
+const safeListPullsComplete = async (octokit, options) => {
+  const prs = [];
+  for (let page = 1; page <= PER_HEAD_PULLS_MAX_PAGES; page += 1) {
+    const payload = await safeListPulls(octokit, { ...options, per_page: PER_HEAD_PULLS_PAGE_SIZE, page });
+    prs.push(...payload);
+    if (payload.length < PER_HEAD_PULLS_PAGE_SIZE) {
+      return prs;
+    }
+    if (page === PER_HEAD_PULLS_MAX_PAGES) {
+      const probe = await safeListPulls(octokit, { ...options, per_page: PER_HEAD_PULLS_PAGE_SIZE, page: page + 1 });
+      if (probe.length === 0) {
+        return prs;
+      }
+      throw new Error(`GitHub per-head pull list reached the ${PER_HEAD_PULLS_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return prs;
+};
+
 // Repo-level pull list, shared across every branch resolution. Ten worktree
 // branches of one repo need ONE pulls.list per state per TTL window, not ten
 // per-branch query fans. In-flight requests coalesce so concurrent branch
@@ -624,13 +656,14 @@ const searchFallbackPr = async ({ octokit, branch, repos }) => {
 
     // The Search API has a tiny quota, so it is only spent on live branch status.
     // Closed/merged history is resolved by the cheaper per-head repo queries.
-    let response;
+    const runSearch = async (subset) => octokit.rest.search.issuesAndPullRequests({
+      q: [`is:pr state:open head:${branch}`, ...new Set(subset.map((target) => `repo:${target.owner}/${target.repo}`))].join(' '),
+      per_page: 20,
+    });
+
+    let responses;
     try {
-      const repoQualifiers = [...new Set(targetRepos.map((target) => `repo:${target.owner}/${target.repo}`))];
-      response = await octokit.rest.search.issuesAndPullRequests({
-        q: [`is:pr state:open head:${branch}`, ...repoQualifiers].join(' '),
-        per_page: 20,
-      });
+      responses = [await runSearch(targetRepos)];
       // If we get here, search API works for this repo — clear the disabled flag
       if (repoKey) _searchApiDisabledRepos.delete(repoKey);
     } catch (error) {
@@ -643,10 +676,33 @@ const searchFallbackPr = async ({ octokit, branch, repos }) => {
         if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
         return null;
       }
-      throw error;
+      if (error?.status !== 422) {
+        throw error;
+      }
+      // GitHub Search answers 422 for the WHOLE query when one repo:
+      // qualifier names a repo the token cannot access (e.g. a private
+      // parent/source added by expandRepoNetwork). That repo must not
+      // fail the whole lookup: retry scoped per repo and keep whichever
+      // targets answer, so a PR in an accessible repo is still found.
+      if (targetRepos.length <= 1) {
+        if (missKey && pendingSearchMissWrites.has(writeToken)) rememberSearchMiss(missKey);
+        return null;
+      }
+      responses = [];
+      for (const target of targetRepos) {
+        try {
+          responses.push(await runSearch([target]));
+        } catch (retryError) {
+          noteIfGitHubRateLimit(retryError);
+          if (retryError?.status === 403 || retryError?.status === 404 || retryError?.status === 422) {
+            continue;
+          }
+          throw retryError;
+        }
+      }
     }
 
-    const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+    const items = responses.flatMap((entry) => (Array.isArray(entry?.data?.items) ? entry.data.items : []));
     for (const item of items) {
       const repo = parseRepoFromApiUrl(item?.repository_url);
       if (!repo) {
@@ -783,12 +839,11 @@ const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidate
   try {
     let historical = null;
     for (const owner of sourceOwners) {
-      const directCandidates = await safeListPulls(octokit, {
+      const directCandidates = await safeListPullsComplete(octokit, {
         owner: target.repo.owner,
         repo: target.repo.repo,
         state: includeHistory ? 'all' : 'open',
         head: `${owner}:${branch}`,
-        per_page: 100,
       });
       const openMatch = pickPreferred(directCandidates.filter((pr) => !isTerminalPr(pr)));
       if (openMatch) {
