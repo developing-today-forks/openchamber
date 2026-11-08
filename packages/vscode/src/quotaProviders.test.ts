@@ -48,6 +48,7 @@ const baseCredentialList = (): CredentialEntry[] => [
   key('deepseek'),
   key('deepinfra'),
   key('hyper'),
+  key('mistral'),
   key('nano-gpt'),
   key('wafer'),
   oauth('github-copilot', copilotEnterpriseUrl ? { enterpriseUrl: copilotEnterpriseUrl } : undefined),
@@ -55,7 +56,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotAddonQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotAddonQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -3452,6 +3453,91 @@ describe('Meta quota provider', () => {
   });
 });
 
+describe('Mistral quota provider (VS Code parity)', () => {
+  test('dispatch reaches the fetcher: a live key answers ok with console-only usage', async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return Promise.resolve(mockResponse({ object: 'list', data: [{ id: 'mistral-large-latest' }] }));
+    });
+
+    const result = await fetchQuotaForProvider('mistral');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'mistral');
+    assert.equal(result.providerName, 'Mistral AI');
+    assert.equal(result.configured, true);
+    assert.equal(result.usage!.usageAvailability, 'console-only');
+    assert.deepEqual(result.usage!.windows, {});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]![0], 'https://api.mistral.ai/v1/models');
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Authorization'), 'Bearer test-token');
+  });
+
+  test('lists mistral as configured from the enrolled key credential', async () => {
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('mistral'), true);
+  });
+
+  test('maps 401 and 403 to the unauthorized class', async () => {
+    for (const status of [401, 403]) {
+      stubFetchFailing(async () => ({}), { ok: false, status });
+      const result = await fetchQuotaForProvider('mistral');
+      assert.equal(result.ok, false);
+      assert.equal(result.configured, true);
+      assert.equal(result.error, 'Invalid or revoked API key \u2014 Mistral rejected the enrolled credential');
+    }
+  });
+
+  test('maps other HTTP failures to API error', async () => {
+    stubFetchFailing(async () => ({}), { ok: false, status: 500 });
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'API error: 500');
+  });
+
+  test('reports no quota data on a 200 payload without the data array', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({ object: 'list' })));
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.error, 'No quota data in response');
+    assert.equal(result.usage, null);
+  });
+
+  test('reports a normalized timeout error', async () => {
+    stubFetchReturning(() => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError')));
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'Request timed out');
+  });
+
+  test('fetcher with no enrolled credential is not configured and sends nothing', async () => {
+    let fetchCalls = 0;
+    const result = await fetchMistralQuota({
+      readAuth: () => ({}),
+      fetchImpl: async () => { fetchCalls += 1; return mockResponse({ data: [] }); },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, false);
+    assert.equal(result.error, 'Not configured');
+    assert.equal(fetchCalls, 0);
+  });
+
+  test('fetcher falls through a blank key to the access field', async () => {
+    const authorizations: Array<string | null> = [];
+    const result = await fetchMistralQuota({
+      readAuth: () => ({ mistral: { key: ' ', access: 'real-access' } }),
+      fetchImpl: async (_url: string, init?: RequestInit) => {
+        authorizations.push(new Headers(init?.headers).get('Authorization'));
+        return mockResponse({ data: [] });
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(authorizations, ['Bearer real-access']);
+  });
+});
+
 describe('Wafer quota provider (VS Code parity) - #616', () => {
   const run = async (payload: {
     remaining_included_requests?: number;
@@ -3533,6 +3619,7 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'minimax-coding-plan', listedAs: 'minimax-coding-plan', credential: (b) => blankKey('minimax-coding-plan', b) },
     { provider: 'minimax-cn-coding-plan', listedAs: 'minimax-cn-coding-plan', credential: (b) => blankKey('minimax-cn-coding-plan', b) },
     { provider: 'wafer', listedAs: 'wafer', credential: (b) => blankKey('wafer', b) },
+    { provider: 'mistral', listedAs: 'mistral', credential: (b) => blankKey('mistral', b) },
   ];
 
   for (const { provider, listedAs, credential } of cases) {

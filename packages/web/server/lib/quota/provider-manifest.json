@@ -203,19 +203,11 @@
       "name": "Mistral AI",
       "surfaces": {
         "web": true,
-        "vscode_dispatch": false,
-        "vscode_configured": false,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
         "ui_catalog": true,
         "ui_union": true,
         "docs": true
-      },
-      "exception": {
-        "absent_from": [
-          "vscode_dispatch",
-          "vscode_configured"
-        ],
-        "issue": 1757,
-        "reason": "No VS Code fetcher, dispatch case, or configured entry; the shared board requests mistral in VS Code since the web/UI half landed (PR #1805). Adopted by #1757."
       }
     },
     {

@@ -36,6 +36,7 @@ type UsageWindow = {
 type ProviderUsage = {
   windows: Record<string, UsageWindow>;
   models?: Record<string, ProviderUsage>;
+  usageAvailability?: 'console-only';
 };
 
 type OpenAiUsagePayload = {
@@ -1015,6 +1016,11 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   const metaAuth = normalizeAuthEntry(getAuthEntry(auth, ['meta']));
   if (metaAuth && (asNonEmptyString(metaAuth.key) || asNonEmptyString(metaAuth.token) || asNonEmptyString(metaAuth.access))) {
     configured.add('meta');
+  }
+
+  const mistralAuth = normalizeAuthEntry(getAuthEntry(auth, ['mistral']));
+  if (mistralAuth && (asNonEmptyString(mistralAuth.key) || asNonEmptyString(mistralAuth.token) || asNonEmptyString(mistralAuth.access))) {
+    configured.add('mistral');
   }
 
   const minimaxAuth = normalizeAuthEntry(getAuthEntry(auth, ['minimax-coding-plan']));
@@ -4806,6 +4812,105 @@ export const fetchXaiQuota = async ({ readAuth = readOpenCodeCredentials, fetchI
   }
 };
 
+const MISTRAL_MODELS_URL = 'https://api.mistral.ai/v1/models';
+
+const mistralApiKeyFrom = (entry: ReturnType<typeof normalizeAuthEntry>): string | null =>
+  asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token) ?? asNonEmptyString(entry?.access);
+
+type MistralQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+/**
+ * Mistral AI quota — key-validity class, ported from the web provider
+ * (packages/web/server/lib/quota/providers/mistral.js). Mistral exposes no
+ * usage or balance read to a standard API key (#1619), so this tracks the
+ * one thing the credential can prove: `GET /v1/models` with the enrolled
+ * `mistral` credential — 200 with the documented `data` array -> ok with
+ * empty windows and the `usageAvailability: 'console-only'` marker;
+ * 401/403 -> the unauthorized class; a 200 without `data` -> the malformed
+ * class. No usage or balance figures are ever emitted.
+ */
+export const fetchMistralQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl = fetch }: MistralQuotaDependencies = {}): Promise<ProviderResult> => {
+  const entry = normalizeAuthEntry(getAuthEntry(await readAuth(), ['mistral']));
+  const apiKey = mistralApiKeyFrom(entry);
+
+  if (!apiKey) {
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: false,
+      configured: false,
+      error: 'Not configured',
+    });
+  }
+
+  const timeoutSignal = AbortSignal.timeout(15_000);
+
+  try {
+    const response = await fetchImpl(MISTRAL_MODELS_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Accept-Encoding': 'identity',
+      },
+      signal: timeoutSignal,
+    });
+
+    if (!response.ok) {
+      return buildResult({
+        providerId: 'mistral',
+        providerName: 'Mistral AI',
+        ok: false,
+        configured: true,
+        error: response.status === 401 || response.status === 403
+          ? 'Invalid or revoked API key \u2014 Mistral rejected the enrolled credential'
+          : `API error: ${response.status}`,
+      });
+    }
+
+    const payload = await readQuotaJson(response);
+
+    if (!Array.isArray(asObject(payload)?.data)) {
+      return buildResult({
+        providerId: 'mistral',
+        providerName: 'Mistral AI',
+        ok: false,
+        configured: true,
+        error: 'No quota data in response',
+      });
+    }
+
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: true,
+      configured: true,
+      usage: {
+        windows: {},
+        usageAvailability: 'console-only',
+      },
+    });
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );
+    const isParseError = error instanceof SyntaxError;
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: false,
+      configured: true,
+      error: isTimeout
+        ? 'Request timed out'
+        : isParseError
+          ? 'Invalid response from provider'
+          : (error instanceof Error ? error.message : 'Request failed'),
+    });
+  }
+};
+
 const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<ProviderResult> => {
   switch (providerId) {
     case 'claude':
@@ -4884,6 +4989,8 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchZenmuxQuota();
     case 'xai':
       return fetchXaiQuota();
+    case 'mistral':
+      return fetchMistralQuota();
     default:
       return buildResult({
         providerId,
