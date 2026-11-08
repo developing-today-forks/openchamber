@@ -297,4 +297,24 @@ describe('remote client auth runtime store durability', () => {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('cuts a label that straddles the 80-char cap at the surrogate pair boundary', async () => {
+    const { dir, runtime } = await createRuntime();
+    try {
+      const created = await runtime.createClient({ label: `${'d'.repeat(79)}\u{1F600}x` });
+      expect(created.client.label).toBe('d'.repeat(79));
+      expect(created.client.label.isWellFormed()).toBe(true);
+      expect(Buffer.from(created.client.label, 'utf8').toString('utf8')).toBe(created.client.label);
+
+      const stored = await fs.readFile(path.join(dir, 'remote-clients.json'), 'utf8');
+      expect(stored).not.toContain('\\ud83d');
+      expect(JSON.parse(stored).clients[0].label).toBe('d'.repeat(79));
+
+      const ascii = await runtime.createClient({ label: 'a'.repeat(120) });
+      expect(ascii.client.label).toBe('a'.repeat(80));
+      expect(ascii.client.label.length).toBe(80);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 });
