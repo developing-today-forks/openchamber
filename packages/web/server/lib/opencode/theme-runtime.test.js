@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import nativeFsPromises from 'node:fs/promises';
 
 import { createThemeRuntime } from './theme-runtime.js';
 
@@ -141,6 +145,32 @@ describe('theme runtime', () => {
       const themes = await runtime.readCustomThemesFromDisk();
 
       expect(themes.map((theme) => theme.metadata.id)).toEqual(['linked-theme']);
+    });
+
+    it.skipIf(process.platform === 'win32')('loads other themes when a symlinked theme points to a FIFO', async () => {
+      const themesDir = await nativeFsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-theme-fifo-'));
+      try {
+        const fifoPath = path.join(themesDir, 'theme.fifo');
+        execFileSync('mkfifo', [fifoPath]);
+        await nativeFsPromises.symlink(fifoPath, path.join(themesDir, 'blocked.json'));
+        await nativeFsPromises.writeFile(path.join(themesDir, 'valid.json'), JSON.stringify(validTheme('valid-theme')));
+        const runtime = createThemeRuntime({
+          fsPromises: nativeFsPromises,
+          path,
+          themesDir,
+          maxThemeJsonBytes: 512 * 1024,
+          logger: { warn: () => {} },
+        });
+
+        const themes = await Promise.race([
+          runtime.readCustomThemesFromDisk(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('theme loading blocked on FIFO open')), 3000)),
+        ]);
+
+        expect(themes.map((theme) => theme.metadata.id)).toEqual(['valid-theme']);
+      } finally {
+        await nativeFsPromises.rm(themesDir, { recursive: true, force: true });
+      }
     });
 
     it('refuses a stat-small/read-huge theme without buffering it whole', async () => {
