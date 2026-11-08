@@ -36,6 +36,7 @@ type UsageWindow = {
 type ProviderUsage = {
   windows: Record<string, UsageWindow>;
   models?: Record<string, ProviderUsage>;
+  usageAvailability?: 'console-only';
 };
 
 type OpenAiUsagePayload = {
@@ -1062,6 +1063,11 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   const deepseekAuth = normalizeAuthEntry(getAuthEntry(auth, ['deepseek']));
   if (keyOrTokenFrom(deepseekAuth)) {
     configured.add('deepseek');
+  }
+
+  const mistralAuth = normalizeAuthEntry(getAuthEntry(auth, ['mistral']));
+  if (keyOrTokenFrom(mistralAuth) || accessOrTokenFrom(mistralAuth)) {
+    configured.add('mistral');
   }
 
   const deepinfraAuth = normalizeAuthEntry(getAuthEntry(auth, ['deepinfra', 'deep-infra', 'deep_infra']));
@@ -4026,6 +4032,105 @@ const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
   }
 };
 
+// Mistral AI quota - key-validity class. Mirrors
+// `packages/web/server/lib/quota/providers/mistral.js` (#1757): Mistral
+// exposes no usage or balance read to a standard API key, so the one
+// thing this credential class can prove is the key itself, via
+// GET /v1/models. 200 with the documented `data` array -> ok with empty
+// windows and the 'console-only' usage marker; 401/403 -> the
+// unauthorized class; a 200 without `data` -> the malformed class. No
+// usage figures are ever emitted.
+const MISTRAL_MODELS_URL = 'https://api.mistral.ai/v1/models';
+
+type MistralModelsPayload = {
+  data?: unknown;
+};
+
+const mistralApiKeyFrom = (entry: unknown): string | null => {
+  const record = asObject(entry);
+  return asNonEmptyString(record?.key) ?? asNonEmptyString(record?.token) ?? asNonEmptyString(record?.access);
+};
+
+const fetchMistralQuota = async (): Promise<ProviderResult> => {
+  const auth = await readOpenCodeCredentials();
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['mistral'])) as Record<string, unknown> | null;
+  const apiKey = mistralApiKeyFrom(entry);
+
+  if (!apiKey) {
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: false,
+      configured: false,
+      error: 'Not configured',
+    });
+  }
+
+  const timeoutSignal = AbortSignal.timeout(15_000);
+
+  try {
+    const response = await fetch(MISTRAL_MODELS_URL, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Accept-Encoding': 'identity',
+      },
+      signal: timeoutSignal,
+    });
+
+    if (!response.ok) {
+      return buildResult({
+        providerId: 'mistral',
+        providerName: 'Mistral AI',
+        ok: false,
+        configured: true,
+        error: response.status === 401 || response.status === 403
+          ? 'Invalid or revoked API key — Mistral rejected the enrolled credential'
+          : `API error: ${response.status}`,
+      });
+    }
+
+    const payload = await readQuotaJson(response) as MistralModelsPayload;
+
+    if (!Array.isArray(payload?.data)) {
+      return buildResult({
+        providerId: 'mistral',
+        providerName: 'Mistral AI',
+        ok: false,
+        configured: true,
+        error: 'No quota data in response',
+      });
+    }
+
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: true,
+      configured: true,
+      usage: {
+        windows: {},
+        usageAvailability: 'console-only',
+      },
+    });
+  } catch (error) {
+    const isTimeout = error instanceof DOMException && (
+      error.name === 'TimeoutError' || (error.name === 'AbortError' && timeoutSignal.aborted)
+    );
+    const isParseError = error instanceof SyntaxError;
+    return buildResult({
+      providerId: 'mistral',
+      providerName: 'Mistral AI',
+      ok: false,
+      configured: true,
+      error: isTimeout
+        ? 'Request timed out'
+        : isParseError
+          ? 'Invalid response from provider'
+          : (error instanceof Error ? error.message : 'Request failed'),
+    });
+  }
+};
+
 // Meta Model API (Muse Code High Usage plan) quota. Mirrors
 // `packages/web/server/lib/quota/providers/meta.js` — the VS Code extension
 // duplicates this logic rather than importing the web provider. The VS Code
@@ -4838,6 +4943,8 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchDeepinfraQuota();
     case 'deepseek':
       return fetchDeepseekQuota();
+    case 'mistral':
+      return fetchMistralQuota();
     case 'hyper':
       return fetchHyperQuota();
     case 'neuralwatt':

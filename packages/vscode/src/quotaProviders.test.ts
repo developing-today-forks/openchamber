@@ -46,6 +46,7 @@ const baseCredentialList = (): CredentialEntry[] => [
   key('zai-coding-plan'),
   key('zhipuai-coding-plan'),
   key('deepseek'),
+  key('mistral'),
   key('deepinfra'),
   key('hyper'),
   key('nano-gpt'),
@@ -2213,6 +2214,68 @@ describe('DeepSeek quota provider (VS Code parity)', () => {
   });
 });
 
+describe('Mistral quota provider (VS Code parity, #1757)', () => {
+  afterEach(() => {
+    configureOpenCodeCredentials({ list: async () => baseCredentialList() });
+  });
+
+  test('dispatches to the Mistral fetcher: a 200 with a data array is ok, console-only, no windows', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({ object: 'list', data: [{ id: 'mistral-large-latest' }] })));
+
+    const result = await fetchQuotaForProvider('mistral');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'mistral');
+    assert.equal(result.providerName, 'Mistral AI');
+    assert.equal(result.configured, true);
+    assert.equal(result.usage!.usageAvailability, 'console-only');
+    assert.deepEqual(result.usage!.windows, {});
+  });
+
+  test('maps 401 and 403 to the unauthorized class', async () => {
+    for (const status of [401, 403]) {
+      stubFetchFailing(async () => ({}), { ok: false, status });
+
+      const result = await fetchQuotaForProvider('mistral');
+
+      assert.equal(result.ok, false);
+      assert.equal(result.configured, true);
+      assert.equal(result.error, 'Invalid or revoked API key \u2014 Mistral rejected the enrolled credential');
+    }
+  });
+
+  test('reports the malformed class on a 200 without a data array', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({ object: 'list' })));
+
+    const result = await fetchQuotaForProvider('mistral');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.error, 'No quota data in response');
+  });
+
+  test('lists mistral as configured when a mistral credential is enrolled', async () => {
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('mistral'), true);
+  });
+
+  test('without a mistral credential the fetch is not configured and sends nothing', async () => {
+    configureOpenCodeCredentials({ list: async () => baseCredentialList().filter((entry) => entry.integrationID !== 'mistral') });
+    let fetchCalls = 0;
+    stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({ data: [] })); });
+
+    const result = await fetchQuotaForProvider('mistral');
+
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, false);
+    assert.equal(result.error, 'Not configured');
+    assert.equal(fetchCalls, 0);
+
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('mistral'), false);
+  });
+});
+
 describe('Cursor quota provider (VS Code parity)', () => {
   // readCredential reads the cursor credential from the isolated data directory.
   const cursorCredentialPath = path.join(temporaryQuotaDataDirectory, 'quota', 'cursor.json');
@@ -3529,6 +3592,7 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'nano-gpt', listedAs: 'nano-gpt', credential: (b) => blankKey('nano-gpt', b) },
     { provider: 'neuralwatt', listedAs: 'neuralwatt', credential: (b) => blankKey('neuralwatt', b) },
     { provider: 'deepseek', listedAs: 'deepseek', credential: (b) => blankKey('deepseek', b) },
+    { provider: 'mistral', listedAs: 'mistral', credential: (b) => blankKey('mistral', b) },
     { provider: 'deepinfra', listedAs: 'deepinfra', credential: (b) => blankKey('deepinfra', b) },
     { provider: 'minimax-coding-plan', listedAs: 'minimax-coding-plan', credential: (b) => blankKey('minimax-coding-plan', b) },
     { provider: 'minimax-cn-coding-plan', listedAs: 'minimax-cn-coding-plan', credential: (b) => blankKey('minimax-cn-coding-plan', b) },
