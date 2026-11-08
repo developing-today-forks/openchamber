@@ -55,7 +55,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClinePassQuota, fetchDeepinfraQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchOllamaCloudQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotAddonQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -3553,31 +3553,57 @@ describe('VS Code quota key selection (#1759)', () => {
   }
 
   // The second field is the fallback the shared selector exists for:
-  // exercised through DeepInfra's readAuth seam, whose AuthFile entries
-  // carry both fields (the kimi/cline-pass pattern in this file).
-  for (const entry of [
-    { key: '  ', token: 'real-token' },
-    { key: '', token: 'real-token' },
-  ]) {
-    test(`deepinfra skips a blank key and uses the token next to it: ${JSON.stringify(entry)}`, async () => {
-      let authorization: string | null = null;
-      stubFetchReturning((_url, init) => {
-        authorization = new Headers(init?.headers).get('Authorization');
-        return Promise.resolve(mockResponse({ checklist: { stripe_balance: -1 } }));
-      });
+  // every provider in the #1759 set pins it through its fetcher's
+  // readAuth seam (the kimi/cline-pass pattern in this file), so a
+  // selection regression in any one fetch path turns this suite red.
+  // Oracle: the shared asNonEmptyString selection - a blank first field
+  // falls through, so the fetcher is configured and every request it
+  // sends carries the second field, never the blank first one.
+  const fallthroughCases: Array<{
+    provider: string;
+    alias: string;
+    first: 'key' | 'access';
+    fetchQuota: (deps: { readAuth: () => Record<string, Record<string, string>> }) => Promise<{ configured: boolean }>;
+    headerFor: (value: string) => string;
+  }> = [
+    { provider: 'claude', alias: 'anthropic', first: 'access', fetchQuota: fetchClaudeQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'codex', alias: 'openai', first: 'access', fetchQuota: fetchCodexQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'github-copilot', alias: 'github-copilot', first: 'access', fetchQuota: fetchCopilotQuota, headerFor: (v) => 'token ' + v },
+    { provider: 'github-copilot-addon', alias: 'github-copilot', first: 'access', fetchQuota: fetchCopilotAddonQuota, headerFor: (v) => 'token ' + v },
+    { provider: 'zai-coding-plan', alias: 'zai-coding-plan', first: 'key', fetchQuota: fetchZaiQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'zhipuai-coding-plan', alias: 'zhipuai-coding-plan', first: 'key', fetchQuota: fetchZhipuaiCodingPlanQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'openrouter', alias: 'openrouter', first: 'key', fetchQuota: fetchOpenRouterQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'nano-gpt', alias: 'nano-gpt', first: 'key', fetchQuota: fetchNanoGptQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'neuralwatt', alias: 'neuralwatt', first: 'key', fetchQuota: fetchNeuralwattQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'deepseek', alias: 'deepseek', first: 'key', fetchQuota: fetchDeepseekQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'deepinfra', alias: 'deepinfra', first: 'key', fetchQuota: fetchDeepinfraQuota, headerFor: (v) => 'Bearer ' + v },
+  ];
 
-      const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: entry }) });
-      assert.equal(result.ok, true);
-      assert.equal(authorization, 'Bearer ' + entry.token);
+  for (const { provider, alias, first, fetchQuota, headerFor } of fallthroughCases) {
+    for (const blank of [' ', '']) {
+      test(provider + ' skips a ' + (blank === '' ? 'empty' : 'whitespace-only') + ' ' + first + ' and uses the token next to it', async () => {
+        const authorizations: Array<string | null> = [];
+        stubFetchReturning((_url, init) => {
+          authorizations.push(new Headers(init?.headers).get('Authorization'));
+          return Promise.resolve(mockResponse({}));
+        });
+
+        const result = await fetchQuota({ readAuth: () => ({ [alias]: { [first]: blank, token: 'real-token' } }) });
+        assert.equal(result.configured, true, provider + ' fetch must read as configured');
+        assert.ok(authorizations.length >= 1, provider + ' must send a request');
+        for (const authorization of authorizations) {
+          assert.equal(authorization, headerFor('real-token'), provider + ' must send the second field');
+        }
+      });
+    }
+
+    test(provider + ' with both fields blank is not configured and sends nothing', async () => {
+      let fetchCalls = 0;
+      stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
+
+      const result = await fetchQuota({ readAuth: () => ({ [alias]: { [first]: ' ', token: ' ' } }) });
+      assert.equal(result.configured, false, provider + ' fetch must read as not configured');
+      assert.equal(fetchCalls, 0, provider + ' must not send a blank bearer');
     });
   }
-
-  test('deepinfra with both fields blank is not configured and sends nothing', async () => {
-    let fetchCalls = 0;
-    stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
-
-    const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: { key: ' ', token: ' ' } }) });
-    assert.equal(result.configured, false);
-    assert.equal(fetchCalls, 0);
-  });
 });
