@@ -391,6 +391,20 @@ describe('startNgrokQuickTunnel chunk-split output', () => {
     tunnel.stop();
   });
 
+  it('resolves the full URL from an unterminated final line when stderr closes', async () => {
+    // No trailing newline: the URL line reaches captureLines only through the
+    // stderr accumulator's stream-end flush(). The fake process closes stderr
+    // but stays alive, so startup can settle only via that flush (the agent-API
+    // poll has no ngrok agent to answer it in this environment). Removing the
+    // stderr flush() call in startNgrokQuickTunnel makes this test hang and fail.
+    installFakeNgrok("printf %s '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https://abcd1234.ngrok-free.app\"}' >&2\nexec 2>&-\nsleep 5");
+
+    const tunnel = await startNgrokQuickTunnel({ port: 3210 });
+
+    expect(tunnel.getPublicUrl()).toBe('https://abcd1234.ngrok-free.app');
+    tunnel.stop();
+  });
+
   it('resolves a single-chunk URL unchanged', async () => {
     installFakeNgrok("printf '%s\\n' '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https://abcd1234.ngrok-free.app\"}'\nsleep 0.5");
 
