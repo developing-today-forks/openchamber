@@ -90,8 +90,12 @@ and OpenChamber resolves the directory itself.
   and publishes through a same-directory hard link so partial files and overwrites
   are impossible. Identical retries reuse the existing file; a manually edited
   collision returns 409. Temporary files are ignored by the loader and removed
-  after publication or failure. Non-missing-directory read failures propagate to
-  the route instead of returning an authoritative empty library.
+  after publication or failure. `readThemeFileBounded` opens with `O_NONBLOCK` on
+  POSIX before checking the opened file type, so a FIFO, including one behind a
+  supported theme symlink, is rejected promptly. The reader follows symlinks to
+  regular theme files; `O_NOFOLLOW` would break that behavior. Non-missing-directory
+  read failures propagate to the route instead of returning an authoritative empty
+  library.
 
   The common request middleware parses theme POST bodies before these routes;
   integration tests must use that middleware rather than an unrestricted test parser.
