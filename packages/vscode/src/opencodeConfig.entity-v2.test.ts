@@ -7,8 +7,21 @@ import yaml from 'yaml';
 
 // Path constants freeze when the module loads, so point XDG_CONFIG_HOME at a
 // scratch directory BEFORE importing. Nothing here may touch the real
-// ~/.config/opencode.
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-entity-v2-'));
+// ~/.config/opencode. Two more bounds keep the config search inside the
+// scratch tree (#1814): HOME is redirected to the scratch root (the search
+// probes os.homedir()-based paths; same pattern as
+// antigravityFileFallback.test.ts), and the scratch root itself must not
+// sit inside a home folder — readProjectConfigFiles walks ancestors to the
+// filesystem root, so with TMPDIR under a home folder the real
+// ~/.opencode/opencode.jsonc is an ancestor of the scratch project and
+// outranks its opencode.json. Fall back to /tmp for the scratch base in
+// that case; the walk-up then reaches only the scratch tree.
+const tmpBase = os.tmpdir();
+const homeBase = os.homedir();
+const scratchBase = tmpBase === homeBase || tmpBase.startsWith(homeBase + path.sep) ? '/tmp' : tmpBase;
+const root = fs.mkdtempSync(path.join(scratchBase, 'openchamber-vscode-entity-v2-'));
+const originalHome = process.env.HOME;
+process.env.HOME = root;
 process.env.XDG_CONFIG_HOME = path.join(root, 'xdg');
 process.env.OPENCODE_CONFIG = '';
 
@@ -42,6 +55,8 @@ describe('VS Code entity modules speak OpenCode 2 shapes', () => {
 
   after(() => {
     fs.rmSync(root, { recursive: true, force: true });
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
     delete process.env.XDG_CONFIG_HOME;
     delete process.env.OPENCODE_CONFIG;
   });
