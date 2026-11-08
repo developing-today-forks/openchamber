@@ -630,7 +630,7 @@ const LinearPreview: React.FC<{
                                     href={issue.url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className={cn("ml-1 inline-flex items-center gap-1 typography-meta hover:text-foreground", REFERENCE_META_TEXT)}
+                                    className={cn("ms-1 inline-flex items-center gap-1 typography-meta hover:text-foreground", REFERENCE_META_TEXT)}
                                 >
                                     {t('references.picker.preview.labelsMore', { count: labels.length })}
                                     <Icon name="external-link" className="size-3.5" />
