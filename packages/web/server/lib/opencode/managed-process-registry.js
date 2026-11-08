@@ -46,8 +46,9 @@
 // package); it carries a parity implementation that reads/writes the SAME dir.
 
 import fsp from 'node:fs/promises';
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { renameWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFile, readBoundedFileSync } from '../shared/bounded-file-read.js';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -63,6 +64,21 @@ const resolveRegistryDir = () => {
 
 const entryFilePath = (pid) => path.join(resolveRegistryDir(), `${pid}.json`);
 
+// Entries are small fixed-shape records (pid, ownerPid, port, binary path,
+// runtime, timestamp); claim files hold one pid integer. Both are read
+// through the shared bounded reader (#1736) under caps sized for those
+// shapes, so a FIFO or a grown file at a registry path is refused promptly
+// to the existing safe defaults instead of freezing the sync launch
+// decision, wedging the async reaper, or being buffered whole.
+export const MANAGED_PROCESS_ENTRY_MAX_BYTES = 64 * 1024;
+export const MANAGED_PROCESS_CLAIM_MAX_BYTES = 1024;
+
+const readBoundedTextSync = (filePath, maxBytes) => {
+  const result = readBoundedFileSync(filePath, maxBytes);
+  if (!result.ok) return null;
+  return result.buffer.toString('utf8');
+};
+
 /**
  * The OpenChamber process that registered OpenCode `pid`, or null when the
  * registry has no readable entry for it. Synchronous, for the launch decision.
@@ -70,7 +86,9 @@ const entryFilePath = (pid) => path.join(resolveRegistryDir(), `${pid}.json`);
 export const readManagedProcessOwner = (pid) => {
   if (!Number.isInteger(pid)) return null;
   try {
-    const entry = JSON.parse(readFileSync(entryFilePath(pid), 'utf8'));
+    const raw = readBoundedTextSync(entryFilePath(pid), MANAGED_PROCESS_ENTRY_MAX_BYTES);
+    if (raw === null) return null;
+    const entry = JSON.parse(raw);
     return Number.isInteger(entry?.ownerPid) ? entry.ownerPid : null;
   } catch {
     return null;
@@ -88,9 +106,11 @@ export const readManagedProcessOwner = (pid) => {
  */
 export const claimManagedProcess = (pid, fromOwner, claimant = process.pid) => {
   const claimPath = path.join(resolveRegistryDir(), `${pid}.claim-from-${fromOwner}`);
-  const readHolder = () => {
+  const readHolder = (holderPath = claimPath) => {
     try {
-      const holder = Number.parseInt(readFileSync(claimPath, 'utf8').trim(), 10);
+      const raw = readBoundedTextSync(holderPath, MANAGED_PROCESS_CLAIM_MAX_BYTES);
+      if (raw === null) return null;
+      const holder = Number.parseInt(raw.trim(), 10);
       return Number.isInteger(holder) ? holder : null;
     } catch {
       return null;
@@ -123,7 +143,8 @@ export const claimManagedProcess = (pid, fromOwner, claimant = process.pid) => {
   }
   let movedHolder = null;
   try {
-    const moved = Number.parseInt(readFileSync(asidePath, 'utf8').trim(), 10);
+    const raw = readBoundedTextSync(asidePath, MANAGED_PROCESS_CLAIM_MAX_BYTES);
+    const moved = raw === null ? Number.NaN : Number.parseInt(raw.trim(), 10);
     movedHolder = Number.isInteger(moved) ? moved : null;
   } catch {
     movedHolder = null;
@@ -188,7 +209,19 @@ export const commandIdentifiesOurServer = (command, entry) => {
  * dependencies. Production callers use the default instance exported below;
  * tests pass their own `fs`/`execFileAsync` instead of mocking node builtins.
  */
-export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = defaultExecFileAsync } = {}) => {
+export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = defaultExecFileAsync, boundedRead = readBoundedFile } = {}) => {
+  // Async spelling of readBoundedTextSync for the injected-fs seam: a
+  // non-ok bounded result (missing / not-regular / too-large) throws a
+  // coded error so each caller's existing corrupt-file handling applies.
+  const readBoundedText = async (filePath, maxBytes) => {
+    const result = await boundedRead(filePath, maxBytes);
+    if (!result.ok) {
+      const error = new Error(result.code ?? 'BOUNDED_FILE_READ_FAILED');
+      error.code = result.code;
+      throw error;
+    }
+    return result.buffer.toString('utf8');
+  };
   // Claim files (`<pid>.claim-from-<owner>`, written by claimManagedProcess)
   // are the handover record between servers. They get an end of life here:
   // unregister drops the claimed pid's files, and the reaper sweeps files
@@ -227,7 +260,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
   const sweepDeadHolderClaims = async () => {
     for (const claim of await listClaimFiles()) {
       try {
-        const holder = Number.parseInt((await fs.readFile(claim.filePath, 'utf8')).trim(), 10);
+        const holder = Number.parseInt((await readBoundedText(claim.filePath, MANAGED_PROCESS_CLAIM_MAX_BYTES)).trim(), 10);
         if (!Number.isInteger(holder) || isPidAlive(holder)) continue;
         // Same race as claim supersession: a claimant may have replaced the
         // stale file with a live claim since the read above. Move the file
@@ -237,7 +270,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
         await fs.rename(claim.filePath, asidePath);
         let movedHolder = null;
         try {
-          const moved = Number.parseInt((await fs.readFile(asidePath, 'utf8')).trim(), 10);
+          const moved = Number.parseInt((await readBoundedText(asidePath, MANAGED_PROCESS_CLAIM_MAX_BYTES)).trim(), 10);
           movedHolder = Number.isInteger(moved) ? moved : null;
         } catch {
           movedHolder = null;
@@ -287,7 +320,7 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
     for (const name of names.filter((value) => value.endsWith('.json'))) {
       const filePath = path.join(dir, name);
       try {
-        const entry = JSON.parse(await fs.readFile(filePath, 'utf8'));
+        const entry = JSON.parse(await readBoundedText(filePath, MANAGED_PROCESS_ENTRY_MAX_BYTES));
         if (entry && Number.isInteger(entry.pid)) {
           out.push({ entry, filePath });
         } else if (pruneInvalid) {

@@ -20,6 +20,7 @@ const STATUSES = ['active', 'expired', 'cancelled', 'unknown'];
 const PERIODS = ['monthly', 'yearly', 'once'];
 const NOTE_KINDS = ['experience', 'expectation', 'plan-change', 'correction', 'other'];
 const NOTE_SOURCES = ['user', 'model', 'ui'];
+const MAX_PLAN_STORE_BYTES = 8 * 1024 * 1024;
 const MAX_PLAN_NOTES_BYTES = 8 * 1024 * 1024;
 
 const text = z.string();
@@ -104,10 +105,22 @@ const planStoreFiles = (dataDir = resolveOpenCodeDataDir()) => ({
 
 export const readPlanStore = (dataDir) => {
   const { store } = planStoreFiles(dataDir);
-  if (!fs.existsSync(store)) return emptyPlanStore();
+  let fileRead;
+  try {
+    fileRead = readBoundedFileSync(store, MAX_PLAN_STORE_BYTES);
+  } catch {
+    throw httpError(409, `${store} is not valid JSON. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
+  }
+  if (!fileRead.ok) {
+    if (fileRead.reason === 'missing') return emptyPlanStore();
+    if (fileRead.reason === 'too-large') {
+      throw httpError(409, `${store} exceeds the ${MAX_PLAN_STORE_BYTES}-byte plan store limit. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
+    }
+    throw httpError(409, `${store} is not a regular file. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
+  }
   let parsed;
   try {
-    parsed = JSON.parse(fs.readFileSync(store, 'utf8'));
+    parsed = JSON.parse(fileRead.buffer.toString('utf8'));
   } catch {
     throw httpError(409, `${store} is not valid JSON. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
   }

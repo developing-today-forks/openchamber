@@ -2410,6 +2410,8 @@ export const settingsDict = {
   'settings.usage.page.window.giftResetActivateFailed': 'Nie udało się aktywować resetu limitu prezentu',
   'settings.usage.page.window.giftResetNotNeeded': 'Reset limitu prezentu nie jest obecnie potrzebny',
   'settings.usage.page.state.noQuotaWindowsTitle': 'Brak raportowanych okien kwot',
+  'settings.usage.page.state.consoleOnlyTitle': 'Śledzenie działa, dane tylko w konsoli',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral potwierdza, że ten klucz API jest prawidłowy, ale dane o użyciu są dostępne tylko w konsoli Mistral.',
   'settings.usage.page.state.providerNotConfiguredDescription': 'Dodaj dane uwierzytelniające w zakładce Dostawcy, aby włączyć śledzenie użycia.',
   'settings.usage.page.state.claudeSignedOutTitle': 'Nie zalogowano do Claude Code',
   'settings.usage.page.state.claudeSignInCommand': 'Uruchom to polecenie w terminalu:',

@@ -4,7 +4,10 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { execFileSync } from 'node:child_process';
+
 import {
+  DEFAULT_DURABLE_JSON_MAX_BYTES,
   isJsonObject,
   preserveMalformedJsonFile,
   preserveMalformedJsonFileSync,
@@ -406,5 +409,71 @@ describe('writeDurableJsonFile / writeDurableJsonFileSync', () => {
       'rename refused',
     );
     expect(fs.readdirSync(dir)).toEqual([]);
+  });
+});
+
+describe('bounded reads (#1649)', () => {
+  it('exports a stated default cap', () => {
+    expect(DEFAULT_DURABLE_JSON_MAX_BYTES).toBe(32 * 1024 * 1024);
+  });
+
+  it('reads a valid file at exactly the cap, in both spellings', async () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'store.json');
+    const contents = '{"a":"12345678"}';
+    fs.writeFileSync(filePath, contents);
+    const maxBytes = Buffer.byteLength(contents, 'utf8');
+    await expect(readDurableJsonFile(filePath, { maxBytes })).resolves.toMatchObject({ state: 'valid' });
+    expect(readDurableJsonFileSync(filePath, { maxBytes }).state).toBe('valid');
+  });
+
+  it('readers throw (never malformed) on an over-cap file, in both spellings', async () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'store.json');
+    fs.writeFileSync(filePath, '{"a":"much longer than the cap"}');
+    await expect(readDurableJsonFile(filePath, { maxBytes: 8 })).rejects.toMatchObject({
+      code: 'DURABLE_JSON_STORE_TOO_LARGE',
+    });
+    expect(() => readDurableJsonFileSync(filePath, { maxBytes: 8 })).toThrowError(
+      expect.objectContaining({ code: 'DURABLE_JSON_STORE_TOO_LARGE' }),
+    );
+  });
+
+  it('preserve answers failed (never preserved/malformed) on an over-cap file, async and sync', async () => {
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'store.json');
+    const contents = '{torn and much longer than the cap';
+    fs.writeFileSync(filePath, contents);
+    await expect(preserveMalformedJsonFile(filePath, { maxBytes: 8 })).resolves.toEqual({
+      preserved: false,
+      outcome: 'failed',
+    });
+    expect(preserveMalformedJsonFileSync(filePath, { maxBytes: 8 })).toEqual({
+      preserved: false,
+      outcome: 'failed',
+    });
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(contents);
+    expect(fs.readdirSync(dir).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+  });
+
+  it('refuses a FIFO promptly instead of blocking, in both spellings and the preserve path', async () => {
+    if (process.platform === 'win32') return;
+    const dir = makeTempDir();
+    const filePath = path.join(dir, 'store.json');
+    execFileSync('mkfifo', [filePath]);
+    await expect(readDurableJsonFile(filePath, { maxBytes: 1024 })).rejects.toMatchObject({
+      code: 'DURABLE_JSON_STORE_NOT_REGULAR',
+    });
+    expect(() => readDurableJsonFileSync(filePath, { maxBytes: 1024 })).toThrowError(
+      expect.objectContaining({ code: 'DURABLE_JSON_STORE_NOT_REGULAR' }),
+    );
+    await expect(preserveMalformedJsonFile(filePath, { maxBytes: 1024 })).resolves.toEqual({
+      preserved: false,
+      outcome: 'failed',
+    });
+    expect(preserveMalformedJsonFileSync(filePath, { maxBytes: 1024 })).toEqual({
+      preserved: false,
+      outcome: 'failed',
+    });
   });
 });

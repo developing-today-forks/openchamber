@@ -1474,6 +1474,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': '모델 할당량',
   'settings.usage.page.section.otherModels': '기타 모델',
   'settings.usage.page.state.noQuotaWindowsTitle': '보고된 할당량 창이 없습니다',
+  'settings.usage.page.state.consoleOnlyTitle': '추적됨, 콘솔에서만 확인 가능',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral은 이 API 키가 유효하다고 확인하지만 사용량 수치는 Mistral 콘솔에서만 확인할 수 있습니다.',
   'settings.usage.page.state.noQuotaWindowsDescription': '이 프로바이더는 현재 rate limit 또는 사용량 할당량을 보고하지 않습니다.',
   'settings.usage.page.window.giftResetAria': '기프트 한도 초기화',
   'settings.usage.page.window.giftResetExpires': '기프트 한도 초기화는 {time}까지 사용할 수 있습니다',

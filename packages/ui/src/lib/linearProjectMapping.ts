@@ -22,3 +22,10 @@ export function resolveLinearMappedProjectPath(
   }
   return mapping.defaultProjectPath?.trim() || null;
 }
+
+/** True when the mapping's team list is truncated: Linear held more teams than the pages fetched. */
+export function linearMappingTeamsTruncated(
+  mapping: LinearMappingResult | null | undefined,
+): boolean {
+  return mapping?.teamsMore === true;
+}

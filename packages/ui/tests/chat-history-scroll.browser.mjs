@@ -58,6 +58,7 @@ const renderTimelineItem = ({ item }) => <Row item={item} />;
 // so the footer scenario can count readiness cycles directly.
 const timelineReadinessLog = [];
 window.__timelineReadinessLog = timelineReadinessLog;
+let footerResizeScheduled = false;
 const logTimelineReadiness = (event, entries, footerSize, cycle) => {
     timelineReadinessLog.push({ event, entries, footerSize, cycle });
 };
@@ -68,15 +69,26 @@ const frames = async count => {
 const params = new URLSearchParams(location.search);
 const heightPeriod = Number(params.get('period'));
 const heightStep = Number(params.get('step'));
+const footerBootstrapProbe = params.get('footerBootstrap') === '1';
 const rowsFrom = (from, count, older = false) => Array.from({ length: count }, (_, i) => ({
     key: 'row-' + (from + i), kind: 'turn', height: 180 + ((from + i + 100) % heightPeriod) * heightStep, older,
 }));
 const noop = () => {};
 let list;
-const registerList = value => { list = value; };
 function App() {
     const [rows, setRows] = React.useState(() => rowsFrom(20, 60));
     const [footerHeight, setFooterHeight] = React.useState(50);
+    window.__resizeFooter = () => setFooterHeight(500);
+    const registerList = React.useCallback(value => {
+        list = value;
+        if (value && footerBootstrapProbe) {
+            window.__registeredFooterTarget = value.getState().__initialScroll?.preserveForFooterLayout ?? false;
+            if (!footerResizeScheduled) {
+                footerResizeScheduled = true;
+                queueMicrotask(() => window.__resizeFooter?.());
+            }
+        }
+    }, []);
     window.runScenario = async (moveWhileLoading) => {
         await frames(40);
         const scroller = list.getScrollableNode();
@@ -136,9 +148,11 @@ function App() {
         // A resize long after the list settles touches no initial-scroll
         // state in either version and would prove nothing.
         for (let i = 0; i < 200 && readyCount() === 0; i++) await frames(1);
-        setRows(current => [...current, ...rowsFrom(80, 1)]);
-        for (let i = 0; i < 200 && list.getState().data.length !== 61; i++) await frames(1);
-        await frames(5);
+        if (!footerBootstrapProbe) {
+            setRows(current => [...current, ...rowsFrom(80, 1)]);
+            for (let i = 0; i < 200 && list.getState().data.length !== 61; i++) await frames(1);
+            await frames(5);
+        }
         const scroller = list.getScrollableNode();
         const anchor = [...scroller.querySelectorAll('[data-probe-id]')].find(node => {
             const rect = node.getBoundingClientRect();
@@ -171,6 +185,7 @@ function App() {
         return {
             key,
             dataCount: list.getState().data.length,
+            registeredFooterTarget: window.__registeredFooterTarget,
             readyBefore,
             readyAfter: readyCount(),
             footerSizes: timelineReadinessLog.filter(entry => entry.event === 'footer').map(entry => entry.footerSize),
@@ -181,8 +196,10 @@ function App() {
     };
     return <TimelineList
         entries={rows} registerList={registerList} endPinningReleased={true}
-        composerOverlayHeight={0} onIsAtEndChange={noop} onListMetricsChange={noop}
-        onTimelineDataChange={noop} rowContext={{ sessionIsWorking: false }}
+        composerOverlayHeight={0} onIsAtEndChange={noop}
+        onListMetricsChange={noop}
+        onTimelineDataChange={noop}
+        rowContext={{ sessionIsWorking: false }}
         listFooter={<div style={{ height: footerHeight }} />}
         scrollContainerProps={{ style: { height: 600, width: 800, overflow: 'auto', overflowAnchor: 'none' } }}
     />;
@@ -199,6 +216,17 @@ const build = await Bun.build({
         setup(builder) {
             builder.onResolve({ filter: /^history-fixture$/ }, () => ({ path: 'entry', namespace: 'fixture' }));
             builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: fixture, loader: 'tsx' }));
+            builder.onLoad({ filter: /@legendapp\/list\/react\.mjs$/ }, args => {
+                if (args.path !== legendList) return undefined;
+                const source = readFileSync(args.path, 'utf8');
+                const marker = 'getState: () => ({';
+                assert.ok(source.includes(marker), 'Locate the installed LegendList state accessor');
+                return {
+                    contents: source.replace(marker, `${marker}\n      __initialScroll: state.initialScroll,`),
+                    loader: 'js',
+                    resolveDir: dirname(args.path),
+                };
+            });
             // React 19 provides the hook that the compatibility shim delegates to.
             builder.onResolve({ filter: /^use-sync-external-store\/shim$/ }, () => ({ path: 'shim', namespace: 'react-shim' }));
             builder.onLoad({ filter: /.*/, namespace: 'react-shim' }, () => ({
@@ -210,7 +238,7 @@ const build = await Bun.build({
 });
 assert.ok(build.success, build.logs.join('\n'));
 const javascript = await build.outputs[0].text();
-const chromePath = resolveChrome();
+const chromePath = resolveChrome(process.env.CHROME_PATH);
 const profileDir = mkdtempSync(join(tmpdir(), 'openchamber-history-scroll-'));
 const server = Bun.serve({
     hostname: '127.0.0.1',
@@ -283,6 +311,31 @@ try {
         assert.equal(footerResult.missingFrames, 0, 'The visible row stayed mounted during the footer resize');
         assert.equal(footerResult.blankFrames, 0, 'No row container rendered at opacity 0 during the footer resize');
         assert.ok(footerResult.maxShift <= 1, `Footer resize shifted the visible anchor by ${footerResult.maxShift}px`);
+
+        // Read LegendList's target at registration, before the queued footer
+        // resize. A footer present on the first render preserves this target.
+        const productionFooterLoaded = client.once('Page.loadEventFired');
+        await client.send('Page.navigate', {
+            url: `http://127.0.0.1:${server.port}/?footerBootstrap=1&period=${footerPeriod}&step=${footerStep}`,
+        });
+        await productionFooterLoaded;
+        let productionFooterReady = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+            productionFooterReady = await evaluateValue(client, 'typeof window.runFooterResizeScenario === "function"');
+            if (productionFooterReady) break;
+            await wait(100);
+        }
+        assert.ok(productionFooterReady, 'The browser fixture mounted for the preserved-target probe');
+        const productionFooterResult = await evaluateValue(client, 'window.runFooterResizeScenario()');
+        console.log(JSON.stringify({ scenario: 'footer-resize-preserved-target', period: footerPeriod, step: footerStep, ...productionFooterResult }));
+        assert.deepEqual(exceptions, [], 'No browser runtime errors during the preserved-target probe');
+        assert.equal(productionFooterResult.dataCount, 60, 'The probe keeps the initial timeline unchanged');
+        assert.equal(productionFooterResult.registeredFooterTarget, false, 'The production deferral must keep the footer out of LegendList initial target state');
+        assert.equal(productionFooterResult.readyBefore, 1, 'The queued footer resize must not trigger another readiness cycle');
+        assert.ok(productionFooterResult.footerSizes.includes(500), 'The footer resize was measured');
+        assert.equal(productionFooterResult.readyAfter, productionFooterResult.readyBefore, 'The footer resize must not re-run readiness');
+        assert.equal(productionFooterResult.missingFrames, 0, 'The visible row stayed mounted during the footer resize');
+        assert.equal(productionFooterResult.blankFrames, 0, 'No row container rendered at opacity 0 during the footer resize');
 } finally {
     client?.socket.close();
     if (chrome.exitCode === null && chrome.signalCode === null) {

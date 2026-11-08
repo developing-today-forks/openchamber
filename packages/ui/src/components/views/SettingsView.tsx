@@ -13,7 +13,9 @@ import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useMcpConfigStore } from '@/stores/useMcpConfigStore';
 import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { projectSettingsTabForSearchTarget, useProjectSettingsTabStore } from '@/components/sections/projects/projectSettingsTabs';
+import { routingTabForSearchTarget, useRoutingPageViewStore } from '@/components/sections/routing/routingTabs';
 import { chatSettingsTabForSearchTarget, useChatSettingsTabStore } from '@/components/sections/openchamber/chatSettingsTabs';
+import { tunnelSearchRevealModeForResult } from '@/components/sections/openchamber/tunnelSearchReveal';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useSkillsCatalogStore } from '@/stores/useSkillsCatalogStore';
 import { Tooltip, TooltipTrigger } from '@/components/ui/tooltip';
@@ -490,6 +492,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       useUIStore.getState().setSettingsProvidersClassificationRequested(true);
     }
 
+    // The managed tunnel sections render only for the saved tunnel mode;
+    // ask the Tunnel page to reveal the searched mode view-only (#1764).
+    // The reveal never persists a mode change.
+    const tunnelRevealMode = tunnelSearchRevealModeForResult(result.id);
+    if (tunnelRevealMode) {
+      useUIStore.getState().setSettingsTunnelModeRequested(tunnelRevealMode);
+    }
+
     if (result.id === 'plugins.create') {
       return 'plugins.spec';
     }
@@ -502,6 +512,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     const projectTab = projectSettingsTabForSearchTarget(result.id);
     if (projectTab) {
       useProjectSettingsTabStore.getState().setTab(projectTab);
+    }
+
+    const routingTab = routingTabForSearchTarget(result.id);
+    if (routingTab) {
+      useRoutingPageViewStore.getState().setTab(routingTab);
     }
 
     openChatSettingsTabFor(result.id);

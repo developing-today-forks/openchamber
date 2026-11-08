@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -3782,6 +3782,58 @@ describe('contributor checkout trust inspection', () => {
       kind: 'post-checkout-hook', path: hookPath,
     })]);
     expect(inspection.actions[0].content.length).toBe(1024 * 1024);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not block on a FIFO at the post-checkout hook path', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const hookPath = path.join(repository, '.git', 'hooks', 'post-checkout');
+    execFileSync('mkfifo', [hookPath]);
+    fs.chmodSync(hookPath, 0o755);
+    const sourceSha = runGit(repository, ['rev-parse', 'HEAD']).trim();
+
+    // Pre-fix the open (no O_NONBLOCK) blocks forever on a FIFO with no
+    // writer, so this inspection never settles and the test times out.
+    const inspection = await inspectContributorCheckoutActions(repository, {
+      sourceSha, projectId: 'missing_project', setupCommand: '',
+    });
+
+    expect(inspection.actions).toEqual([]);
+  });
+
+  it('refuses a post-checkout hook that grows past the inspection cap after its stat', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const hookPath = path.join(repository, '.git', 'hooks', 'post-checkout');
+    const cap = 1024 * 1024;
+    fs.writeFileSync(hookPath, Buffer.alloc(cap - 64 * 1024, 0x23));
+    fs.chmodSync(hookPath, 0o755);
+    const sourceSha = runGit(repository, ['rev-parse', 'HEAD']).trim();
+
+    // A writer that keeps appending past the cap while the inspection runs:
+    // whether the growth lands before the stat (stat gate) or during the
+    // read (in-flight cap), the hook must be refused. Pre-fix, a stat that
+    // lands at or under the cap is followed by an unbounded whole read, so
+    // the grown hook is digested and returned as an action.
+    const readyPath = path.join(repository, 'appender-ready');
+    const appender = spawn(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const hookPath = process.argv[1];
+      const readyPath = process.argv[2];
+      const target = ${cap} + 1024 * 1024;
+      fs.writeFileSync(readyPath, 'ready');
+      const chunk = Buffer.alloc(64 * 1024, 0x24);
+      while (fs.statSync(hookPath).size < target) {
+        fs.appendFileSync(hookPath, chunk);
+      }
+    `, hookPath, readyPath], { stdio: 'ignore' });
+    try {
+      await expect.poll(() => fs.existsSync(readyPath), { timeout: 5_000 }).toBe(true);
+      const inspection = await inspectContributorCheckoutActions(repository, {
+        sourceSha, projectId: 'missing_project', setupCommand: '',
+      });
+      expect(inspection.actions).toEqual([]);
+    } finally {
+      appender.kill();
+    }
   });
 
   it('binds checkout trust to the hook invocation path as well as its bytes', async () => {

@@ -351,6 +351,38 @@ const safeListPulls = async (octokit, options) => {
   }
 };
 
+// Per-head pull list (design #1528 completeness contract, #1596): the
+// per-head query in findBranchPrCandidates feeds the branch PR verdict, so
+// it paginates to a short page under a named cap instead of treating the
+// first page as the whole set. One probe past the cap: a non-empty probe
+// means the set may be incomplete, which is an error here — a partial list
+// must never resolve to "no PR" (the verdict disposition in
+// lib/github/DOCUMENTATION.md, "Collection completeness"). Per-page error
+// semantics are safeListPulls' own: 404/403 read as an empty page, other
+// errors propagate.
+const PER_HEAD_PULLS_PAGE_SIZE = 100;
+const PER_HEAD_PULLS_MAX_PAGES = 20;
+const PER_HEAD_PULLS_MAX_COUNT = PER_HEAD_PULLS_PAGE_SIZE * PER_HEAD_PULLS_MAX_PAGES;
+
+const safeListPullsComplete = async (octokit, options) => {
+  const prs = [];
+  for (let page = 1; page <= PER_HEAD_PULLS_MAX_PAGES; page += 1) {
+    const payload = await safeListPulls(octokit, { ...options, per_page: PER_HEAD_PULLS_PAGE_SIZE, page });
+    prs.push(...payload);
+    if (payload.length < PER_HEAD_PULLS_PAGE_SIZE) {
+      return prs;
+    }
+    if (page === PER_HEAD_PULLS_MAX_PAGES) {
+      const probe = await safeListPulls(octokit, { ...options, per_page: PER_HEAD_PULLS_PAGE_SIZE, page: page + 1 });
+      if (probe.length === 0) {
+        return prs;
+      }
+      throw new Error(`GitHub per-head pull list reached the ${PER_HEAD_PULLS_MAX_COUNT} safety limit and may be incomplete`);
+    }
+  }
+  return prs;
+};
+
 // Repo-level pull list, shared across every branch resolution. Ten worktree
 // branches of one repo need ONE pulls.list per state per TTL window, not ten
 // per-branch query fans. In-flight requests coalesce so concurrent branch
@@ -783,12 +815,11 @@ const findBranchPrCandidates = async ({ octokit, target, branch, sourceCandidate
   try {
     let historical = null;
     for (const owner of sourceOwners) {
-      const directCandidates = await safeListPulls(octokit, {
+      const directCandidates = await safeListPullsComplete(octokit, {
         owner: target.repo.owner,
         repo: target.repo.repo,
         state: includeHistory ? 'all' : 'open',
         head: `${owner}:${branch}`,
-        per_page: 100,
       });
       const openMatch = pickPreferred(directCandidates.filter((pr) => !isTerminalPr(pr)));
       if (openMatch) {

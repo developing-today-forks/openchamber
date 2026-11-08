@@ -1,10 +1,12 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createManagedTunnelConfigRuntime } from './managed-config.js';
+import { DEFAULT_DURABLE_JSON_MAX_BYTES } from '../shared/durable-json-store.js';
+import { createManagedTunnelConfigRuntime, LEGACY_NAMED_TUNNELS_MAX_BYTES } from './managed-config.js';
 
 const temporaryDirectories = [];
 
@@ -411,4 +413,51 @@ describe('managed tunnel config runtime', () => {
     expect(config.tunnels.map((entry) => entry.id)).toEqual(['c']);
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8')).tunnels.map((entry) => entry.id)).toEqual(['c']);
   });
+
+  it('pins the legacy migration cap to the managed store bound (#1692)', () => {
+    expect(LEGACY_NAMED_TUNNELS_MAX_BYTES).toBe(DEFAULT_DURABLE_JSON_MAX_BYTES);
+  });
+
+  it('degrades to an empty config for an over-cap legacy file and writes nothing (#1692)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { filePath, legacyPath, runtime } = await makeRuntime();
+    const header = '{"tunnels":[{"id":"big","name":"Tunnel big","hostname":"big.example.com","token":"';
+    const footer = '","updatedAt":1000}]}';
+    await fsPromises.writeFile(legacyPath, header + 'x'.repeat(LEGACY_NAMED_TUNNELS_MAX_BYTES) + footer);
+    expect(fs.statSync(legacyPath).size).toBeGreaterThan(LEGACY_NAMED_TUNNELS_MAX_BYTES);
+
+    const config = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(config.tunnels).toEqual([]);
+    expect(fs.existsSync(filePath)).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    // The refusal settles promptly and the persist lock stays usable:
+    // a later read takes the same degraded answer instead of hanging.
+    const again = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(again.tunnels).toEqual([]);
+  }, 30_000);
+
+  it('refuses a FIFO at the legacy path promptly and leaves the persist lock usable (#1692)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { filePath, legacyPath, runtime } = await makeRuntime();
+    execFileSync('mkfifo', [legacyPath]);
+
+    const settled = await Promise.race([
+      runtime.readManagedRemoteTunnelConfigFromDisk(),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('legacy FIFO read did not settle within 4s')), 4_000);
+      }),
+    ]);
+    expect(settled.tunnels).toEqual([]);
+    expect(fs.existsSync(filePath)).toBe(false);
+
+    // The lock is not wedged: with a real legacy file in place, the
+    // next read migrates it normally.
+    fs.rmSync(legacyPath, { force: true });
+    await fsPromises.writeFile(
+      legacyPath,
+      JSON.stringify({ tunnels: [tunnel('legacy', 'legacy.example.com', 'token-legacy')] }),
+    );
+    const config = await runtime.readManagedRemoteTunnelConfigFromDisk();
+    expect(config.tunnels.map((entry) => entry.id)).toEqual(['legacy']);
+  }, 30_000);
 });

@@ -40,6 +40,18 @@ describe('managed SSH credential storage', () => {
     await expect(store.lookup('missing')).resolves.toBeNull();
   });
 
+  it('fails closed for an oversized store file', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-ssh-store-oversized-'));
+    directories.push(directory);
+    const filePath = path.join(directory, 'git-ssh-credentials.json');
+    // The named cap is 4 MiB; a larger file is refused on the handle stat
+    // before any of it is parsed, and is left in place.
+    await fs.writeFile(filePath, ' '.repeat(4 * 1024 * 1024 + 1), { mode: 0o600 });
+    const store = createManagedSshCredentialStore({ filePath });
+    await expect(store.read()).rejects.toMatchObject({ code: 'INVALID_MANAGED_SSH_CREDENTIAL_STORE' });
+    expect((await fs.stat(filePath)).size).toBe(4 * 1024 * 1024 + 1);
+  });
+
   it('atomically replaces records with mode 0600', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-ssh-store-write-'));
     directories.push(directory);
