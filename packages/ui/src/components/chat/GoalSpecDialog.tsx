@@ -15,7 +15,7 @@ import { GoalWriterPicker } from '@/components/chat/GoalWriterPicker';
 import { useGoalWriterDefault } from '@/hooks/useGoalWriterDefault';
 import { recordGoalWriterChoice } from '@/lib/modelChoices';
 import { useI18n } from '@/lib/i18n';
-import { diffGoalSpecLines, estimateGoalSpecTokens } from '@/lib/goalSpec';
+import { diffGoalSpecLines, estimateGoalSpecTokens, goalSpecSectionHeadings } from '@/lib/goalSpec';
 import { useUIStore, type SessionGoalWriterSendMode } from '@/stores/useUIStore';
 
 export interface GoalSpecDialogRequest {
@@ -30,8 +30,9 @@ export interface GoalSpecDialogRequest {
   directory: string | null;
   /** Length of the message the goal is written from; only its size bucket is recorded. */
   inputLength: number;
-  /** `writer` is a model picked in the dialog; null keeps the default. */
-  write: (signal: AbortSignal, options: { writer: GoalWriterChoice | null; ignoreLimit: boolean }) => Promise<GoalSpecResult>;
+  /** `writer` is a model picked in the dialog; null keeps the default. A
+   * `section` run rewrites only that `## heading` section of `currentSpec`. */
+  write: (signal: AbortSignal, options: { writer: GoalWriterChoice | null; ignoreLimit: boolean; section?: string; currentSpec?: string }) => Promise<GoalSpecResult>;
 }
 
 interface GoalSpecDialogProps {
@@ -117,6 +118,8 @@ function GoalSpecDialogBody({
   const [attempt, setAttempt] = React.useState(0);
   const [writer, setWriter] = React.useState<GoalWriterChoice | null>(null);
   const [ignoreLimit, setIgnoreLimit] = React.useState(false);
+  // The section the next run rewrites on its own (#1829); null rewrites the whole spec.
+  const [sectionTarget, setSectionTarget] = React.useState<string | null>(null);
   const charLimit = useUIStore((state) => state.sessionGoalObjectiveCharLimit);
   // The spec as it stood when the latest run started; a rewrite diffs against it.
   const specRef = React.useRef(spec);
@@ -125,8 +128,8 @@ function GoalSpecDialogBody({
   onSubmitRef.current = onSubmit;
   // A writing run reads the picks made when it starts; changing them asks for
   // another run ("Write again"), never a silent restart.
-  const writeOptionsRef = React.useRef({ writer, ignoreLimit });
-  writeOptionsRef.current = { writer, ignoreLimit };
+  const writeOptionsRef = React.useRef({ writer, ignoreLimit, sectionTarget });
+  writeOptionsRef.current = { writer, ignoreLimit, sectionTarget };
   const writerDefault = useGoalWriterDefault();
   const writerDefaultRef = React.useRef(writerDefault);
   writerDefaultRef.current = writerDefault;
@@ -138,7 +141,9 @@ function GoalSpecDialogBody({
     setState({ status: 'writing' });
     const run = async () => {
       const priorSpec = specRef.current;
-      const { writer: picked } = writeOptionsRef.current;
+      const { writer: picked, ignoreLimit: runIgnoreLimit, sectionTarget: runSection } = writeOptionsRef.current;
+      // A section pick applies to this one run; the next "Write again" is a whole-spec rewrite.
+      if (runSection) setSectionTarget(null);
       const pickedKey = picked ? `${picked.providerID}/${picked.modelID}:${picked.variant ?? ''}` : null;
       if (picked && pickedKey !== recordedWriterRef.current) {
         recordedWriterRef.current = pickedKey;
@@ -151,7 +156,12 @@ function GoalSpecDialogBody({
       }
       let result: GoalSpecResult;
       try {
-        result = await request.write(controller.signal, writeOptionsRef.current);
+        result = await request.write(controller.signal, {
+          writer: picked,
+          ignoreLimit: runIgnoreLimit,
+          section: runSection ?? undefined,
+          currentSpec: runSection ? priorSpec : undefined,
+        });
       } catch (error) {
         result = { ok: false, message: error instanceof Error ? error.message : String(error) };
       }
@@ -268,6 +278,26 @@ function GoalSpecDialogBody({
             <Icon name="restart" className="size-3.5" aria-hidden="true" />
             {state.status === 'failed' ? t('chat.goal.writer.action.retry') : t('chat.goal.writer.action.rewrite')}
           </Button>
+        ) : null}
+        {state.status === 'ready' && goalSpecSectionHeadings(spec).length > 0 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button type="button" variant="ghost" size="sm">
+                <Icon name="restart" className="size-3.5" aria-hidden="true" />
+                {t('chat.goal.writer.action.rewriteSection')}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {goalSpecSectionHeadings(spec).map((heading) => (
+                <DropdownMenuItem
+                  key={heading}
+                  onClick={() => { setSectionTarget(heading); setAttempt((value) => value + 1); }}
+                >
+                  {heading}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
         <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
           {state.status === 'ready' ? (

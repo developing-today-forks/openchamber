@@ -59,6 +59,17 @@ describe('POST /api/goals/spec', () => {  beforeEach(() => {
     }));
   });
 
+  it('passes a per-section rewrite target and the current spec on (#1829)', async () => {
+    writeGoalSpecMock.mockResolvedValue({ spec: 'spliced', providerID: 'openai', modelID: 'gpt-5.5' });
+    await request(createApp())
+      .post('/api/goals/spec')
+      .send({ request: 'Ship it', section: 'Requirements', currentSpec: '## Requirements\n1. One', sectionSpec: 9 })
+      .expect(200);
+    expect(writeGoalSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      section: 'Requirements', currentSpec: '## Requirements\n1. One',
+    }));
+  });
+
   it('answers with the writer error status and code', async () => {
     writeGoalSpecMock.mockRejectedValue(Object.assign(new Error('a request is required to write a goal spec'), {
       statusCode: 400,

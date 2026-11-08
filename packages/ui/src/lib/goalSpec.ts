@@ -5,6 +5,25 @@
 /** Cheap chars/4 heuristic - an estimate only, labelled as such in the UI; no tokenizer runs per keystroke. */
 export const estimateGoalSpecTokens = (spec: string): number => Math.ceil(spec.length / 4);
 
+/**
+ * The `## heading` sections of a spec, in order — the units a per-section
+ * rewrite (#1829) can target. Text before the first heading belongs to no
+ * section. Mirrors the server writer's section shape in
+ * packages/web/server/lib/session-goal/spec-writer.js.
+ */
+export const parseGoalSpecSections = (spec: string): { heading: string; body: string }[] => {
+  const raw: { heading: string; lines: string[] }[] = [];
+  for (const line of spec.split('\n')) {
+    const heading = /^##[ \t]+(.+?)[ \t]*$/.exec(line);
+    if (heading) raw.push({ heading: heading[1], lines: [] });
+    else if (raw.length) raw[raw.length - 1].lines.push(line);
+  }
+  return raw.map((section) => ({ heading: section.heading, body: section.lines.join('\n').trim() }));
+};
+
+/** Just the headings a per-section rewrite can offer, in spec order. */
+export const goalSpecSectionHeadings = (spec: string): string[] => parseGoalSpecSections(spec).map((section) => section.heading);
+
 export type GoalSpecDiffLine = { kind: 'same' | 'add' | 'remove'; text: string };
 
 /**

@@ -25,6 +25,10 @@ const GoalSpecBodySchema = z.object({
   writerProviderID: optionalText,
   writerModelID: optionalText,
   writerVariant: optionalText,
+  // A per-section rewrite (#1829): the heading to rewrite and the spec as it
+  // stands; the writer splices the reply into it.
+  section: optionalText,
+  currentSpec: optionalText,
   ignoreLimit: z.boolean().optional().catch(undefined),
 }).catch({});
 const ErrorCodeSchema = z.object({ code: z.string() });
