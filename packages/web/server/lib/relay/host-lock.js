@@ -108,10 +108,36 @@ export const createRelayHostLock = ({ lockFilePath, fs, process: proc, hostname 
     } catch {
       // A failed probe must not stop the write attempt below.
     }
+    const payload = JSON.stringify({ pid: selfPid, instance: selfInstance, host: hostname, refreshedAt: now() });
+    let fd;
     try {
-      fsImpl.writeFileSync(lockFilePath, JSON.stringify({ pid: selfPid, instance: selfInstance, host: hostname, refreshedAt: now() }));
+      // The probe above judges the path before the write, but a FIFO swapped
+      // in after it would still block a by-path write open (#1823). Open with
+      // O_NONBLOCK (a FIFO with no reader refuses at once instead of
+      // blocking) and judge the opened handle: a non-regular handle is never
+      // written, exactly as the probe's not-regular verdict above answers.
+      const flags = fsImpl.constants.O_WRONLY
+        | fsImpl.constants.O_CREAT
+        | fsImpl.constants.O_TRUNC
+        | (proc.platform === 'win32' ? 0 : fsImpl.constants.O_NONBLOCK);
+      fd = fsImpl.openSync(lockFilePath, flags, 0o666);
+      if (!fsImpl.fstatSync(fd).isFile()) {
+        fsImpl.closeSync(fd);
+        fd = undefined;
+        return true;
+      }
+      fsImpl.writeSync(fd, payload);
+      fsImpl.closeSync(fd);
+      fd = undefined;
       return true;
     } catch (error) {
+      if (fd !== undefined) {
+        try {
+          fsImpl.closeSync(fd);
+        } catch {
+          // The handle may already be gone; the write failure below stands.
+        }
+      }
       // An unwritable data dir must not take the relay down with it — fall back
       // to pre-lock behavior (start the host, let the relay worker arbitrate).
       logger.warn(`[Relay] could not write host claim file: ${error?.message ?? error}`);
