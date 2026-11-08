@@ -28,6 +28,64 @@ describe('session goal creation', () => {
     generateSmallModelTextMock.mockReset().mockResolvedValue({ text: '' });
   });
 
+  describe('pair-safe objective fitting (#1909)', () => {
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const storedObjective = () => writeObjectiveMock.mock.calls.at(-1)[1];
+    const createWithLimit = (objective, charLimit) => createSessionGoal({
+      sessionID: 'ses_123',
+      directory: '/repo/app',
+      objective,
+      persistSessionGoal: vi.fn(async () => undefined),
+      goalWriterSettings: { rewriteAll: false, charLimit },
+    });
+
+    it.each([1000, 1002])('never splits a pair at the head or tail trim (charLimit %i)', async (charLimit) => {
+      const half = Math.floor((charLimit - 95) / 2);
+      // The emoji's high half is the last code unit of the head cut.
+      await createWithLimit('a'.repeat(half - 1) + '\u{1F600}' + 'b'.repeat(charLimit), charLimit);
+      let fitted = storedObjective();
+      expect(fitted).not.toMatch(loneSurrogate);
+      expect(Buffer.from(fitted, 'utf8').toString('utf8')).not.toContain('\uFFFD');
+      expect(fitted).toContain('objective trimmed');
+      expect(fitted.length).toBeLessThanOrEqual(charLimit);
+      expect(fitted.startsWith('a'.repeat(half - 1) + '\n\n[\u2026')).toBe(true);
+
+      // The emoji straddles the tail start: its low half opens the tail window.
+      await createWithLimit('a'.repeat(600) + '\u{1F600}' + 'b'.repeat(half - 1), charLimit);
+      fitted = storedObjective();
+      expect(fitted).not.toMatch(loneSurrogate);
+      expect(Buffer.from(fitted, 'utf8').toString('utf8')).not.toContain('\uFFFD');
+      expect(fitted).toContain('objective trimmed');
+      expect(fitted.length).toBeLessThanOrEqual(charLimit);
+      expect(fitted.endsWith('b'.repeat(half - 1))).toBe(true);
+    });
+
+    it('never splits a pair in the distilled slice', async () => {
+      generateSmallModelTextMock.mockResolvedValue({ text: 'd'.repeat(99) + '\u{1F600}' + 'd'.repeat(50) });
+      await createWithLimit('a'.repeat(200), 100);
+      const fitted = storedObjective();
+      expect(fitted).toBe('d'.repeat(99));
+      expect(fitted).not.toMatch(loneSurrogate);
+    });
+
+    it('never splits a pair in the inline objective slice', async () => {
+      writeObjectiveMock.mockRejectedValueOnce(new Error('disk unavailable'));
+      const persistSessionGoal = vi.fn(async () => undefined);
+      await createSessionGoal({
+        sessionID: 'ses_123',
+        directory: '/repo/app',
+        objective: 'a'.repeat(99) + '\u{1F600}' + 'b'.repeat(50),
+        onWarning: vi.fn(),
+        persistSessionGoal,
+        goalWriterSettings: { rewriteAll: false, charLimit: 100 },
+        ignoreLimit: true,
+      });
+      const [, , goal] = persistSessionGoal.mock.calls[0];
+      expect(goal.objective).toBe('a'.repeat(99));
+      expect(goal.objective).not.toMatch(loneSurrogate);
+    });
+  });
+
   it('records the initial objective as the goal\'s first version (#1830)', async () => {
     await createSessionGoal({
       sessionID: 'ses_123',

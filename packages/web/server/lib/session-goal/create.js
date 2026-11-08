@@ -33,6 +33,23 @@ export const buildGoalIntroText = (tokenBudget, spec = null) => {
     + '\n</system-reminder>';
 };
 
+// Pair-safe cuts: a plain slice at a fixed offset can land between the
+// halves of a surrogate pair and leave a lone surrogate that encodes to
+// U+FFFD in the stored objective. Move a boundary that lands inside a pair
+// back to the pair boundary; results stay within the limit either way.
+const sliceHeadPairSafe = (text, limit) => {
+  const sliced = text.slice(0, limit);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
+};
+
+const sliceTailPairSafe = (text, count) => {
+  if (count <= 0) return '';
+  const sliced = text.slice(-count);
+  const first = sliced.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? sliced.slice(1) : sliced;
+};
+
 const fitObjective = async ({ objective, charLimit, directory, sessionID, providerID, modelID, warn }) => {
   if (objective.length <= charLimit) return objective;
 
@@ -59,9 +76,9 @@ const fitObjective = async ({ objective, charLimit, directory, sessionID, provid
     warn('goal objective distillation failed', error);
   }
 
-  if (distilled) return distilled.slice(0, charLimit);
+  if (distilled) return sliceHeadPairSafe(distilled, charLimit);
   const half = Math.max(0, Math.floor((charLimit - TRIM_MARKER.length) / 2));
-  return `${objective.slice(0, half)}${TRIM_MARKER}${objective.slice(-half)}`;
+  return `${sliceHeadPairSafe(objective, half)}${TRIM_MARKER}${sliceTailPairSafe(objective, half)}`;
 };
 
 export const createSessionGoal = async ({
@@ -135,7 +152,7 @@ export const createSessionGoal = async ({
     // unlimited one (up to 200,000 characters) would be resent on each update.
     // The UI's setSessionGoal does the same; the full text still went out in
     // the chat message. Deliberate: see #207 and the review on #205.
-    objective: objectiveFile ? '' : objectiveText.slice(0, charLimit),
+    objective: objectiveFile ? '' : sliceHeadPairSafe(objectiveText, charLimit),
     objectiveFile,
     // Stated outright: the store merges, so a flag left out would carry over
     // from the goal this one replaces.
