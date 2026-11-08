@@ -488,6 +488,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       useUIStore.getState().setSettingsProvidersConnectRequested(true);
     }
 
+    // providers.custom's anchored field lives only inside
+    // CustomProviderForm, which the Providers page renders only in
+    // custom-create mode (#1765): ask the page to enter that mode with
+    // the custom candidate preselected, not just the connect picker.
+    if (result.id === 'providers.custom') {
+      useUIStore.getState().setSettingsProvidersCustomRequested(true);
+    }
+
     // routing.token's field lives on the Classification sub-page too
     // (#1762): its search entry points at Providers, and the sub-page
     // renders only when this request flag is set.

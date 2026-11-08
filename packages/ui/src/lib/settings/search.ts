@@ -1509,6 +1509,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode && ctx.routingAvailable,
   },
   {
+    // Opens the custom-provider create form (SettingsView sets the request).
     id: 'providers.custom',
     page: 'providers',
     titleKey: 'settings.providers.page.custom.title',
