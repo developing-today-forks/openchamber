@@ -12,6 +12,7 @@ import os from 'os';
 import { createUiPasskeys } from './ui-passkeys.js';
 import { sessionCookieNameForRequest } from './session-cookie.js';
 import { parsePositiveIntWithDefault } from '../shared/parse-int.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 const SESSION_COOKIE_NAME = 'oc_ui_session';
 const HOUR_MS = 60 * 60 * 1000;
@@ -434,6 +435,11 @@ const OPENCHAMBER_DATA_DIR = process.env.OPENCHAMBER_DATA_DIR
   : path.join(os.homedir(), '.config', 'openchamber');
 const JWT_SECRET_FILE = path.join(OPENCHAMBER_DATA_DIR, 'jwt-secret');
 
+// A persisted secret is a 64-char hex string; the cap is generous
+// headroom for whitespace/encoding slack, not a size the file the
+// server itself writes can ever approach (#1778).
+const MAX_JWT_SECRET_FILE_BYTES = 4 * 1024;
+
 function getOrCreateJwtSecret() {
   const envSecret = process.env.OPENCODE_JWT_SECRET;
   if (envSecret) {
@@ -441,8 +447,18 @@ function getOrCreateJwtSecret() {
   }
 
   try {
-    if (fs.existsSync(JWT_SECRET_FILE)) {
-      return new TextEncoder().encode(fs.readFileSync(JWT_SECRET_FILE, 'utf8').trim());
+    // Bounded handle-judged read (#1778): the bare readFileSync this
+    // replaces blocked forever on a FIFO at the secret path (freezing
+    // the whole server inside auth setup) and buffered an arbitrary-size
+    // file whole as the signing key. Missing stays silent, exactly as
+    // the old existsSync gate behaved; non-regular and over-cap degrade
+    // like an unreadable file — warn and generate-and-persist below.
+    const stored = readBoundedFileSync(JWT_SECRET_FILE, MAX_JWT_SECRET_FILE_BYTES);
+    if (stored.ok) {
+      return new TextEncoder().encode(stored.buffer.toString('utf8').trim());
+    }
+    if (stored.reason !== 'missing') {
+      console.warn('[JWT] Failed to read secret file:', stored.code);
     }
   } catch (e) {
     console.warn('[JWT] Failed to read secret file:', e.message);
@@ -451,8 +467,23 @@ function getOrCreateJwtSecret() {
   const secret = crypto.randomBytes(32).toString('hex');
   try {
     fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
-    fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
-    console.log('[JWT] Generated and persisted new secret to', JWT_SECRET_FILE);
+    // A non-regular file (e.g. a FIFO) already sitting at the secret
+    // path is left alone: opening it for write would block like the
+    // read did. The generated secret still serves this process.
+    let persistBlocked = false;
+    try {
+      persistBlocked = !fs.statSync(JWT_SECRET_FILE).isFile();
+    } catch {
+      persistBlocked = false;
+    }
+    if (persistBlocked) {
+      console.warn('[JWT] Secret path is not a regular file; not persisting generated secret to', JWT_SECRET_FILE);
+    } else {
+      fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+    }
+    if (!persistBlocked) {
+      console.log('[JWT] Generated and persisted new secret to', JWT_SECRET_FILE);
+    }
   } catch (e) {
     console.warn('[JWT] Failed to persist secret:', e.message);
   }
