@@ -32,11 +32,19 @@ const asNonEmptyString = (value) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+// The clamp must not split a surrogate pair: a value cut right after a high
+// surrogate drops that half, because the clamped value is persisted and
+// rendered, where a lone surrogate becomes U+FFFD permanently.
 const clampLength = (value, maxLength) => {
   if (typeof value !== 'string') {
     return '';
   }
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const cut = value.slice(0, maxLength);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 };
 
 const normalizeStatus = (value) => {
