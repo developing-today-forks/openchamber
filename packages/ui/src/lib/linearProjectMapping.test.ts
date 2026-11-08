@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { linearMappingTeamsTruncated, resolveLinearMappedProjectPath } from './linearProjectMapping';
+import { linearMappingShowsEmptyTeamsNote, linearMappingTeamsTruncated, resolveLinearMappedProjectPath } from './linearProjectMapping';
 import type { LinearMappingResult } from './api/types';
 
 const mapping = (): LinearMappingResult => ({
@@ -50,5 +50,23 @@ describe('linearMappingTeamsTruncated', () => {
     expect(linearMappingTeamsTruncated(mapping())).toBe(false);
     expect(linearMappingTeamsTruncated(null)).toBe(false);
     expect(linearMappingTeamsTruncated(undefined)).toBe(false);
+  });
+});
+
+describe('linearMappingShowsEmptyTeamsNote', () => {
+  test('is false for an empty list that is truncated, so the page never claims the workspace has no teams', () => {
+    const result: LinearMappingResult = { connected: true, teams: [], teamsMore: true };
+    expect(linearMappingTeamsTruncated(result)).toBe(true);
+    expect(linearMappingShowsEmptyTeamsNote(result)).toBe(false);
+  });
+
+  test('is true for an empty list that is complete', () => {
+    expect(linearMappingShowsEmptyTeamsNote({ connected: true, teams: [] })).toBe(true);
+    expect(linearMappingShowsEmptyTeamsNote({ connected: true, teams: [], teamsMore: false })).toBe(true);
+  });
+
+  test('is false when the list has teams', () => {
+    expect(linearMappingShowsEmptyTeamsNote(mapping())).toBe(false);
+    expect(linearMappingShowsEmptyTeamsNote({ ...mapping(), teamsMore: true })).toBe(false);
   });
 });
