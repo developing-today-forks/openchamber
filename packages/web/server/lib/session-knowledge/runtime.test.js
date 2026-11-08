@@ -445,6 +445,30 @@ describe('size', () => {
   });
 });
 
+describe('size: surrogate-pair boundary and budget (#1921)', () => {
+  const EMOJI = '\u{1F600}';
+  const pinnedEntry = (body) => buildKnowledgeEntries({
+    notes: [note({ body })],
+    plans: [],
+    memory: { global: [], project: [] },
+  })[PINNED];
+
+  test('an astral character straddling the cut is never split, at any offset', () => {
+    for (let pad = 7_900; pad < 8_100; pad += 1) {
+      const entry = pinnedEntry(`${'a'.repeat(pad)}${EMOJI}${'b'.repeat(200)}`);
+      expect(entry.length).toBeLessThanOrEqual(8_000);
+      expect(entry).toContain('(truncated)');
+      expect(Buffer.from(entry, 'utf8').toString('utf8')).toBe(entry);
+    }
+  });
+
+  test('an ASCII over-limit entry fills the budget exactly, marker included', () => {
+    const entry = pinnedEntry('x'.repeat(20_000));
+    expect(entry.length).toBe(8_000);
+    expect(entry).toContain('(truncated)');
+  });
+});
+
 describe('entries that read as instructions', () => {
   test('a flagged memory is kept out of what the session is told', async () => {
     const runtime = createRuntime({
