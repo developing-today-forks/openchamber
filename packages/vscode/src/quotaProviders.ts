@@ -1120,8 +1120,12 @@ const toCodexUsedPercent = (value: number | string | null | undefined): number |
   return percent === null ? null : clampPercent(percent);
 };
 
-const fetchCodexQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type CodexQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchCodexQuota = async ({ readAuth = readOpenCodeCredentials }: CodexQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = resolveCodexEntry(auth);
   const accessToken = accessOrTokenFrom(entry);
   const accountId = entry?.accountId as string | undefined;
@@ -1894,8 +1898,12 @@ const buildClaudeUsage = (payload: Record<string, unknown>): ProviderUsage => {
   return Object.keys(models).length ? { windows, models } : { windows };
 };
 
-const fetchClaudeQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type ClaudeQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchClaudeQuota = async ({ readAuth = readOpenCodeCredentials }: ClaudeQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude'])) as Record<string, unknown> | null;
   const accessToken = accessOrTokenFrom(entry);
 
@@ -2076,8 +2084,12 @@ const copilotUserUrl = (enterpriseUrl: string | undefined): string => {
   return `https://api.${url.hostname}/copilot_internal/user`;
 };
 
-const fetchCopilotQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type CopilotQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchCopilotQuota = async ({ readAuth = readOpenCodeCredentials }: CopilotQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
   const accessToken = accessOrTokenFrom(entry);
   // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
@@ -2136,8 +2148,8 @@ const fetchCopilotQuota = async (): Promise<ProviderResult> => {
   }
 };
 
-const fetchCopilotAddonQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+export const fetchCopilotAddonQuota = async ({ readAuth = readOpenCodeCredentials }: CopilotQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
   const accessToken = accessOrTokenFrom(entry);
   // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
@@ -2817,8 +2829,12 @@ const resolveOpenRouterConfigBase = (): string | null => {
   }
 };
 
-const fetchOpenRouterQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type OpenRouterQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchOpenRouterQuota = async ({ readAuth = readOpenCodeCredentials }: OpenRouterQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['openrouter'])) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
@@ -3056,8 +3072,12 @@ const attachZaiGiftResets = async (windows: Record<string, UsageWindow>, apiKey:
   }
 };
 
-const fetchZaiQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type ZaiQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchZaiQuota = async ({ readAuth = readOpenCodeCredentials }: ZaiQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES)) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
@@ -3199,8 +3219,12 @@ export const activateQuotaGiftReset = async (
   await activateZaiGiftReset(input);
 };
 
-const fetchZhipuaiCodingPlanQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type ZhipuaiQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchZhipuaiCodingPlanQuota = async ({ readAuth = readOpenCodeCredentials }: ZhipuaiQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['zhipuai-coding-plan'])) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
@@ -3328,8 +3352,12 @@ const nanoGptUsageSchema = z.object({
 
 const NANO_GPT_DAILY_WINDOW_SECONDS = 86400;
 
-const fetchNanoGptQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type NanoGptQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchNanoGptQuota = async ({ readAuth = readOpenCodeCredentials }: NanoGptQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['nano-gpt', 'nanogpt', 'nano_gpt'])) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
@@ -3565,8 +3593,12 @@ const neuralwattWindowSeconds = (period: string | null | undefined): number | nu
   return null;
 };
 
-const fetchNeuralwattQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type NeuralwattQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchNeuralwattQuota = async ({ readAuth = readOpenCodeCredentials }: NeuralwattQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt'])) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
@@ -3925,8 +3957,12 @@ export const fetchDeepinfraQuota = async ({ readAuth = readOpenCodeCredentials }
 
 const DEEPSEEK_QUOTA_URL = 'https://api.deepseek.com/user/balance';
 
-const fetchDeepseekQuota = async (): Promise<ProviderResult> => {
-  const auth = await readOpenCodeCredentials();
+type DeepseekQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+};
+
+export const fetchDeepseekQuota = async ({ readAuth = readOpenCodeCredentials }: DeepseekQuotaDependencies = {}): Promise<ProviderResult> => {
+  const auth = await readAuth();
   const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepseek'])) as Record<string, unknown> | null;
   const apiKey = keyOrTokenFrom(entry);
 
