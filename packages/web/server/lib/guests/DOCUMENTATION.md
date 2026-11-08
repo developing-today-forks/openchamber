@@ -75,6 +75,12 @@ A missing folder is omitted from the list. Other guests stay. The renderer reads
 - Update swap (`updates.js` `updateGuest`): the new clone lands in `{dataDir}/extensions/.tmp-<id>-<random>` and is inspected exactly like an install before anything else moves. Only then: stop the guest's service, rename current → `.old-<id>`, rename temp → final, delete `.old-<id>`. Any failure before the swap deletes the temp dir and leaves the install untouched; a failed second rename moves `.old-<id>` back. The store row is not rewritten (same path, same id), the catalog cache and that guest's update cache entry are dropped.
 - The OAuth callback skips UI auth. Everything else under `/api/guests` stays behind the usual session.
 
+## Decisions
+
+### Why guest account labels back up at a split pair
+
+The SDK's 200-character account limit counts UTF-16 code units. Provider labels and the Basic-auth username fallback share a pair-safe clipper; when the limit falls between a surrogate pair, the stored label backs up one code unit so UTF-8 encoding cannot turn the cut into U+FFFD. ASCII labels still use the full limit.
+
 ## Host shutdown
 
 `beginGuestServiceShutdown` closes service admission synchronously. Requests retain
