@@ -1199,6 +1199,19 @@ describe('render.page', () => {
     expect(await named(page)).toBe('Page');
   });
 
+  it('never splits a surrogate pair at the title cap (oracle: astral char straddling offset 120)', async () => {
+    const { service } = createService();
+    const named = (html) => service.execute('render.page', { html }, '/repo').then((result) => result.title);
+
+    const title = await named(`<title>${'a'.repeat(119)}😀tail</title>`);
+    expect(title).toBe('a'.repeat(119));
+    expect(title.length).toBe(119);
+    // A lone surrogate would encode as U+FFFD and not round-trip.
+    expect(new TextDecoder().decode(new TextEncoder().encode(title))).toBe(title);
+    // An over-cap ASCII title still cuts at exactly 120 code units.
+    expect(await named(`<h1>${'a'.repeat(200)}</h1>`)).toBe('a'.repeat(120));
+  });
+
   it('asks for html and title in one call when html is missing', async () => {
     const { service } = createService();
     await expect(service.execute('render.page', { title: 'Coverage' }, '/repo'))
