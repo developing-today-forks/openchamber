@@ -31,11 +31,18 @@ export const KNOWLEDGE_ENTRY_KEYS = {
 /** Budget for each entry; anything past it is cut, loudly. */
 const KNOWLEDGE_MAX_LENGTH = 8000;
 
-const truncate = (value) => (
-  value.length <= KNOWLEDGE_MAX_LENGTH
-    ? value
-    : `${value.slice(0, KNOWLEDGE_MAX_LENGTH - 1)}…\n\n(truncated)`
-);
+const TRUNCATED_MARKER = '…\n\n(truncated)';
+
+const truncate = (value) => {
+  if (value.length <= KNOWLEDGE_MAX_LENGTH) return value;
+  // The marker counts against the budget, and the cut must not split a
+  // surrogate pair: a cut landing on a high surrogate backs off to the pair
+  // boundary so the entry never ends in a lone surrogate.
+  let end = KNOWLEDGE_MAX_LENGTH - TRUNCATED_MARKER.length;
+  const last = value.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${value.slice(0, end)}${TRUNCATED_MARKER}`;
+};
 
 /**
  * Where the session works, as the agent cannot see it for itself between two
