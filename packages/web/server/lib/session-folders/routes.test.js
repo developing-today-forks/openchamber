@@ -355,6 +355,60 @@ describe('session folders routes', () => {
     expect(saved.foldersMap['/home/ai'].map((entry) => entry.id).sort()).toEqual(['f1', 'f2', 'f3']);
   });
 
+  it('refuses a POST whose merged snapshot would exceed the stored read cap, without writing (#1761)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    // Seed the store just under the read cap, in the persisted pretty form.
+    const seedFolder = folder('big', '', ['s1']);
+    const seed = { ...folderPayload(20), foldersMap: { '/big': [seedFolder] } };
+    const baseBytes = Buffer.byteLength(JSON.stringify(seed, null, 2), 'utf8');
+    seedFolder.name = 'x'.repeat(MAX_STORED_SNAPSHOT_BYTES - 256 - baseBytes);
+    let persisted = JSON.stringify(seed, null, 2);
+    expect(Buffer.byteLength(persisted, 'utf8')).toBeLessThanOrEqual(MAX_STORED_SNAPSHOT_BYTES);
+    const fsPromises = {
+      readFile: vi.fn(async () => persisted),
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async (_tempPath, value) => {
+        persisted = value;
+      }),
+      rename: vi.fn(async () => {}),
+      unlink: vi.fn(async () => {}),
+    };
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
+      fsPromises,
+      path,
+      openchamberDataDir: '/tmp/openchamber-test',
+    });
+
+    // A disjoint, itself well-under-cap POST: the incoming body passes the
+    // body check, but the merged snapshot would cross the read cap.
+    const postResponse = createMockResponse();
+    await getRoute('POST', '/api/session-folders')({
+      body: {
+        ...folderPayload(30),
+        foldersMap: { '/other': [folder('f2', 'y'.repeat(1024), ['s3'])] },
+      },
+    }, postResponse);
+
+    expect(postResponse.statusCode).toBe(413);
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+    expect(persisted).toBe(JSON.stringify(seed, null, 2));
+
+    // GET still serves the pre-POST state (the store was not poisoned).
+    const getResponse = createMockResponse();
+    await getRoute('GET', '/api/session-folders')({}, getResponse);
+    expect(getResponse.statusCode).toBe(200);
+    expect(Object.keys(getResponse.body.foldersMap)).toEqual(['/big']);
+
+    // PATCH still serves the pre-POST state too: unassigning a session that
+    // is not assigned anywhere is a no-op that answers with the snapshot.
+    const patchResponse = createMockResponse();
+    await getRoute('PATCH', '/api/session-folders')({
+      body: { changes: [{ type: 'unassign', scopeKey: '/big', sessionIds: ['not-a-session'] }] },
+    }, patchResponse);
+    expect(patchResponse.statusCode).toBe(200);
+    expect(Object.keys(patchResponse.body.foldersMap)).toEqual(['/big']);
+  });
+
   const createPersistingRoutes = (initial, { onChanged, now } = {}) => {
     const { app, getRoute } = createRouteRegistry();
     const state = { persisted: initial === undefined ? null : JSON.stringify(initial) };

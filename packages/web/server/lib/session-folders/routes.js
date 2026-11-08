@@ -274,6 +274,15 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
         const outgoing = changed
           ? { ...merged, updatedAt: Math.max(merged.updatedAt, now(), (Number.isFinite(current.updatedAt) ? current.updatedAt : 0) + 1) }
           : merged;
+        // The guard above measures the incoming body, never the thing
+        // actually written: a merge with the stored snapshot can exceed
+        // the read cap even when both halves are under their own caps,
+        // and a stored file over MAX_STORED_SNAPSHOT_BYTES reads back as
+        // malformed forever after (#1761). Measure the merged snapshot
+        // in the persisted (pretty) form and refuse without writing.
+        if (Buffer.byteLength(JSON.stringify(outgoing, null, 2), 'utf8') > MAX_STORED_SNAPSHOT_BYTES) {
+          return res.status(413).json({ error: 'Session folders too large' });
+        }
         await writeSnapshot(outgoing);
         if (changed) announce(outgoing.updatedAt);
         return res.json({ success: true });
