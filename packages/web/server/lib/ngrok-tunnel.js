@@ -430,6 +430,10 @@ export async function startNgrokQuickTunnel({ port }) {
     };
 
     const onExit = (code) => {
+      // 'exit' can fire before stderr emits 'end', so flush the held final
+      // unterminated line here; flush() clears it, so the later 'end'
+      // handler cannot capture it a second time.
+      captureLines(stderrAccumulator.flush());
       finish(reject, new Error(appendNgrokOutputSummary(`Ngrok exited while starting (code ${code ?? 'unknown'})`, recentOutput)));
     };
 
