@@ -15,6 +15,7 @@ import { GoalWriterPicker } from '@/components/chat/GoalWriterPicker';
 import { useGoalWriterDefault } from '@/hooks/useGoalWriterDefault';
 import { recordGoalWriterChoice } from '@/lib/modelChoices';
 import { useI18n } from '@/lib/i18n';
+import { diffGoalSpecLines, estimateGoalSpecTokens } from '@/lib/goalSpec';
 import { useUIStore, type SessionGoalWriterSendMode } from '@/stores/useUIStore';
 
 export interface GoalSpecDialogRequest {
@@ -49,48 +50,6 @@ const SEND_LABEL_KEYS = {
   'with-message': 'chat.goal.writer.action.sendWithMessage',
   'goal-as-message': 'chat.goal.writer.action.sendGoalAsMessage',
 } as const satisfies Record<SessionGoalWriterSendMode, string>;
-
-/** Cheap chars/4 heuristic - an estimate only, labelled as such in the UI; no tokenizer runs per keystroke. */
-export const estimateGoalSpecTokens = (spec: string): number => Math.ceil(spec.length / 4);
-
-export type GoalSpecDiffLine = { kind: 'same' | 'add' | 'remove'; text: string };
-
-/**
- * Line diff between the spec a rewrite replaced and the spec it produced, so the
- * dialog can show what changed before it is accepted. Specs are a few thousand
- * characters at most, so the plain LCS table stays small.
- */
-export const diffGoalSpecLines = (previous: string, next: string): GoalSpecDiffLine[] => {
-  const before = previous === '' ? [] : previous.split('\n');
-  const after = next === '' ? [] : next.split('\n');
-  const lcs: number[][] = Array.from({ length: before.length + 1 }, () => new Array<number>(after.length + 1).fill(0));
-  for (let i = before.length - 1; i >= 0; i -= 1) {
-    for (let j = after.length - 1; j >= 0; j -= 1) {
-      lcs[i][j] = before[i] === after[j]
-        ? lcs[i + 1][j + 1] + 1
-        : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
-    }
-  }
-  const lines: GoalSpecDiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < before.length && j < after.length) {
-    if (before[i] === after[j]) {
-      lines.push({ kind: 'same', text: before[i] });
-      i += 1;
-      j += 1;
-    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
-      lines.push({ kind: 'remove', text: before[i] });
-      i += 1;
-    } else {
-      lines.push({ kind: 'add', text: after[j] });
-      j += 1;
-    }
-  }
-  while (i < before.length) { lines.push({ kind: 'remove', text: before[i] }); i += 1; }
-  while (j < after.length) { lines.push({ kind: 'add', text: after[j] }); j += 1; }
-  return lines;
-};
 
 const otherSendMode = (mode: SessionGoalWriterSendMode): SessionGoalWriterSendMode => (
   mode === 'with-message' ? 'goal-as-message' : 'with-message'

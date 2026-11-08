@@ -18,7 +18,8 @@ Object.defineProperty(globalThis, 'window', { value: importWindow, configurable:
 Object.defineProperty(globalThis, 'document', { value: importWindow.document, configurable: true, writable: true });
 Object.defineProperty(globalThis, 'localStorage', { value: importWindow.localStorage, configurable: true, writable: true });
 const { createRoot } = await import('react-dom/client');
-const { GoalSpecDialog, diffGoalSpecLines } = await import('./GoalSpecDialog');
+const { GoalSpecDialog } = await import('./GoalSpecDialog');
+const { diffGoalSpecLines } = await import('@/lib/goalSpec');
 for (const [name, descriptor] of previousImportGlobals) {
   if (descriptor) Object.defineProperty(globalThis, name, descriptor);
   else Reflect.deleteProperty(globalThis, name);
