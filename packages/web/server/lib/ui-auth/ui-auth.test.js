@@ -607,3 +607,58 @@ describe('ui auth jwt-secret bounded read (issue #1778)', () => {
     }
   });
 });
+
+// issue #1940: the jwt-secret write paths are judged on the opened handle,
+// not by a by-path probe — rotation (global sign-out) must never block on a
+// FIFO at the secret path, and the generate-and-persist write must not be
+// re-openable by a swap between probe and write.
+describe('ui auth jwt-secret handle-judged writes (issue #1940)', () => {
+  const secretPath = path.join(dataDir, 'jwt-secret');
+
+  it('rotates and persists a regular secret file with mode 0o600', async () => {
+    fs.rmSync(secretPath, { force: true });
+    fs.writeFileSync(secretPath, 'd'.repeat(64), { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    const res = createResponse();
+    await auth.handleResetAuth({ method: 'POST', headers: { host: '127.0.0.1' } }, res);
+    expect(res.body).toMatchObject({ cleared: true, signedOutEverywhere: true });
+    const persisted = fs.readFileSync(secretPath, 'utf8');
+    expect(persisted).toMatch(/^[0-9a-f]{64}$/);
+    expect(persisted).not.toBe('d'.repeat(64));
+    expect(fs.statSync(secretPath).mode & 0o777).toBe(0o600);
+    // The rotated secret serves the process: a login still succeeds.
+    const loginRes = createResponse();
+    await auth.handleSessionCreate(
+      { method: 'POST', headers: { host: '127.0.0.1' }, body: { password: 'secret' } },
+      loginRes,
+    );
+    expect(loginRes.getHeader('set-cookie')).toBeTruthy();
+  });
+
+  it('settles promptly when a FIFO replaces the secret file before rotation', async () => {
+    fs.rmSync(secretPath, { force: true });
+    fs.writeFileSync(secretPath, 'e'.repeat(64), { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    fs.rmSync(secretPath, { force: true });
+    execFileSync('mkfifo', [secretPath]);
+    try {
+      const res = createResponse();
+      await auth.handleResetAuth({ method: 'POST', headers: { host: '127.0.0.1' } }, res);
+      expect(res.body).toMatchObject({ cleared: true, signedOutEverywhere: true });
+      // The FIFO is left in place, and the rotated secret still serves the
+      // process: a login still succeeds.
+      expect(fs.statSync(secretPath).isFIFO()).toBe(true);
+      const loginRes = createResponse();
+      await auth.handleSessionCreate(
+        { method: 'POST', headers: { host: '127.0.0.1' }, body: { password: 'secret' } },
+        loginRes,
+      );
+      expect(loginRes.getHeader('set-cookie')).toBeTruthy();
+    } finally {
+      fs.rmSync(secretPath, { force: true });
+      fs.writeFileSync(secretPath, 'c'.repeat(64), { mode: 0o600 });
+    }
+  });
+});

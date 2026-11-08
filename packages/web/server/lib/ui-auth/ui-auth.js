@@ -440,6 +440,34 @@ const JWT_SECRET_FILE = path.join(OPENCHAMBER_DATA_DIR, 'jwt-secret');
 // server itself writes can ever approach (#1778).
 const MAX_JWT_SECRET_FILE_BYTES = 4 * 1024;
 
+// Persists the secret only when the path is (or newly creates) a regular
+// file, judged on the opened handle: a by-path stat followed by a by-path
+// write reopens the race — a FIFO swapped in between still blocks the write
+// open (#1940). O_NONBLOCK (POSIX only) makes the open of a FIFO with no
+// reader fail fast instead of blocking; a FIFO with a reader opens and is
+// then refused by the handle stat. On a regular file the flag changes
+// nothing. Returns false when the path is not a regular file; the caller
+// keeps serving the secret in-process and the path is left in place.
+function writeJwtSecretFile(secret) {
+  const flags = process.platform === 'win32'
+    ? fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC
+    : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NONBLOCK;
+  let fd = null;
+  try {
+    fd = fs.openSync(JWT_SECRET_FILE, flags, 0o600);
+  } catch (e) {
+    if (e?.code === 'ENXIO') return false;
+    throw e;
+  }
+  try {
+    if (!fs.fstatSync(fd).isFile()) return false;
+    fs.writeSync(fd, secret);
+    return true;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function getOrCreateJwtSecret() {
   const envSecret = process.env.OPENCODE_JWT_SECRET;
   if (envSecret) {
@@ -470,19 +498,10 @@ function getOrCreateJwtSecret() {
     // A non-regular file (e.g. a FIFO) already sitting at the secret
     // path is left alone: opening it for write would block like the
     // read did. The generated secret still serves this process.
-    let persistBlocked = false;
-    try {
-      persistBlocked = !fs.statSync(JWT_SECRET_FILE).isFile();
-    } catch {
-      persistBlocked = false;
-    }
-    if (persistBlocked) {
-      console.warn('[JWT] Secret path is not a regular file; not persisting generated secret to', JWT_SECRET_FILE);
-    } else {
-      fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
-    }
-    if (!persistBlocked) {
+    if (writeJwtSecretFile(secret)) {
       console.log('[JWT] Generated and persisted new secret to', JWT_SECRET_FILE);
+    } else {
+      console.warn('[JWT] Secret path is not a regular file; not persisting generated secret to', JWT_SECRET_FILE);
     }
   } catch (e) {
     console.warn('[JWT] Failed to persist secret:', e.message);
@@ -499,7 +518,12 @@ function persistJwtSecret(secret) {
   }
 
   fs.mkdirSync(OPENCHAMBER_DATA_DIR, { recursive: true });
-  fs.writeFileSync(JWT_SECRET_FILE, secret, { mode: 0o600 });
+  // Judged on the opened handle like the generate-and-persist write: a
+  // non-regular path is left in place and the rotated secret serves this
+  // process unpersisted, instead of the write blocking on a FIFO (#1940).
+  if (!writeJwtSecretFile(secret)) {
+    console.warn('[JWT] Secret path is not a regular file; not persisting rotated secret to', JWT_SECRET_FILE);
+  }
   return new TextEncoder().encode(secret);
 }
 
