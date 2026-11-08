@@ -1861,7 +1861,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                     sessionModel: providerIdToSend && modelIdToSend ? { providerID: providerIdToSend, modelID: modelIdToSend } : null,
                     directory: goalTargetDirectory,
                     inputLength: request.length,
-                    write: async (signal, { writer, ignoreLimit }) => {
+                    write: async (signal, { writer, ignoreLimit, section, currentSpec }) => {
                         const context = goalWriterPlan.trigger === 'auto-create'
                             ? await collectGoalWriterContext({
                                 sessionId: sessionIdForContext,
@@ -1879,6 +1879,8 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                             modelID: modelIdToSend,
                             writer,
                             ignoreLimit,
+                            section,
+                            currentSpec,
                             signal,
                         });
                     },
