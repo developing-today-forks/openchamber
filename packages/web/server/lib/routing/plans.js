@@ -108,8 +108,8 @@ export const readPlanStore = (dataDir) => {
   let fileRead;
   try {
     fileRead = readBoundedFileSync(store, MAX_PLAN_STORE_BYTES);
-  } catch {
-    throw httpError(409, `${store} is not valid JSON. Fix or move it before saving plan information.`, 'PLAN_STORE_MALFORMED');
+  } catch (error) {
+    throw httpError(409, `${store} is unreadable: ${error?.code ?? 'error'}. Fix its permissions or move it before saving plan information.`, 'PLAN_STORE_UNREADABLE');
   }
   if (!fileRead.ok) {
     if (fileRead.reason === 'missing') return emptyPlanStore();

@@ -98,6 +98,24 @@ describe('plan store', () => {
     );
   });
 
+  it.skipIf(isWindows)('reports an unreadable plan store as unreadable, not as malformed JSON', () => {
+    const root = dir();
+    const file = path.join(root, 'plans.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, plans: [], models: {}, pools: {} }));
+    fs.chmodSync(file, 0o000);
+    try {
+      expect(() => readPlanStore(root)).toThrow(
+        expect.objectContaining({
+          status: 409,
+          code: 'PLAN_STORE_UNREADABLE',
+          message: expect.stringContaining('unreadable: EACCES'),
+        }),
+      );
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+  });
+
   it.skipIf(isWindows)('refuses a FIFO plan store without blocking', () => {
     const root = dir();
     execFileSync('mkfifo', [path.join(root, 'plans.json')]);
