@@ -948,4 +948,63 @@ describe('bounded settings reads (#1653)', () => {
       await expect(runtime.readSettingsFromDiskStrict()).resolves.toEqual({ theme: 'light' });
     } finally { await cleanup(); }
   });
+
+  // Oracle: content whose byte length crosses the cap is refused, whatever
+  // its stat said. The wrapped seam reports a small regular file from stat
+  // while readFile returns over-cap content, so the case is decided with no
+  // timing race. This pins the post-read recheck in readGatedFile, which the
+  // static over-cap tests above cannot reach. Targets are added after
+  // createRuntime returns because it chooses the temp path.
+  const createGrowsAfterStatFs = (overCapContent) => {
+    const targets = new Set();
+    const fsImpl = {
+      ...fsPromises,
+      stat: async (file, ...rest) => {
+        const realStat = await fsPromises.stat(file, ...rest);
+        if (!targets.has(String(file))) {
+          return realStat;
+        }
+        return { isFile: () => true, size: 16 };
+      },
+      readFile: async (file, ...rest) => {
+        if (targets.has(String(file))) {
+          return overCapContent;
+        }
+        return fsPromises.readFile(file, ...rest);
+      },
+    };
+    return { fsImpl, targets };
+  };
+
+  it('strict read rejects a file that grows past the cap after stat', async () => {
+    const { fsImpl, targets } = createGrowsAfterStatFs('x'.repeat(EIGHT_MIB + 1));
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({ fsImpl });
+    targets.add(settingsFilePath);
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ theme: 'dark' }));
+      await expect(runtime.readSettingsFromDiskStrict()).rejects.toMatchObject({ code: 'BOUNDED_FILE_TOO_LARGE' });
+    } finally { await cleanup(); }
+  });
+
+  it('lenient read answers {} when the settings file grows past the cap after stat', async () => {
+    const { fsImpl, targets } = createGrowsAfterStatFs('x'.repeat(EIGHT_MIB + 1));
+    const { runtime, settingsFilePath, cleanup } = await createRuntime({ fsImpl });
+    targets.add(settingsFilePath);
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ theme: 'dark' }));
+      await expect(runtime.readSettingsFromDisk()).resolves.toEqual({});
+    } finally { await cleanup(); }
+  });
+
+  it('preferences that grow past the cap after stat read as failed, so the merged document is the instance alone', async () => {
+    const { fsImpl, targets } = createGrowsAfterStatFs('x'.repeat(EIGHT_MIB + 1));
+    const { runtime, settingsFilePath, tempRoot, cleanup } = await createRuntime({ fsImpl });
+    const preferencesFilePath = path.join(tempRoot, 'preferences.json');
+    targets.add(preferencesFilePath);
+    try {
+      await fsPromises.writeFile(settingsFilePath, JSON.stringify({ theme: 'dark' }));
+      await fsPromises.writeFile(preferencesFilePath, JSON.stringify({ version: 1, fields: {} }));
+      await expect(runtime.readSettingsFromDisk()).resolves.toEqual({ theme: 'dark' });
+    } finally { await cleanup(); }
+  });
 });
