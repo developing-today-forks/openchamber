@@ -48,9 +48,19 @@ export const CONTEXT_FILE_READ_MAX_BYTES = 8 * 1024 * 1024;
 const PROJECT_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 const PLAN_FILE_PATTERN = /^[a-zA-Z0-9._-]+\.md$/;
 
+// The clamp must not split a surrogate pair: a value cut right after a high
+// surrogate drops that half, because the clamped value is persisted and
+// rendered, where a lone surrogate becomes U+FFFD permanently (#2010).
 const clampLength = (value, maxLength) => {
-  if (typeof value !== 'string') return '';
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
+  if (typeof value !== 'string') {
+    return '';
+  }
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const cut = value.slice(0, maxLength);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 };
 
 const NOTE_SOURCES = new Set(['manual', 'selection', 'agent']);
