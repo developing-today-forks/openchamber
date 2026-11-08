@@ -32,6 +32,21 @@ describe('createBoundedOutputAccumulator', () => {
     expect(acc.flush()).toEqual(['23456789']);
   });
 
+  it('rejects a maxChars that would silently defeat the bound (#1825)', () => {
+    // slice(-0) keeps the whole string, so 0 must not be accepted as a bound.
+    expect(() => createBoundedOutputAccumulator({ maxChars: 0 })).toThrow(RangeError);
+    expect(() => createBoundedOutputAccumulator({ maxChars: -5 })).toThrow(RangeError);
+    expect(() => createBoundedOutputAccumulator({ maxChars: Number.NaN })).toThrow(RangeError);
+    expect(() => createBoundedOutputAccumulator({ maxChars: Number.POSITIVE_INFINITY })).toThrow(RangeError);
+    expect(() => createBoundedOutputAccumulator({ maxChars: 2.5 })).toThrow(RangeError);
+  });
+
+  it('honours a small positive bound exactly', () => {
+    const acc = createBoundedOutputAccumulator({ maxChars: 3 });
+    expect(acc.push('abcdef').recentText).toBe('def');
+    expect(acc.push('gh').recentText).toBe('fgh');
+  });
+
   it('flush releases the final unterminated line and is idempotent', () => {
     const acc = createBoundedOutputAccumulator();
     acc.push('done\nfinal line');

@@ -16,6 +16,14 @@ export const BOUNDED_OUTPUT_MAX_CHARS = 64 * 1024;
 // stream ends. Oracle: StringDecoder semantics — a multi-byte character
 // split across chunks must decode whole, never as replacement chars.
 export function createBoundedOutputAccumulator({ maxChars = BOUNDED_OUTPUT_MAX_CHARS } = {}) {
+  // The bound is the contract: a non-positive or non-finite maxChars would
+  // silently defeat it — slice(-0) is slice(0), which keeps the whole
+  // string — so reject it at construction instead of un-bounding the
+  // accumulator (#1825). Fractional bounds are rejected too: slice would
+  // truncate them toward zero, a different bound than the caller asked for.
+  if (!Number.isInteger(maxChars) || maxChars < 1) {
+    throw new RangeError(`createBoundedOutputAccumulator: maxChars must be a positive integer, got ${maxChars}`);
+  }
   const decoder = new StringDecoder('utf8');
   let pendingLine = '';
   let recentText = '';
