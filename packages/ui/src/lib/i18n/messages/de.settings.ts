@@ -1443,6 +1443,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'Modell-Kontingente',
   'settings.usage.page.section.otherModels': 'Andere Modelle',
   'settings.usage.page.state.noQuotaWindowsTitle': 'Keine Kontingentfenster berichtet',
+  'settings.usage.page.state.consoleOnlyTitle': 'Erfasst, nur in der Konsole',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral bestätigt, dass dieser API-Schlüssel gültig ist. Nutzungsdaten sind jedoch nur in der Mistral-Konsole verfügbar.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'Dieser Anbieter meldet derzeit keine Ratenbegrenzungen oder Nutzungsquoten.',
   'settings.usage.page.window.giftResetAria': 'Geschenk-Limit zurücksetzen',
   'settings.usage.page.window.giftResetExpires': 'Geschenk-Limit-Reset verfügbar bis {time}',
