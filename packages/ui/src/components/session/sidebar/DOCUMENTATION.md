@@ -152,6 +152,10 @@ sheet renders its nested tree. A tree row shows its live state in the slot left 
 title; a row with subsessions keeps its chevron there, since a phone has no
 hover to trade them, and shows its state on the right. Titles carry the state
 as on the desktop (`apps/mobileSessionTitle.ts`), and run titles are muted.
+Chats rows follow `sessionRowDisplay.chatsLines` in both views. Tree project
+session rows follow `projectLines`; two-line rows show a fixed context line
+under the title and reserve 52px. The sheet uses pagination in a plain scroller,
+so it has no per-row virtualizer estimate to update.
 Worktree headers are drawn as
 folder rows (chevron, 12px icon, medium-weight label a step below full
 strength), each opening with a
