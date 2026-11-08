@@ -304,3 +304,38 @@ describe('notification template session caches stay bounded', () => {
     expect(fetches.get('ses_0')).toBe(2);
   });
 });
+
+describe('notification extraction surrogate-pair boundary (#1948)', () => {
+  const EMOJI = '\u{1F600}';
+  const runtime = createRuntime();
+
+  it('parts path: a pair straddling the 1,000-char cut is dropped whole', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(999)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe('a'.repeat(999));
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('content-array path: a pair straddling the cut is dropped whole', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { content: [{ type: 'text', text: `${'a'.repeat(999)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe('a'.repeat(999));
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('a pair fitting whole inside the cut survives intact', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(998)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe(`${'a'.repeat(998)}${EMOJI}`);
+  });
+
+  it('a caller-chosen maxLength is pair-safe too', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(9)}${EMOJI}${'b'.repeat(50)}` }] } },
+    }, 10);
+    expect(out).toBe('a'.repeat(9));
+  });
+});

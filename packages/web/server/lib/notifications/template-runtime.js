@@ -120,6 +120,15 @@ export const createNotificationTemplateRuntime = (deps) => {
     return typeof part.text === 'string' || typeof part.content === 'string';
   };
 
+  // A length cut must not split a surrogate pair: text cut right after a
+  // high surrogate drops that half so the extracted value never ends in a
+  // lone surrogate (which encodes as U+FFFD downstream).
+  const cutPairSafe = (text, maxLength) => {
+    const cut = text.slice(0, maxLength);
+    const last = cut.charCodeAt(cut.length - 1);
+    return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+  };
+
   const extractTextFromParts = (parts, maxLength = NOTIFICATION_BODY_MAX_CHARS) => {
     if (!Array.isArray(parts) || parts.length === 0) return '';
 
@@ -131,7 +140,7 @@ export const createNotificationTemplateRuntime = (deps) => {
     let text = textParts.length > 0 ? textParts.join('\n').trim() : '';
 
     if (maxLength > 0 && text.length > maxLength) {
-      text = text.slice(0, maxLength);
+      text = cutPairSafe(text, maxLength);
     }
 
     return text;
@@ -154,7 +163,7 @@ export const createNotificationTemplateRuntime = (deps) => {
       if (textContent.length > 0) {
         let result = textContent.join('\n').trim();
         if (maxLength > 0 && result.length > maxLength) {
-          result = result.slice(0, maxLength);
+          result = cutPairSafe(result, maxLength);
         }
         return result;
       }
