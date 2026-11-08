@@ -74,6 +74,24 @@ describe('pool-plan-links store', () => {
     );
   });
 
+  it.skipIf(isWindows)('reports an unreadable links file as unreadable, not as malformed JSON', () => {
+    const data = dir();
+    const file = path.join(data, 'pool-plan-links.json');
+    fs.writeFileSync(file, JSON.stringify({ version: 1, links: {} }));
+    fs.chmodSync(file, 0o000);
+    try {
+      expect(() => readPoolPlanLinks(data)).toThrow(
+        expect.objectContaining({
+          status: 409,
+          code: 'POOL_LINKS_UNREADABLE',
+          message: expect.stringContaining('unreadable: EACCES'),
+        }),
+      );
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
+  });
+
   it.skipIf(isWindows)('refuses a FIFO links file without blocking', () => {
     const data = dir();
     execFileSync('mkfifo', [path.join(data, 'pool-plan-links.json')]);
