@@ -1134,3 +1134,40 @@ describe('message queue runtime', () => {
     expect(openCode.state.sent[0].body).toEqual({ sessionId: SESSION, directory: DIRECTORY });
   });
 });
+
+describe('queued-message preview surrogate-pair cuts (#1959)', () => {
+  const EMOJI = '\u{1F600}';
+
+  it('the stored 103-char cut never persists a lone surrogate', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    const { itemId } = await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }],
+      contextPreview: `${'a'.repeat(102)}${EMOJI}${'b'.repeat(100)}`,
+    }));
+    const taken = await runtime.take(SESSION, itemId);
+    expect(taken.item.contextPreview).toBe('a'.repeat(102));
+  });
+
+  it('the projected 100-char cut never shows a lone surrogate', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }],
+      contextPreview: `${'a'.repeat(99)}${EMOJI}${'b'.repeat(10)}`,
+    }));
+    const projected = runtime.sessionSnapshot(SESSION).items[0];
+    expect(projected.contextPreview).toBe(`${'a'.repeat(99)}...`);
+    expect(Buffer.from(projected.contextPreview, 'utf8').toString('utf8')).toBe(projected.contextPreview);
+  });
+
+  it('a pair ending exactly at the projected limit is kept whole, no ellipsis', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    const preview = `${'a'.repeat(98)}${EMOJI}`;
+    await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }], contextPreview: preview,
+    }));
+    expect(runtime.sessionSnapshot(SESSION).items[0].contextPreview).toBe(preview);
+  });
+});
