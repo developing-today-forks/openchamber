@@ -246,7 +246,17 @@ export const computeNextRunAt = (task, nowMs = Date.now()) => {
   return null;
 };
 
-export const formatScheduledSessionTitle = (task, nowMs = Date.now()) => {
+// A plain slice at the cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate in the created session's title that encodes
+// as U+FFFD in the session list; move a cut that lands inside a pair back to
+// the pair boundary (same guard as projects/project-config.js clampLength).
+const clipPairSafe = (text, limit) => {
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
+export const formatScheduledSessionTitle = (task, nowMs) => {
   const timezone = typeof task?.schedule?.timezone === 'string' && task.schedule.timezone.trim().length > 0
     ? task.schedule.timezone.trim()
     : DateTime.local().zoneName;
@@ -257,7 +267,7 @@ export const formatScheduledSessionTitle = (task, nowMs = Date.now()) => {
   const suffix = ` ${stamp}`;
   const maxTaskNameLength = Math.max(1, TASK_TITLE_MAX_LENGTH - suffix.length);
   const trimmedName = taskName.length > maxTaskNameLength
-    ? taskName.slice(0, maxTaskNameLength)
+    ? clipPairSafe(taskName, maxTaskNameLength)
     : taskName;
   return `${trimmedName}${suffix}`;
 };
