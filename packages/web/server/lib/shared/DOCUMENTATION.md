@@ -403,6 +403,7 @@ are named so the inventory's edge is explicit, not silent.
 | bridge settings runtime (three shared files) | covered-by-open-issue #1641 |
 | quota local-file readers (credential / auth / config) | covered-by-open-issue #1643 |
 | `opencode.ts` `readOpenChamberSettings` (shared `settings.json`) | bound-complete (#1644, closed) |
+| `openchamberSessionState.ts` (shared archive and legacy metadata files) | handle-judged regular-file reads capped at 32 MiB while reading; over-cap and non-regular files remain unknown and block writes (#1780) |
 
 Phase 3 of design #1655 (migration shape, the append-only-log answer,
 the VS Code mirror question, and a ratchet) is not decided by this
