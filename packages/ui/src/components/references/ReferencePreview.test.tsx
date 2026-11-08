@@ -137,3 +137,17 @@ describe('ReferencePreview Linear commentsMore (#1781)', () => {
         expect(container.textContent).not.toContain('comments shown, all of them in Linear');
     });
 });
+
+describe('ReferencePreview Linear labelsMore (#1782)', () => {
+    const label = { id: 'l1', name: 'bug', color: '#ff0000' };
+    test('labelsMore renders a linked truncation note beside the label chips', () => {
+        const container = renderPreview(items[1], false, 'ready', true, { ...issue, labels: [label], labelsMore: true });
+        expect(container.textContent).toContain('First 1 labels shown, all of them in Linear');
+        const links = Array.from(container.querySelectorAll('a'));
+        expect(links.some((a) => a.textContent?.includes('labels shown') && a.getAttribute('href') === issue.url)).toBe(true);
+    });
+    test('no truncation note when labelsMore is absent', () => {
+        const container = renderPreview(items[1], false, 'ready', true, { ...issue, labels: [label] });
+        expect(container.textContent).not.toContain('labels shown, all of them in Linear');
+    });
+});
