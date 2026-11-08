@@ -33,7 +33,10 @@ Auto. There is no env gate — the feature shipped dark behind
   `auto-sessions.json` (the sessions on Auto) in the OpenChamber data dir. An unreadable pick file reads as no pick, an
   unreadable endpoint file as no endpoint. `resolveEffectiveConfig` merges built-ins with stored overrides;
   `toStoredConfig` is its inverse. A missing file is the defaults, a malformed
-  one throws.
+  one throws. The store reads those files through the shared handle-judged bounded reader:
+  1 MiB for routing config, 64 KiB for the auth, classifier and endpoint files, and
+  32 MiB for auto sessions. Over-cap or non-regular config is an error; the pick,
+  endpoint, token and session readers preserve their existing warn-and-empty behavior.
 - `jev.js` — request builders, answer parsing, and the HTTP call with a
   timeout and a 1 MiB response cap (`JEV_MAX_RESPONSE_BYTES`: the endpoint
   can be user- or admin-chosen, so its body is untrusted input) to the
