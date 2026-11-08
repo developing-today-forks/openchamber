@@ -422,9 +422,13 @@ describe('host shutdown', () => {
       const previousStop = stopGuestService('docker');
       accessing = spyOn(fs, 'access');
       const storeRead = Promise.withResolvers();
-      const readFile = fs.readFile.bind(fs);
-      reading = spyOn(fs, 'readFile').mockImplementation(async (...args) => {
-        const result = await readFile(...args);
+      // The store read goes through readBoundedFile (#1625), which opens a
+      // handle via fs.promises.open — it never calls fs.readFile, so a
+      // readFile spy can never resolve this gate and the test hangs until
+      // its timeout. Spy on open, the call the bounded reader makes.
+      const openFile = fs.open.bind(fs);
+      reading = spyOn(fs, 'open').mockImplementation(async (...args) => {
+        const result = await openFile(...args);
         if (args[0] === fixture.persistPath) storeRead.resolve();
         return result;
       });
@@ -447,7 +451,7 @@ describe('host shutdown', () => {
       await stopAllGuestServices();
       await fs.rm(fixture.dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   test('rejects new requests, drains a live child, and only reopens on a new host lifecycle', async () => {
     const fixture = await writeFixture();
