@@ -164,6 +164,58 @@ describe('environment runtime', () => {
     expect(runtime.projectStatus('path_project')).toMatchObject({ state: 'failed', reason: 'output-too-large' });
   });
 
+  // The three cases below pin the incremental decoder and the cumulative
+  // cap against their specific regressions (#1819): per-chunk decoding
+  // (a split two-byte character corrupts), a dropped decoder.end() (a
+  // trailing incomplete sequence vanishes instead of surfacing as
+  // U+FFFD), and a per-chunk-only cap check (two under-cap chunks whose
+  // total is over the cap sail through).
+  const chunkedSpawn = (chunks) => vi.fn(() => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.kill = vi.fn(() => { queueMicrotask(() => child.emit('close', null)); });
+    queueMicrotask(() => {
+      for (const chunk of chunks) child.stdout.emit('data', chunk);
+      child.emit('close', 0);
+    });
+    return child;
+  });
+
+  it('decodes command output split inside a two-byte character', async () => {
+    await store.updateProject('path_project', { command: 'direnv export json' });
+    const payload = Buffer.from('{"GREETING":"caf\u00e9 end"}', 'utf8');
+    const splitAt = payload.indexOf(0xc3) + 1;
+    const runtime = createRuntime({
+      spawn: chunkedSpawn([payload.subarray(0, splitAt), payload.subarray(splitAt)]),
+    });
+
+    expect(await runtime.forDirectory(projectPath, USER_ACTION)).toEqual({ GREETING: 'caf\u00e9 end' });
+    expect(runtime.projectStatus('path_project')).toMatchObject({ state: 'applied', count: 1 });
+  });
+
+  it('surfaces a trailing incomplete UTF-8 sequence as U+FFFD', async () => {
+    await store.updateProject('path_project', { command: 'direnv export' });
+    const runtime = createRuntime({
+      spawn: chunkedSpawn([Buffer.from('KEY=abc', 'utf8'), Buffer.from([0xc3])]),
+    });
+
+    expect(await runtime.forDirectory(projectPath, USER_ACTION)).toEqual({ KEY: 'abc\ufffd' });
+    expect(runtime.projectStatus('path_project')).toMatchObject({ state: 'applied', count: 1 });
+  });
+
+  it('enforces the output cap cumulatively across chunks', async () => {
+    await store.updateProject('path_project', { command: 'direnv export json' });
+    const chunk = Buffer.alloc(3 * 1024 * 1024, 0x61);
+    let child;
+    const spawn = chunkedSpawn([chunk, chunk]);
+    const trackingSpawn = vi.fn((...args) => { child = spawn(...args); return child; });
+    const runtime = createRuntime({ spawn: trackingSpawn });
+
+    expect(await runtime.forDirectory(projectPath, USER_ACTION)).toBeNull();
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(runtime.projectStatus('path_project')).toMatchObject({ state: 'failed', reason: 'output-too-large' });
+  });
+
   it('runs the command once, then serves the kept result and refreshes in the background', async () => {
     await store.updateProject('path_project', { command: 'direnv export json' });
     let output = '{"VERSION":"1"}';
