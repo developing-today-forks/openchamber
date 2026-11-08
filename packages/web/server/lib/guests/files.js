@@ -1,3 +1,4 @@
+import { constants as fsConstants } from 'node:fs';
 import defaultFs from 'node:fs/promises';
 import defaultPath from 'node:path';
 
@@ -186,12 +187,16 @@ const READ_CHUNK_BYTES = 64 * 1024;
  * only a hint, so a file grown after it — or one whose stat under-reports
  * its size — is refused here having buffered at most the cap + 1 byte.
  * The same discipline as shared/bounded-file-read.js, spelled over the
- * injectable fsPromises seam this module is tested through. Returns
+ * injectable fsPromises seam this module is tested through — including
+ * O_NONBLOCK on POSIX, so the open itself cannot block on a FIFO before
+ * the handle-stat judgement below can refuse it (#1787). Returns
  * { tooLarge: true } for an over-cap file; OS errors throw and the
  * caller maps them.
  */
+const READ_OPEN_FLAGS = fsConstants.O_RDONLY | (process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK);
+
 const readBoundedText = async (absolute, fsPromises) => {
-  const handle = await fsPromises.open(absolute, 'r');
+  const handle = await fsPromises.open(absolute, READ_OPEN_FLAGS);
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) {
