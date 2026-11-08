@@ -261,15 +261,12 @@ describe('disabled providers', () => {
     expect(configured).toContain('codex');
     expect(configured).not.toContain('openrouter');
     expect(configured).not.toContain('github-copilot');
-    // The add-on row reads the same Copilot credential, so it goes too.
-    expect(configured).not.toContain('github-copilot-addon');
   });
 
   it('includes disabled providers when asked', async () => {
     const configured = await listConfiguredQuotaProviders({ includeDisabled: true }, authDeps);
     expect(configured).toContain('openrouter');
     expect(configured).toContain('github-copilot');
-    expect(configured).toContain('github-copilot-addon');
   });
 
   it('still fetches a disabled provider named explicitly', async () => {
@@ -557,7 +554,7 @@ describe('provider catalogue', () => {
     setMergedConfig({ disabled_providers: ['openrouter', 'github-copilot'] });
     const catalogue = listQuotaProviderCatalogue();
     expect(catalogue.find((entry) => entry.id === 'openrouter')?.disabled).toBe(true);
-    expect(catalogue.find((entry) => entry.id === 'github-copilot-addon')?.disabled).toBe(true);
+    expect(catalogue.find((entry) => entry.id === 'github-copilot')?.disabled).toBe(true);
     expect(catalogue.find((entry) => entry.id === 'codex')?.disabled).toBe(false);
   });
 

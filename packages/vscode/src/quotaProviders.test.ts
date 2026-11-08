@@ -56,7 +56,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotAddonQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -1104,21 +1104,6 @@ describe('GitHub Copilot quota provider (VS Code parity)', () => {
     assert.equal(result.ok, false);
     assert.equal(result.error, 'Invalid GitHub Copilot Enterprise URL');
     assert.equal(requested, false);
-  });
-
-  test('add-on path mirrors the primary window shaping', async () => {
-    stubFetchReturning(() => Promise.resolve(mockResponse({
-      quota_reset_date: '2026-09-01T00:00:00Z',
-      quota_snapshots: {
-        premium_interactions: { entitlement: 300, remaining: 225 },
-      },
-    })));
-
-    const result = await fetchQuotaForProvider('github-copilot-addon');
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(Object.keys(result.usage!.windows), ['premium_interactions']);
-    assert.equal(result.usage!.windows.premium_interactions!.usedPercent, 25);
   });
 
   test('derives the credit label from the same used axis as VS Code on fractional credits', async () => {
@@ -3608,7 +3593,6 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'claude', listedAs: 'claude', credential: (b) => blankOauth('anthropic', b) },
     { provider: 'codex', listedAs: 'codex', credential: (b) => blankOauth('openai', b) },
     { provider: 'github-copilot', listedAs: 'github-copilot', credential: (b) => blankOauth('github-copilot', b) },
-    { provider: 'github-copilot-addon', listedAs: 'github-copilot-addon', credential: (b) => blankOauth('github-copilot', b) },
     { provider: 'zai-coding-plan', listedAs: 'zai-coding-plan', credential: (b) => blankKey('zai-coding-plan', b) },
     { provider: 'zhipuai-coding-plan', listedAs: 'zhipuai-coding-plan', credential: (b) => blankKey('zhipuai-coding-plan', b) },
     { provider: 'openrouter', listedAs: 'openrouter', credential: (b) => blankKey('openrouter', b) },
@@ -3656,7 +3640,6 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'claude', alias: 'anthropic', first: 'access', fetchQuota: fetchClaudeQuota, headerFor: (v) => 'Bearer ' + v },
     { provider: 'codex', alias: 'openai', first: 'access', fetchQuota: fetchCodexQuota, headerFor: (v) => 'Bearer ' + v },
     { provider: 'github-copilot', alias: 'github-copilot', first: 'access', fetchQuota: fetchCopilotQuota, headerFor: (v) => 'token ' + v },
-    { provider: 'github-copilot-addon', alias: 'github-copilot', first: 'access', fetchQuota: fetchCopilotAddonQuota, headerFor: (v) => 'token ' + v },
     { provider: 'zai-coding-plan', alias: 'zai-coding-plan', first: 'key', fetchQuota: fetchZaiQuota, headerFor: (v) => 'Bearer ' + v },
     { provider: 'zhipuai-coding-plan', alias: 'zhipuai-coding-plan', first: 'key', fetchQuota: fetchZhipuaiCodingPlanQuota, headerFor: (v) => 'Bearer ' + v },
     { provider: 'openrouter', alias: 'openrouter', first: 'key', fetchQuota: fetchOpenRouterQuota, headerFor: (v) => 'Bearer ' + v },
