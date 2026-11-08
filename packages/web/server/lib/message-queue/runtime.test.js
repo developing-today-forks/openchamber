@@ -931,6 +931,23 @@ describe('message queue runtime', () => {
     expect(runtime.sessionSnapshot(SESSION).items[0].contextPreview).toBe('a'.repeat(100) + '...');
   });
 
+  it('never splits a surrogate pair at either context preview cut (#1959)', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    const emoji = String.fromCodePoint(0x1f600);
+    // Stored-preview cut at 103: the pair straddles it, so the stored
+    // preview ends at the pair boundary instead of on a lone surrogate.
+    const stored = await runtime.enqueue(SESSION, DIRECTORY, item({ content: '', text: '', context: [{ kind: 'instruction', text: 'ctx' }], contextPreview: 'a'.repeat(102) + emoji + 'b'.repeat(10) }));
+    const taken = await runtime.take(SESSION, stored.itemId);
+    expect(taken.item.contextPreview).toBe('a'.repeat(102));
+    expect(new TextDecoder().decode(new TextEncoder().encode(taken.item.contextPreview))).toBe(taken.item.contextPreview);
+    // Public-preview cut at 100: same guard on the projected item.
+    await runtime.enqueue(SESSION, DIRECTORY, item({ content: '', text: '', context: [{ kind: 'instruction', text: 'ctx' }], contextPreview: 'a'.repeat(99) + emoji + 'b'.repeat(50) }));
+    const projected = runtime.sessionSnapshot(SESSION).items[0];
+    expect(projected.contextPreview).toBe('a'.repeat(99) + '...');
+    expect(projected.contextPreview).not.toContain('�');
+  });
+
   it('derives a preview for older queued annotations without a saved summary', async () => {
     const { runtime } = createRuntime();
     runtime.start();

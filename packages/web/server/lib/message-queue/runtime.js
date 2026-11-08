@@ -152,6 +152,15 @@ const parseContextPart = (value) => {
  * anything that could not be delivered later: a queue must never hold an item
  * the server cannot send.
  */
+// A fixed-length cut can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that encodes as U+FFFD when the preview is
+// encoded; move a boundary that lands inside a pair back to the boundary.
+const cutPairSafe = (text, max) => {
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+};
+
 export const parseQueuedItemInput = (value) => {
   const raw = asRecord(value);
   if (!raw) throw new TypeError('item is required');
@@ -178,7 +187,7 @@ export const parseQueuedItemInput = (value) => {
   if (agentMention) item.agentMention = agentMention;
   item.attachments = attachments;
   item.context = context;
-  const contextPreview = asNonEmptyString(raw.contextPreview).slice(0, 103);
+  const contextPreview = cutPairSafe(asNonEmptyString(raw.contextPreview), 103);
   if (contextPreview) item.contextPreview = contextPreview;
   item.sendConfig = sendConfig ?? {};
   if (goal) item.goal = goal;
@@ -218,7 +227,7 @@ const toPublicItem = (item) => {
     .find(Boolean);
   if (contextPreview) {
     const firstLine = contextPreview.split('\n', 1)[0];
-    publicItem.contextPreview = firstLine.slice(0, 100)
+    publicItem.contextPreview = cutPairSafe(firstLine, 100)
       + (contextPreview.length > firstLine.length || firstLine.length > 100 ? '...' : '');
   }
   publicItem.sendConfig = { ...item.sendConfig };
