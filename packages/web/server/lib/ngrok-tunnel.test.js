@@ -318,6 +318,25 @@ describe('startNgrokQuickTunnel chunk-split output', () => {
     tunnel.stop();
   });
 
+  // The background sleep inherits stdout and holds the pipe open after
+  // the shell exits, so 'exit' deterministically fires before stdout
+  // 'end' (mirrors PR #1702's stderr case for #1693).
+  it('includes a final unterminated stdout line in the startup exit error, exactly once', async () => {
+    installFakeNgrok("printf %s 'NGROK_FINAL_STDOUT_UNTERMINATED diagnostic'\nsleep 0.2\nsleep 1 &\nexit 3");
+
+    let error = null;
+    try {
+      await startNgrokQuickTunnel({ port: 3210 });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).not.toBeNull();
+    expect(error.message).toContain('Ngrok exited while starting (code 3)');
+    expect(error.message).toContain('NGROK_FINAL_STDOUT_UNTERMINATED diagnostic');
+    expect(error.message.split('NGROK_FINAL_STDOUT_UNTERMINATED diagnostic')).toHaveLength(2);
+  });
+
   it('resolves the full URL when the chunk splits inside the scheme', async () => {
     installFakeNgrok("printf %s '{\"lvl\":\"info\",\"msg\":\"started tunnel\",\"url\":\"https:'\nsleep 0.2\nprintf '%s\\n' '//abcd1234.ngrok-free.app\"}'\nsleep 0.5");
 
