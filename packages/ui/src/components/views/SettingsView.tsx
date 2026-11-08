@@ -488,7 +488,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
       useUIStore.getState().setSettingsProvidersConnectRequested(true);
     }
 
-    if (result.id === 'providers.classification') {
+    // routing.token's field lives on the Classification sub-page too
+    // (#1762): its search entry points at Providers, and the sub-page
+    // renders only when this request flag is set.
+    if (result.id === 'providers.classification' || result.id === 'routing.token') {
       useUIStore.getState().setSettingsProvidersClassificationRequested(true);
     }
 

@@ -1067,7 +1067,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
   },
   {
     id: 'routing.token',
-    page: 'routing',
+    page: 'providers',
     titleKey: 'settings.routing.token.label',
     descriptionKey: 'settings.routing.token.info',
     keywords: ['jev', 'typesafe', 'api key', 'token', 'routing'],
