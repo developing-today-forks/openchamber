@@ -152,7 +152,7 @@ export const createSettingsHelpers = (dependencies) => {
       const key = typeof rawKey === 'string' ? rawKey.trim() : '';
       const combo = typeof rawValue === 'string' ? rawValue.trim() : '';
       if (!key || !combo) continue;
-      result[key.slice(0, SHORTCUT_OVERRIDE_KEY_MAX_LENGTH)] = combo.slice(0, SHORTCUT_OVERRIDE_VALUE_MAX_LENGTH);
+      result[clipPairSafe(key, SHORTCUT_OVERRIDE_KEY_MAX_LENGTH)] = clipPairSafe(combo, SHORTCUT_OVERRIDE_VALUE_MAX_LENGTH);
     }
     return result;
   };
@@ -490,10 +490,10 @@ export const createSettingsHelpers = (dependencies) => {
     }
     // Family names for the "custom" font choice; empty clears them.
     if (typeof candidate.customUiFont === 'string') {
-      result.customUiFont = candidate.customUiFont.slice(0, 100);
+      result.customUiFont = clipPairSafe(candidate.customUiFont, 100);
     }
     if (typeof candidate.customMonoFont === 'string') {
-      result.customMonoFont = candidate.customMonoFont.slice(0, 100);
+      result.customMonoFont = clipPairSafe(candidate.customMonoFont, 100);
     }
     if (typeof candidate.githubClientId === 'string') {
       const trimmed = candidate.githubClientId.trim();
@@ -592,7 +592,7 @@ export const createSettingsHelpers = (dependencies) => {
       }
     }
     if (typeof candidate.fileEditorVimMappings === 'string') {
-      result.fileEditorVimMappings = candidate.fileEditorVimMappings.slice(0, 10_000);
+      result.fileEditorVimMappings = clipPairSafe(candidate.fileEditorVimMappings, 10_000);
     }
     if (Array.isArray(candidate.providerOrder)) {
       result.providerOrder = normalizeStringArray(candidate.providerOrder);
@@ -898,7 +898,7 @@ export const createSettingsHelpers = (dependencies) => {
     if (sshHost.success) result.isolatedSpacesSshHost = sshHost.data;
     if (typeof candidate.openCodeUpdateToastDismissedVersion === 'string') {
       const version = candidate.openCodeUpdateToastDismissedVersion.trim();
-      result.openCodeUpdateToastDismissedVersion = version.slice(0, VERSION_STRING_MAX_LENGTH);
+      result.openCodeUpdateToastDismissedVersion = clipPairSafe(version, VERSION_STRING_MAX_LENGTH);
     }
     if (typeof candidate.showToolFileIcons === 'boolean') {
       result.showToolFileIcons = candidate.showToolFileIcons;
@@ -1133,8 +1133,8 @@ export const createSettingsHelpers = (dependencies) => {
           const validGroups = config.customGroups
             .filter((g) => g && typeof g.id === 'string' && typeof g.label === 'string')
             .map((g) => ({
-              id: g.id.slice(0, 64),
-              label: g.label.slice(0, 128),
+              id: clipPairSafe(g.id, 64),
+              label: clipPairSafe(g.label, 128),
               models: Array.isArray(g.models)
                 ? g.models.filter((m) => typeof m === 'string').slice(0, 500)
                 : [],
@@ -1163,7 +1163,7 @@ export const createSettingsHelpers = (dependencies) => {
           const renamed = {};
           for (const [groupId, label] of Object.entries(config.renamedGroups)) {
             if (typeof groupId === 'string' && typeof label === 'string') {
-              renamed[groupId] = label.slice(0, 128);
+              renamed[groupId] = clipPairSafe(label, 128);
             }
           }
           if (Object.keys(renamed).length > 0) {

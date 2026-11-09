@@ -92,6 +92,43 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ pwaAppName: 'a'.repeat(80) }).pwaAppName).toBe('a'.repeat(64));
   });
 
+  it('never splits a surrogate pair at the settings sanitizer clamps (oracle: astral char straddling each cap drops its high half, ASCII controls cut at exactly the cap)', () => {
+    const helpers = createTestHelpers();
+    const emoji = '\u{1F600}';
+    const clean = (value) => new TextDecoder().decode(new TextEncoder().encode(value));
+    // Fonts at 100.
+    expect(helpers.sanitizeSettingsUpdate({ customUiFont: 'a'.repeat(99) + emoji + 'tail' }).customUiFont).toBe('a'.repeat(99));
+    expect(helpers.sanitizeSettingsUpdate({ customMonoFont: 'b'.repeat(99) + emoji + 'tail' }).customMonoFont).toBe('b'.repeat(99));
+    expect(helpers.sanitizeSettingsUpdate({ customUiFont: 'a'.repeat(150) }).customUiFont).toBe('a'.repeat(100));
+    // Vim mappings at 10,000.
+    const vim = helpers.sanitizeSettingsUpdate({ fileEditorVimMappings: 'a'.repeat(9_999) + emoji + 'tail' }).fileEditorVimMappings;
+    expect(vim).toBe('a'.repeat(9_999));
+    expect(helpers.sanitizeSettingsUpdate({ fileEditorVimMappings: 'a'.repeat(12_000) }).fileEditorVimMappings).toBe('a'.repeat(10_000));
+    // Shortcut override key and value at 128.
+    const overrides = helpers.sanitizeSettingsUpdate({ shortcutOverrides: { ['k'.repeat(127) + emoji + 'tail']: 'v'.repeat(127) + emoji + 'tail' } }).shortcutOverrides;
+    expect(Object.keys(overrides)).toEqual(['k'.repeat(127)]);
+    expect(Object.values(overrides)).toEqual(['v'.repeat(127)]);
+    // Usage model groups: id at 64, label and renamed label at 128.
+    const groups = helpers.sanitizeSettingsUpdate({
+      usageModelGroups: {
+        prov: {
+          customGroups: [{ id: 'g'.repeat(63) + emoji + 'tail', label: 'l'.repeat(127) + emoji + 'tail', models: [] }],
+          renamedGroups: { gid: 'r'.repeat(127) + emoji + 'tail' },
+        },
+      },
+    }).usageModelGroups;
+    expect(groups.prov.customGroups[0].id).toBe('g'.repeat(63));
+    expect(groups.prov.customGroups[0].label).toBe('l'.repeat(127));
+    expect(groups.prov.renamedGroups.gid).toBe('r'.repeat(127));
+    // Dismissed update version at 128.
+    const version = helpers.sanitizeSettingsUpdate({ openCodeUpdateToastDismissedVersion: 'v'.repeat(127) + emoji + 'tail' }).openCodeUpdateToastDismissedVersion;
+    expect(version).toBe('v'.repeat(127));
+    // Nothing persisted ends in a lone surrogate: every value round-trips clean.
+    for (const value of [vim, version, groups.prov.customGroups[0].id, groups.prov.customGroups[0].label]) {
+      expect(clean(value)).toBe(value);
+    }
+  });
+
   it('keeps the machine of the Docker over SSH place as an SSH destination, and takes it away with an empty string', () => {
     const helpers = createTestHelpers();
     expect(helpers.sanitizeSettingsUpdate({ isolatedSpacesSshHost: ' debian-box ' })).toEqual({ isolatedSpacesSshHost: 'debian-box' });
