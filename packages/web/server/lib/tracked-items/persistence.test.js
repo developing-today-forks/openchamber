@@ -44,13 +44,12 @@ describe('tracked-items persistence', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns empty array when file is not valid JSON', async () => {
+  it('throws when the file does not parse, so the caller logs the corruption', async () => {
     const filePath = join(dataDir, 'tracked-items.json');
     await fs.writeFile(filePath, 'not valid json', 'utf8');
-    
+
     const persistence = createTrackedItemsPersistence({ dataDir, fs: fsMock });
-    const result = await persistence.load();
-    expect(result).toEqual([]);
+    await expect(persistence.load()).rejects.toThrow(/does not parse as JSON/);
   });
 
   it('uses the injected filesystem for both bounded reads and atomic writes', async () => {

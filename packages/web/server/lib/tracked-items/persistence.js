@@ -10,8 +10,10 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MiB cap
 
 /**
  * The last known state of followed items, so a restart starts from it. Only
- * a cache: a missing, non-regular, oversized or malformed file restores
- * nothing, and the next answers rebuild it. Unexpected I/O failures throw.
+ * a cache: a missing, non-regular, oversized, wrong-version or wrong-shape
+ * file restores nothing, and the next answers rebuild it. A file that does
+ * not parse as JSON throws, so the caller logs the corruption; unexpected
+ * I/O failures throw too.
  */
 export function createTrackedItemsPersistence({ dataDir, fs = fsPromises }) {
   const filePath = path.join(dataDir, FILE_NAME);
@@ -23,8 +25,11 @@ export function createTrackedItemsPersistence({ dataDir, fs = fsPromises }) {
       let parsed;
       try {
         parsed = JSON.parse(raw);
-      } catch {
-        return [];
+      } catch (error) {
+        // Unparseable is corruption, not an empty cache: throw so the
+        // restore failure reaches service.js's log, which is the only
+        // corruption signal this store has. The next save() overwrites it.
+        throw new Error(`tracked-items: ${filePath} does not parse as JSON`, { cause: error });
       }
       if (parsed?.version !== VERSION || !Array.isArray(parsed.items)) return [];
       return parsed.items.flatMap((record) => {
