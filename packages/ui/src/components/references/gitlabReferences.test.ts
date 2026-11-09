@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ChangeRequest, ChangeRequestContext, Issue, SourceControlReadContext } from '@/lib/api/types';
-import { fetchGitLabReferenceDetail, fetchGitLabReferencePage } from './gitlabReferences';
+import { fetchGitLabReferenceDetail, fetchGitLabReferencePage, pullReferenceFromChangeRequest } from './gitlabReferences';
 import { DEFAULT_REPOSITORY_FILTER } from './referencePickerItems';
 import { referenceNumberLabel, referencePickerItemKey } from './referencePickerItems';
 
@@ -202,4 +202,23 @@ describe('GitLab references', () => {
     if (page.kind !== 'page') throw new Error('expected a page');
     expect(page.items[0]?.labels).toEqual([{ name: 'bug', color: 'd73a4a' }]);
   });
+  test('a body clamp never splits a surrogate pair (oracle: astral char straddling offset 20,000 drops its high half, ASCII control cuts at exactly 20,000)', async () => {
+    const straddle = 'a'.repeat(19_999) + '\u{1F600}' + 'tail';
+    const issuePage = await fetchGitLabReferencePage(reads({ issuesList: async () => ({ items: [{ ...issue, body: straddle }], page: 1, hasMore: false }) }), context, 'issue', DEFAULT_REPOSITORY_FILTER, '', null);
+    if (issuePage.kind !== 'page') throw new Error('expected a page');
+    const issueBody = (issuePage.items[0] as { body: string; bodyTruncated: boolean }).body;
+    expect(issueBody).toBe('a'.repeat(19_999));
+    expect((issuePage.items[0] as { bodyTruncated: boolean }).bodyTruncated).toBe(true);
+    const pullBody = pullReferenceFromChangeRequest({ ...mergeRequest, body: straddle }).body;
+    expect(pullBody).toBe('a'.repeat(19_999));
+    expect(pullReferenceFromChangeRequest({ ...mergeRequest, body: straddle }).bodyTruncated).toBe(true);
+    for (const value of [issueBody, pullBody]) {
+      expect(new TextDecoder().decode(new TextEncoder().encode(value))).not.toContain('\uFFFD');
+    }
+    // ASCII control still cuts at exactly the limit.
+    const ascii = pullReferenceFromChangeRequest({ ...mergeRequest, body: 'a'.repeat(25_000) });
+    expect(ascii.body).toBe('a'.repeat(20_000));
+    expect(ascii.bodyTruncated).toBe(true);
+  });
 });
+
