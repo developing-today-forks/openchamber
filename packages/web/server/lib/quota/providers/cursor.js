@@ -386,18 +386,18 @@ export const isConfigured = () => {
 };
 
 export const fetchQuota = async () => {
-  const accessToken = await resolveAccessToken();
-  if (!accessToken) {
-    return buildResult({
-      providerId,
-      providerName,
-      ok: false,
-      configured: false,
-      error: 'Not configured'
-    });
-  }
-
   try {
+    const accessToken = await resolveAccessToken();
+    if (!accessToken) {
+      return buildResult({
+        providerId,
+        providerName,
+        ok: false,
+        configured: false,
+        error: 'Not configured'
+      });
+    }
+
     const [usage, plan, credits] = await Promise.all([
       connectPost(USAGE_URL, accessToken),
       connectPost(PLAN_URL, accessToken).catch(() => null),
