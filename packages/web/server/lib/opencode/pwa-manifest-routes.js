@@ -3,6 +3,15 @@ import { readBoundedResponseJson } from '../shared/response-body.js';
 const DEFAULT_PWA_APP_NAME = 'OpenChamber';
 // 16 MiB matches the session-list proxy cap.
 const SESSION_LIST_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+// A plain slice at a cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that encodes as U+FFFD in the served
+// manifest; move a cut that lands inside a pair back to the pair boundary.
+const clipPairSafe = (text, limit) => {
+  if (text.length <= limit) return text;
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
 const mapPwaOrientationToManifest = (value) => {
   if (value === 'portrait') {
     return 'portrait-primary';
@@ -45,7 +54,7 @@ export const registerPwaManifestRoute = (app, dependencies) => {
 
     const normalizeShortcutTitle = (value, fallback) => {
       const normalized = normalizePwaAppName(value, fallback);
-      return normalized.length > 48 ? normalized.slice(0, 48) : normalized;
+      return clipPairSafe(normalized, 48);
     };
 
     const toFiniteNumber = (value) => {
@@ -169,7 +178,7 @@ export const registerPwaManifestRoute = (app, dependencies) => {
 
       const shortcuts = rows.slice(0, 3).map((session) => ({
         name: session.title,
-        short_name: session.title.length > 32 ? session.title.slice(0, 32) : session.title,
+        short_name: clipPairSafe(session.title, 32),
         description: 'Open recent session',
         url: `/?session=${encodeURIComponent(session.id)}`,
         icons: [{ src: '/pwa-192.png', sizes: '192x192', type: 'image/png' }],
@@ -220,7 +229,7 @@ export const registerPwaManifestRoute = (app, dependencies) => {
       hasOrientationOverride ? queryOverrideOrientation : storedOrientation
     );
 
-    const shortName = appName.length > 30 ? appName.slice(0, 30) : appName;
+    const shortName = clipPairSafe(appName, 30);
     // Session titles are private: only a caller /api would accept gets them.
     const recentSessionShortcuts = await isRequestAuthorized(req, res).catch(() => false)
       ? await getRecentPwaSessionShortcuts()

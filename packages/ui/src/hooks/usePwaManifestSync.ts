@@ -24,7 +24,12 @@ const normalizeRecentTitle = (value: string | undefined, fallback: string): stri
   if (!normalized) {
     return fallback;
   }
-  return normalized.slice(0, 48);
+  // Pair-safe cap, matching the server manifest route: a plain slice at
+  // 48 can land between the halves of a surrogate pair and build the
+  // shortcuts signature from a title ending in a lone high surrogate.
+  const clipped = normalized.slice(0, 48);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
 };
 
 const buildRecentShortcuts = (
