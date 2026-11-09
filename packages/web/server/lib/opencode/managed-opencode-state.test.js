@@ -340,6 +340,20 @@ describe('managed OpenCode log cursor', () => {
   it('returns an empty tail for a missing log', () => {
     expect(readLogTail(logPath, 0, 16)).toBe('');
   });
+
+  it('aligns the tail start to a UTF-8 boundary when the cut lands inside a character (#2033)', () => {
+    // 100 ASCII bytes, the 3-byte euro sign, then 62 ASCII bytes: a
+    // 64-byte tail starts on the euro sign's second byte.
+    fs.writeFileSync(logPath, 'a'.repeat(100) + String.fromCharCode(0x20ac) + 'b'.repeat(62));
+    const tail = readLogTail(logPath, 0, 64);
+    expect(tail).toBe('b'.repeat(62));
+    expect(tail).not.toContain(String.fromCharCode(0xfffd));
+  });
+
+  it('keeps a character whole when the tail start lands exactly on its lead byte (#2033)', () => {
+    fs.writeFileSync(logPath, 'a'.repeat(100) + String.fromCharCode(0x20ac) + 'b'.repeat(61));
+    expect(readLogTail(logPath, 0, 64)).toBe(String.fromCharCode(0x20ac) + 'b'.repeat(61));
+  });
 });
 
 describe('rotateManagedLogIfOversized', () => {
