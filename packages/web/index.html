@@ -26,6 +26,18 @@
       const pwaRecentSessionsStorageKey = 'openchamber.pwaRecentSessions';
       const viewportBaseContent = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
 
+      // A plain slice at a cap can land between the halves of a surrogate
+      // pair, leaving a lone high surrogate that encodes as U+FFFD in the
+      // serialized manifest; move a cut inside a pair back to its boundary.
+      const clipPairSafe = (text, limit) => {
+        if (text.length <= limit) {
+          return text;
+        }
+        const clipped = text.slice(0, limit);
+        const last = clipped.charCodeAt(clipped.length - 1);
+        return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+      };
+
       const normalizePwaName = (value, fallback) => {
         if (typeof value !== 'string') {
           return fallback;
@@ -34,14 +46,14 @@
         if (!normalized) {
           return fallback;
         }
-        return normalized.slice(0, 64);
+        return clipPairSafe(normalized, 64);
       };
 
       const truncate = (value, maxLength) => {
         if (typeof value !== 'string') {
           return '';
         }
-        return value.length > maxLength ? value.slice(0, maxLength) : value;
+        return clipPairSafe(value, maxLength);
       };
 
       const normalizePwaOrientation = (value, fallback = 'system') => {
