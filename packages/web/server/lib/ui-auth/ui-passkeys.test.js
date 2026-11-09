@@ -1,9 +1,28 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, mock } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { createUiPasskeys } from './ui-passkeys.js';
+
+// Registration verification runs through a stubbed WebAuthn server so the
+// stored label can be checked end to end without a real authenticator.
+mock.module('@simplewebauthn/server', () => ({
+  generateRegistrationOptions: async () => ({ challenge: 'registration-challenge' }),
+  verifyRegistrationResponse: async () => ({
+    verified: true,
+    registrationInfo: {
+      credential: {
+        id: 'credential-registered',
+        publicKey: new Uint8Array([1, 2, 3]),
+        counter: 0,
+        transports: [],
+      },
+      credentialDeviceType: 'singleDevice',
+      credentialBackedUp: false,
+    },
+  }),
+}));
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ui-passkeys-test-'));
 
@@ -293,5 +312,59 @@ describe('ui-passkeys store durability', () => {
     }
     expect(siblingsMatching(storeFile, '.tmp-')).toEqual([]);
     expect(siblingsMatching(storeFile, '.corrupt-')).toEqual([]);
+  });
+});
+
+describe('ui-passkeys surrogate-pair clamp (#2012)', () => {
+  // 119 ASCII units, then an emoji (two code units) straddling offset 120.
+  const straddlingLabel = `${'d'.repeat(119)}\u{1F600}x`;
+
+  it('caps a renamed label at the surrogate pair boundary without a lone surrogate', () => {
+    const storeFile = createStoreFile([passkey()]);
+    const controller = createController(storeFile);
+
+    const result = controller.renamePasskey(requestFor(), 'credential-1', straddlingLabel);
+
+    expect(result.passkey.customLabel).toBe('d'.repeat(119));
+    expect(result.passkey.customLabel.isWellFormed()).toBe(true);
+    expect(Buffer.from(result.passkey.customLabel, 'utf8').toString('utf8')).toBe(result.passkey.customLabel);
+    expect(readStoredPasskey(storeFile).customLabel).toBe('d'.repeat(119));
+    // JSON persists a lone high surrogate as the \ud83d escape; none may survive.
+    expect(fs.readFileSync(storeFile, 'utf8')).not.toContain('\\ud83d');
+  });
+
+  it('still cuts an ASCII label at exactly 120 characters', () => {
+    const storeFile = createStoreFile([passkey()]);
+    const controller = createController(storeFile);
+
+    const result = controller.renamePasskey(requestFor(), 'credential-1', 'a'.repeat(130));
+
+    expect(result.passkey.customLabel).toBe('a'.repeat(120));
+    expect(result.passkey.customLabel.length).toBe(120);
+  });
+
+  it('caps a registration label at the surrogate pair boundary', async () => {
+    const storeFile = createStoreFile([]);
+    const controller = createController(storeFile);
+
+    const { requestId } = await controller.beginRegistration(requestFor(), { label: straddlingLabel });
+    await controller.finishRegistration({
+      requestId,
+      response: { id: 'credential-registered' },
+    });
+
+    const stored = readStoredPasskey(storeFile);
+    expect(stored.label).toBe('d'.repeat(119));
+    expect(stored.label.isWellFormed()).toBe(true);
+    expect(fs.readFileSync(storeFile, 'utf8')).not.toContain('\\ud83d');
+  });
+
+  it('applies the pair-safe clamp when re-normalizing a stored label on read', () => {
+    // Older/other writers could leave 121+ units with the pair straddling 120.
+    const storeFile = createStoreFile([passkey({ label: `${'d'.repeat(119)}\uD83Dx` })]);
+    const [listed] = createController(storeFile).listPasskeys(requestFor());
+
+    expect(listed.label).toBe('d'.repeat(119));
+    expect(listed.label.isWellFormed()).toBe(true);
   });
 });
