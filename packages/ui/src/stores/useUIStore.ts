@@ -229,6 +229,17 @@ const CONTEXT_PANEL_MAX_PERSISTED_WIDTH = 10000;
 /** Per surface, not per panel: see clampContextPanelTabs. */
 const CONTEXT_PANEL_MAX_TABS = 12;
 const CONTEXT_PANEL_MAX_LABEL_LENGTH = 120;
+
+// A plain slice at a cap can land between the halves of a surrogate pair
+// and persist a value whose last code unit is a lone high surrogate
+// (U+FFFD once encoded); drop the partial character so the stored value
+// ends on a pair boundary. Same pattern as the PWA clips (#2029/#2031)
+// and the server settings-helpers clips (#2028).
+const clipPairSafe = (text: string, limit: number): string => {
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
 const LEFT_SIDEBAR_DEFAULT_WIDTH = 280;
 /** Separates browser tabs opened in the same millisecond. */
 let browserTabSequence = 0;
@@ -323,7 +334,7 @@ const normalizeContextTabLabel = (value: string | null | undefined): string | nu
   }
 
   return trimmed.length > CONTEXT_PANEL_MAX_LABEL_LENGTH
-    ? trimmed.slice(0, CONTEXT_PANEL_MAX_LABEL_LENGTH)
+    ? clipPairSafe(trimmed, CONTEXT_PANEL_MAX_LABEL_LENGTH)
     : trimmed;
 };
 
@@ -2894,11 +2905,11 @@ export const useUIStore = create<UIStore>()(
         },
 
         setCustomUiFont: (family) => {
-          set({ customUiFont: family.slice(0, 100) });
+          set({ customUiFont: clipPairSafe(family, 100) });
         },
 
         setCustomMonoFont: (family) => {
-          set({ customMonoFont: family.slice(0, 100) });
+          set({ customMonoFont: clipPairSafe(family, 100) });
         },
 
         setPadding: (size) => {
@@ -3533,7 +3544,7 @@ export const useUIStore = create<UIStore>()(
 
         setFileEditorVimMappings: (value) => {
           // Same cap as the settings registry field.
-          set({ fileEditorVimMappings: value.slice(0, 10_000) });
+          set({ fileEditorVimMappings: clipPairSafe(value, 10_000) });
         },
 
         toggleExpandedInput: () => {
