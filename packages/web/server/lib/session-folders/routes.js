@@ -6,15 +6,16 @@ import { TOMBSTONE_TTL_MS, applyFolderChanges, folderChangesBodySchema } from '.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /**
- * Read cap for the stored snapshot file. The size invariant lives here:
- * every write path (POST and PATCH) refuses a snapshot whose persisted
- * form - the pretty-printed JSON writeSnapshot writes, measured exactly -
- * exceeds MAX_BODY_BYTES (4 MiB), so a stored file the writer produced
- * is always well under this cap. Twice the write cap (8 MiB) keeps
- * headroom for files written before the guards measured the persisted
- * form, while keeping one oversized file from being buffered whole -
- * and a FIFO from wedging the serialized save queue, whose reads go
- * through this cap.
+ * Read cap for the stored snapshot file, and the size invariant for the
+ * whole store: no write path may persist a snapshot whose persisted form
+ * - the pretty-printed JSON writeSnapshot writes, measured exactly -
+ * exceeds this cap, so anything the writer produced stays readable.
+ * Incoming POST bodies are additionally capped at MAX_BODY_BYTES
+ * (4 MiB), but a POST's merged snapshot and a PATCH's resulting snapshot
+ * are judged against this cap (8 MiB), the same limit for both, so a
+ * store POST legitimately wrote can always be PATCHed again. The cap
+ * also keeps one oversized file from being buffered whole - and a FIFO
+ * from wedging the serialized save queue, whose reads go through it.
  */
 export const MAX_STORED_SNAPSHOT_BYTES = 2 * MAX_BODY_BYTES;
 
@@ -311,7 +312,7 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
           // can be ~3.75x compact, so a compact check let the writer
           // produce a file over the read cap that then wedged the store
           // as malformed (#1745).
-          if (Buffer.byteLength(JSON.stringify(snapshot, null, 2), 'utf8') > MAX_BODY_BYTES) {
+          if (Buffer.byteLength(JSON.stringify(snapshot, null, 2), 'utf8') > MAX_STORED_SNAPSHOT_BYTES) {
             return res.status(413).json({ error: 'Session folders too large' });
           }
           await writeSnapshot(snapshot);
