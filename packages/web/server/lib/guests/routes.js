@@ -207,6 +207,19 @@ const declaredSettings = (guest) => {
   return new Map(fields.map((field) => [field.id, field]));
 };
 
+// A plain slice at the cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that persists to the guest auth store and
+// encodes as U+FFFD for every reader; move a cut inside a pair back to the
+// pair boundary. Mirrors clipPairSafe in client-auth/pairing.js.
+const clipPairSafe = (text, limit) => {
+  if (text.length <= limit) {
+    return text;
+  }
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
 export const registerGuestRoutes = (app, {
   openchamberDataDir,
   openchamberVersion,
@@ -448,7 +461,7 @@ export const registerGuestRoutes = (app, {
       if (!allowed.has(key) || typeof value !== 'string') {
         continue;
       }
-      settings[key] = value.trim().slice(0, 2000);
+      settings[key] = clipPairSafe(value.trim(), 2000);
     }
     const stored = await patchGuestAuth(guest.id, { settings }, authPath);
     return { status: 200, body: await toGuestAuthResponse(guest.integration, stored) };
