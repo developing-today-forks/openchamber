@@ -237,4 +237,68 @@ describe('PWA manifest route', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('never splits a surrogate pair at the manifest clamps (oracle: astral char straddling offsets 48, 32 and 30 encodes with no U+FFFD, ASCII controls cut at exactly the limit)', async () => {
+    const routes = new Map();
+    const app = { get(route, handler) { routes.set(route, handler); } };
+    const originalFetch = globalThis.fetch;
+    const emoji = '\uD83D\uDE00';
+    globalThis.fetch = async () => new Response(JSON.stringify([
+      { id: 'straddle-48', title: 'a'.repeat(47) + emoji + 't'.repeat(10), directory: '/workspace/app', time: { updated: 3 } },
+      { id: 'straddle-32', title: 'b'.repeat(31) + emoji + 'x'.repeat(20), directory: '/workspace/app', time: { updated: 2 } },
+      { id: 'ascii-long', title: 'c'.repeat(60), directory: '/workspace/app', time: { updated: 1 } },
+    ]));
+    try {
+      registerPwaManifestRoute(app, {
+        process: { platform: 'darwin' },
+        resolveProjectDirectory: async () => ({ directory: '/workspace/app' }),
+        buildOpenCodeUrl: (route) => route,
+        getOpenCodeAuthHeaders: () => ({}),
+        readSettingsFromDiskMigrated: async () => ({}),
+        normalizePwaAppName: (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback,
+        normalizePwaOrientation: (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback,
+        isRequestAuthorized: async () => true,
+      });
+      const handler = routes.get('/manifest.webmanifest');
+      const res = createResponse();
+      await handler({ query: { pwa_name: 'd'.repeat(29) + emoji + 'eeee' } }, res);
+      const manifest = JSON.parse(res.body);
+      const encoded = new TextDecoder().decode(new TextEncoder().encode(JSON.stringify(manifest)));
+      expect(encoded).not.toContain('\uFFFD');
+      // 30 cut: pair straddling offset 30 drops back to the pair boundary.
+      expect(manifest.short_name).toBe('d'.repeat(29));
+      const byUrl = new Map(manifest.shortcuts.map((shortcut) => [shortcut.url, shortcut]));
+      // 48 cut: pair straddling offset 48 drops back to the pair boundary.
+      expect(byUrl.get('/?session=straddle-48').name).toBe('a'.repeat(47));
+      // 32 cut: the 48 name is pair-intact, but short_name straddles 32.
+      expect(byUrl.get('/?session=straddle-32').name).toBe('b'.repeat(31) + emoji + 'x'.repeat(15));
+      expect(byUrl.get('/?session=straddle-32').short_name).toBe('b'.repeat(31));
+      // ASCII controls still cut at exactly the limit.
+      expect(byUrl.get('/?session=ascii-long').name).toBe('c'.repeat(48));
+      expect(byUrl.get('/?session=ascii-long').short_name).toBe('c'.repeat(32));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('cuts an ASCII manifest short_name at exactly 30 (oracle: exact-limit ASCII control)', async () => {
+    const routes = new Map();
+    const app = { get(route, handler) { routes.set(route, handler); } };
+    registerPwaManifestRoute(app, {
+      process: { platform: 'darwin' },
+      resolveProjectDirectory: async () => ({ directory: '/workspace/app' }),
+      buildOpenCodeUrl: (route) => route,
+      getOpenCodeAuthHeaders: () => ({}),
+      readSettingsFromDiskMigrated: async () => ({}),
+      normalizePwaAppName: (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback,
+      normalizePwaOrientation: (value, fallback) => typeof value === 'string' && value.trim() ? value.trim() : fallback,
+      isRequestAuthorized: async () => false,
+    });
+    const handler = routes.get('/manifest.webmanifest');
+    const res = createResponse();
+    await handler({ query: { pwa_name: 'e'.repeat(35) } }, res);
+    const manifest = JSON.parse(res.body);
+    expect(manifest.short_name).toBe('e'.repeat(30));
+  });
 });
+
