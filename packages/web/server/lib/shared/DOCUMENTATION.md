@@ -273,11 +273,14 @@ git's `readFileDiffWorkingTreeFile`, and routing's `readPlanStore`,
 Each caller maps the coded outcomes back onto its own existing contract,
 so error surfaces and missing-file behaviour are unchanged.
 
-- `readBoundedFile(filePath, maxBytes)` / `readBoundedFileSync(filePath, maxBytes)`
-  answer identically: `{ ok: true, buffer, size }` for a complete read at
+- `readBoundedFile(filePath, maxBytes, { fs } = {})` /
+  `readBoundedFileSync(filePath, maxBytes)` answer identically:
+  `{ ok: true, buffer, size }` for a complete read at
   or under the cap, or a coded refusal — `too-large` (carrying `path`,
   `size` and `limit`), `missing`, or `not-regular`. Unexpected I/O errors
-  throw; the three expected outcomes never do.
+  throw; the three expected outcomes never do. The async spelling defaults
+  to Node's `fs.promises` and accepts an injected implementation so a store
+  can use the same filesystem for its bounded read and write.
 
 The contract (rules 1–5 of #1254):
 
@@ -350,7 +353,7 @@ passkeys.
 | skills installed sources (`skills-installed-sources.json` — `skills-catalog/installed-sources.js`) | sync | none — covered-by-open-issue #1627 | split: the lenient reader reads malformed as an empty map (read-only provenance badge); the strict for-update reader is three-state in place — missing → empty, malformed → coded `MALFORMED` throw (#936) | covered-by-open-issue (#1627, bound) |
 | skills disk cache (`skills-catalog/disk-cache.js` `readDiskCache`) | sync | none — covered-by-open-issue #1627 | cache semantics: missing / unreadable / malformed → null (a cache miss) | covered-by-open-issue (#1627, bound); disposition excepted-with-reason (cache) |
 | space records (`spaces/records/<id>.json` — `spaces/space-records.js` `read`) | sync | none — covered-by-open-issue #1628 | three-state by status: `missing` / `ok` / `unreadable`; an update refuses to write over an unreadable record; unreadable grants/setup fragments are dropped with a warning | covered-by-open-issue (#1628, bound) |
-| tracked items (`tracked-items.json` — `tracked-items/persistence.js` `load`) | async | none — covered-by-open-issue #1662 | cache restore: missing → [], wrong version/shape → [], a parse error throws; the file is a rebuildable cache, never the only copy | covered-by-open-issue (#1662, bound) |
+| tracked items (`tracked-items.json` — `tracked-items/persistence.js` `load`) | async | bound-complete (#1662, closed; PR #1837): handle-judged `readBoundedFile`, 8 MiB cap | cache restore: missing / non-regular / over-cap / wrong version / wrong shape → []; a file that does not parse as JSON throws and the restore failure is logged (the next save overwrites it); the file is a rebuildable cache, never the only copy | conforming-on-both-halves |
 | quota auth files (`quota/utils/auth.js` `readJsonFile` and the `resolveConfigApiKey` `{file:}` read) | sync | bound-complete (#1645): handle-judged `readBoundedFileSync`, 1 MiB cap for the JSON credential/accounts files and 64 KiB for a `{file:}` apiKey target, caps enforced during the read, `O_NONBLOCK` so a FIFO is refused promptly | read-as-empty: any failure → null (read-only lookup of credential files the server never writes); over-cap / non-regular take the same null answer | conforming-on-both-halves |
 | OpenCode service env (`service.json` — `environment/opencode-service-env.js` `readOpenCodeServiceEnv`) | sync | none — covered-by-open-issue #1636 | read-as-empty: any failure → {} (the OpenCode CLI's file, read-only) | covered-by-open-issue (#1636, bound) |
 | environment store (`environment.json` — `environment/store.js`) | sync | conforming: `readBoundedFileSync`, 64 MiB cap derived from the write-side clamps at the read site (#1609, closed) | private three-state in place: a file that cannot be read or parsed is an error, never an empty store | conforming-on-both-halves |
