@@ -116,10 +116,18 @@ const MANAGED_STDERR_TAIL_MAX_BYTES = 32 * 1024;
 const MANAGED_LOG_POLL_MS = 100;
 const HEALTH_FAILURE_DETAIL_MAX_LENGTH = 256;
 
-const getBoundedTextTail = (value, maxBytes) => {
+export const getBoundedTextTail = (value, maxBytes) => {
   const buffer = Buffer.from(String(value ?? ''));
   if (buffer.byteLength <= maxBytes) return buffer.toString();
-  return buffer.subarray(buffer.byteLength - maxBytes).toString();
+  const tail = buffer.subarray(buffer.byteLength - maxBytes);
+  // Align the cut to a UTF-8 boundary (#2033): the raw byte cut can
+  // land inside a multi-byte character, whose continuation bytes would
+  // decode to U+FFFD at the head of the tail. Drop leading
+  // continuation bytes (the guests/clone.js pattern), losing at most
+  // the one straddling character.
+  let start = 0;
+  while (start < tail.length && (tail[start] & 0xc0) === 0x80) start++;
+  return tail.subarray(start).toString();
 };
 
 const sanitizeDiagnosticText = (value) => String(value ?? '')

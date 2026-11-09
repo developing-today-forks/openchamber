@@ -201,5 +201,33 @@ export const readLogTail = (logPath, offset, maxBytes) => {
   } catch {
     return '';
   }
-  return readLogSince(logPath, Math.max(offset, size - maxBytes)).text;
+  let start = Math.max(offset, size - maxBytes);
+  if (start > 0) {
+    // Align the tail start to a UTF-8 boundary (#2033): the
+    // size - maxBytes jump can land inside a multi-byte character,
+    // whose continuation bytes would decode to U+FFFD at the head of
+    // the diagnostic tail. Peek at the bytes at the start and advance
+    // past leading continuation bytes (at most 3 — a valid sequence
+    // has no more), so the tail loses at most the one straddling
+    // character. This only chooses readLogTail's own start;
+    // readLogSince's offset and trailing-hold-back contract for its
+    // streaming callers is untouched. A peek failure falls through to
+    // the unaligned start: readLogSince answers '' for an
+    // unreadable or non-regular file anyway.
+    try {
+      const fd = openSync(logPath, process.platform === 'win32' ? 'r' : fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      try {
+        const peek = Buffer.alloc(3);
+        const read = readSync(fd, peek, 0, peek.length, start);
+        let skipped = 0;
+        while (skipped < read && (peek[skipped] & 0xc0) === 0x80) skipped++;
+        start += skipped;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      // fall through with the unaligned start
+    }
+  }
+  return readLogSince(logPath, start).text;
 };
