@@ -6,14 +6,15 @@ import { TOMBSTONE_TTL_MS, applyFolderChanges, folderChangesBodySchema } from '.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /**
- * Read cap for the stored snapshot file. The write side refuses any
- * snapshot whose serialized form exceeds MAX_BODY_BYTES (4 MiB), but
- * writeSnapshot persists pretty-printed JSON, which is larger than the
- * compact form the POST check measures, and a stored file must stay
- * readable for everything the writer could legitimately have written.
- * Twice the write cap (8 MiB) gives that headroom while keeping one
- * oversized file from being buffered whole - and a FIFO from wedging
- * the serialized save queue, whose reads go through this cap.
+ * Read cap for the stored snapshot file. The size invariant lives here:
+ * every write path (POST and PATCH) refuses a snapshot whose persisted
+ * form - the pretty-printed JSON writeSnapshot writes, measured exactly -
+ * exceeds MAX_BODY_BYTES (4 MiB), so a stored file the writer produced
+ * is always well under this cap. Twice the write cap (8 MiB) keeps
+ * headroom for files written before the guards measured the persisted
+ * form, while keeping one oversized file from being buffered whole -
+ * and a FIFO from wedging the serialized save queue, whose reads go
+ * through this cap.
  */
 export const MAX_STORED_SNAPSHOT_BYTES = 2 * MAX_BODY_BYTES;
 
@@ -305,7 +306,12 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
         if (!current) return res.status(500).json({ error: 'Stored session folders are malformed' });
         const { snapshot, changed } = applyFolderChanges(current, parsed.data.changes, now());
         if (changed) {
-          if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > MAX_BODY_BYTES) {
+          // Measure the exact bytes writeSnapshot persists (pretty form),
+          // not the compact form: for session-id-heavy snapshots pretty
+          // can be ~3.75x compact, so a compact check let the writer
+          // produce a file over the read cap that then wedged the store
+          // as malformed (#1745).
+          if (Buffer.byteLength(JSON.stringify(snapshot, null, 2), 'utf8') > MAX_BODY_BYTES) {
             return res.status(413).json({ error: 'Session folders too large' });
           }
           await writeSnapshot(snapshot);

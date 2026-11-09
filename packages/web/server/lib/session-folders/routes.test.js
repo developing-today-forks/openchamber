@@ -443,6 +443,32 @@ describe('session folders routes', () => {
     return { post, patch, get, state, fsPromises };
   };
 
+  it('refuses a PATCH whose persisted (pretty) form would exceed the write cap, without writing (#1745)', async () => {
+    // One folder holding 1,000,000 copies of a 1-char session id: the
+    // compact serialization is just under MAX_BODY_BYTES (4 MiB), so the
+    // old compact-measuring PATCH guard let it through, while the pretty
+    // form writeSnapshot persists is ~15 MB - over the 8 MiB read cap,
+    // after which the store read back as malformed forever.
+    const heavy = {
+      ...folderPayload(20),
+      foldersMap: { '/repo': [folder('f1', 'Heavy', Array(1_000_000).fill('a'))] },
+    };
+    expect(Buffer.byteLength(JSON.stringify(heavy), 'utf8')).toBeLessThan(4 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(heavy, null, 2), 'utf8')).toBeGreaterThan(MAX_STORED_SNAPSHOT_BYTES);
+    const routes = createPersistingRoutes(heavy, { now: () => 1_000 });
+
+    const response = await routes.patch([
+      { type: 'assign', scopeKey: '/repo', folderId: 'f1', sessionIds: ['b'] },
+    ]);
+
+    expect(response.statusCode).toBe(413);
+    // Nothing was written: the seeded (compact, under the read cap)
+    // snapshot is still the stored file, and GET still serves it.
+    expect(routes.state.persisted).toBe(JSON.stringify(heavy));
+    const after = await routes.get();
+    expect(after.foldersMap['/repo'][0].sessionIds).toHaveLength(1_000_000);
+  });
+
   describe('changes', () => {
     const create = (scopeKey, id, name, parentId = null) => ({ type: 'create', scopeKey, folder: { id, name, parentId, createdAt: 1 } });
 
