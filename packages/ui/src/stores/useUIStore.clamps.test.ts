@@ -86,5 +86,7 @@ describe('useUIStore persisted clamps', () => {
     expect(encodeRoundTrip(useUIStore.getState().fileEditorVimMappings)).not.toContain('\uFFFD');
     useUIStore.getState().setFileEditorVimMappings('v'.repeat(20_000));
     expect(useUIStore.getState().fileEditorVimMappings).toHaveLength(10_000);
+    useUIStore.getState().setFileEditorVimMappings(`map ${'v'.repeat(10)} \u{1F600}`);
+    expect(useUIStore.getState().fileEditorVimMappings).toBe(`map ${'v'.repeat(10)} \u{1F600}`);
   });
 });
