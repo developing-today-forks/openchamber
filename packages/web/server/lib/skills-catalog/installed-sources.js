@@ -13,9 +13,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { asNonEmptyString } from '../shared/guards.js';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 const VERSION = 1;
 const FILE_NAME = 'skills-installed-sources.json';
+
+// Generous cap for the bounded reads below (#1627): legitimate provenance
+// is a few small fields per install, so even thousands of recorded installs
+// fit in a fraction of this; anything larger is not a file these readers
+// can trust.
+export const INSTALLED_SOURCES_MAX_BYTES = 8 * 1024 * 1024;
 
 // Resolved per call so a test can point OPENCHAMBER_DATA_DIR somewhere fresh.
 const installedSourcesPath = () => path.join(
@@ -48,9 +55,21 @@ const entriesByName = (payload) => {
  * rather than losing its state because one write was interrupted.
  */
 export const readInstalledSources = () => {
+  // Bounded read (#1627): missing, malformed, over-cap and non-regular
+  // files are all "no provenance", exactly as an unreadable file was
+  // before — but an oversized file is refused after at most cap + 1
+  // bytes, and a FIFO is refused from the opened handle instead of
+  // freezing this synchronous read (and the server event loop with it).
+  let result;
+  try {
+    result = readBoundedFileSync(installedSourcesPath(), INSTALLED_SOURCES_MAX_BYTES);
+  } catch {
+    return new Map();
+  }
+  if (!result.ok) return new Map();
   let payload;
   try {
-    payload = JSON.parse(fs.readFileSync(installedSourcesPath(), 'utf8'));
+    payload = JSON.parse(result.buffer.toString('utf8'));
   } catch {
     return new Map();
   }
@@ -77,13 +96,17 @@ const malformedFileError = () => {
 // cannot see the current contents must not replace them. The malformed file
 // is preserved in place, byte-identical, for the user to fix or move.
 const readInstalledSourcesForUpdate = () => {
-  let raw;
-  try {
-    raw = fs.readFileSync(installedSourcesPath(), 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') return new Map();
-    throw error;
+  // Bounded read (#1627) with the strict semantics the plain read had:
+  // missing is an empty map, an over-cap or non-regular file is
+  // MALFORMED (refused, and the file is left in place, never
+  // overwritten), and any other I/O failure from the reader propagates
+  // so a writer never seeds its merge from contents it could not see.
+  const result = readBoundedFileSync(installedSourcesPath(), INSTALLED_SOURCES_MAX_BYTES);
+  if (!result.ok) {
+    if (result.reason === 'missing') return new Map();
+    throw malformedFileError();
   }
+  const raw = result.buffer.toString('utf8');
   let payload;
   try {
     payload = JSON.parse(raw);
