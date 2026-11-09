@@ -10,20 +10,15 @@ const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MiB cap
 
 /**
  * The last known state of followed items, so a restart starts from it. Only
- * a cache: a missing, unreadable or malformed file restores nothing, and the
- * next answers rebuild it.
+ * a cache: a missing, non-regular, oversized or malformed file restores
+ * nothing, and the next answers rebuild it. Unexpected I/O failures throw.
  */
 export function createTrackedItemsPersistence({ dataDir, fs = fsPromises }) {
   const filePath = path.join(dataDir, FILE_NAME);
   return {
     async load() {
-      const result = await readBoundedFile(filePath, MAX_FILE_BYTES);
-      if (!result.ok) {
-        if (result.reason === 'missing' || result.reason === 'not-regular' || result.reason === 'too-large') {
-          return [];
-        }
-        throw result;
-      }
+      const result = await readBoundedFile(filePath, MAX_FILE_BYTES, { fs });
+      if (!result.ok) return [];
       const raw = result.buffer.toString('utf8');
       let parsed;
       try {

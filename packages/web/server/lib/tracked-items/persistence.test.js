@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrackedItemsPersistence } from './persistence.js';
@@ -24,9 +25,12 @@ describe('tracked-items persistence', () => {
     expect(result).toEqual([]);
   });
 
-  it.skip('returns empty array when file is a FIFO', () => {
-    // FIFO test skipped - mkfifo not available in Bun environment
-    expect(true).toBe(true);
+  it.skipIf(process.platform === 'win32')('returns empty array when file is a FIFO', async () => {
+    const filePath = join(dataDir, 'tracked-items.json');
+    execFileSync('mkfifo', [filePath]);
+
+    const persistence = createTrackedItemsPersistence({ dataDir, fs: fsMock });
+    await expect(persistence.load()).resolves.toEqual([]);
   });
 
   it('returns empty array when file is oversized (> 8 MiB)', async () => {
@@ -47,6 +51,32 @@ describe('tracked-items persistence', () => {
     const persistence = createTrackedItemsPersistence({ dataDir, fs: fsMock });
     const result = await persistence.load();
     expect(result).toEqual([]);
+  });
+
+  it('uses the injected filesystem for both bounded reads and atomic writes', async () => {
+    const filePath = join(dataDir, 'tracked-items.json');
+    const original = [
+      {
+        item: { owner: 'owner', repo: 'repo', number: 1, provider: 'github', kind: 'issue' },
+        state: { state: 'open' },
+        fetchedAt: 1,
+      },
+    ];
+    const updated = [
+      {
+        item: { owner: 'owner', repo: 'repo', number: 2, provider: 'github', kind: 'issue' },
+        state: { state: 'closed' },
+        fetchedAt: 2,
+      },
+    ];
+    const files = new Map([[filePath, JSON.stringify({ version: 1, items: original })]]);
+    const fakeFs = createFakeFs(files);
+    const persistence = createTrackedItemsPersistence({ dataDir, fs: fakeFs });
+
+    expect(await persistence.load()).toEqual(original);
+    await persistence.save(updated);
+    expect(await persistence.load()).toEqual(updated);
+    expect([...files.keys()]).toEqual([filePath]);
   });
 
   it('returns empty array when file has wrong version', async () => {
@@ -149,16 +179,34 @@ describe('tracked-items persistence', () => {
   });
 });
 
-// Helper to create a FIFO on Unix-like systems
-async function fsMkfifo(path) {
-  const { mkfifo } = await import('node:fs/promises');
-  try {
-    await mkfifo(path);
-  } catch (error) {
-    // If mkfifo is not available (e.g., on Windows), skip this test
-    if (error.code === 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') {
-      return;
-    }
-    throw error;
-  }
+function createFakeFs(files) {
+  return {
+    async open(filePath) {
+      const content = files.get(filePath);
+      if (content === undefined) {
+        const error = new Error('File not found');
+        error.code = 'ENOENT';
+        throw error;
+      }
+      const buffer = Buffer.from(content);
+      return {
+        async stat() {
+          return { isFile: () => true, size: buffer.length };
+        },
+        async read(target, offset, length, position) {
+          const chunk = buffer.subarray(position, position + length);
+          chunk.copy(target, offset);
+          return { bytesRead: chunk.length };
+        },
+        async close() {},
+      };
+    },
+    async writeFile(filePath, contents) {
+      files.set(filePath, contents);
+    },
+    async rename(from, to) {
+      files.set(to, files.get(from));
+      files.delete(from);
+    },
+  };
 }
