@@ -74,20 +74,34 @@ export type SetSessionGoalResult =
 // acceptance criteria (bottom), sacrificing the middle.
 const TRIM_MARKER = '\n\n[… objective trimmed for the auditor — the full text was delivered in the chat message …]\n\n';
 
+// A fixed-offset cut can land between the halves of a surrogate pair,
+// leaving a lone surrogate that bakes into the stored objective as U+FFFD;
+// move a boundary that lands inside a pair back to the pair boundary.
+// Mirrors the excerpt twin in messages/messageMarkdown.ts.
+const dropSplitHead = (text: string): string => {
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+};
+
+const dropSplitTail = (text: string): string => {
+  const first = text.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? text.slice(1) : text;
+};
+
 const fitObjective = async (raw: string, ignoreLimit: boolean): Promise<string> => {
   const limit = ignoreLimit ? SESSION_GOAL_CHAR_LIMIT_MAX : useUIStore.getState().sessionGoalObjectiveCharLimit;
   if (raw.length <= limit) {
     return raw;
   }
-  if (ignoreLimit) return raw.slice(0, limit);
+  if (ignoreLimit) return dropSplitHead(raw.slice(0, limit));
   const distilled = await distillGoalObjective(raw, limit);
   if (distilled) {
-    return distilled.slice(0, limit);
+    return dropSplitHead(distilled.slice(0, limit));
   }
   const half = Math.max(0, Math.floor((limit - TRIM_MARKER.length) / 2));
   const dictionary = useI18nStore.getState().dictionary;
   toast.error(formatMessage(dictionary, 'chat.goal.toast.distillFallback'));
-  return `${raw.slice(0, half)}${TRIM_MARKER}${raw.slice(-half)}`;
+  return `${dropSplitHead(raw.slice(0, half))}${TRIM_MARKER}${dropSplitTail(raw.slice(-half))}`;
 };
 
 const rewriteObjective = async (
@@ -280,7 +294,7 @@ export async function setSessionGoal(
   const recordedVersionId = fileWrite.saved ? fileWrite.versionId : null;
   // Inline (the objective file failed) the text rides every session event,
   // so it stays within the limit even when the goal ignores it.
-  const inline = objectiveFile ? '' : objective.slice(0, useUIStore.getState().sessionGoalObjectiveCharLimit);
+  const inline = objectiveFile ? '' : dropSplitHead(objective.slice(0, useUIStore.getState().sessionGoalObjectiveCharLimit));
   const now = Date.now();
   const newId = createGoalId();
   let changed = false;

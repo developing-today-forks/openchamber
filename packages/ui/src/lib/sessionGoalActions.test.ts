@@ -2,6 +2,7 @@ import { describe, expect, mock, test } from 'bun:test';
 import type { Metadata } from '@/lib/opencode/model';
 import type { SessionGoalPayload } from '@/lib/sessionGoalMetadata';
 import type { GoalObjectiveSnapshot } from './goalObjectiveFiles';
+import { SESSION_GOAL_CHAR_LIMIT_MAX } from './sessionGoalLimits';
 
 // setSessionGoal harness: the save reads and writes through the session
 // metadata store and the objective file store. Both are kept in memory here
@@ -19,6 +20,8 @@ const objectiveFileWriteRecords: boolean[] = [];
 let objectiveFileDeletes = 0;
 const objectiveVersionDeletes: string[] = [];
 let nextVersionId = 0;
+let distillResult: string | null = null;
+let objectiveFileSaveFails = false;
 
 const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
   storedMetadata = { openchamber: { goal } };
@@ -32,6 +35,8 @@ const resetGoalHarness = (goal: Metadata, fileContent: string | null) => {
   objectiveFileDeletes = 0;
   objectiveVersionDeletes.length = 0;
   nextVersionId = 0;
+  distillResult = null;
+  objectiveFileSaveFails = false;
 };
 
 mock.module('@/sync/session-actions', () => ({
@@ -85,6 +90,7 @@ mock.module('@/lib/goalObjectiveFiles', () => ({
       : { kind: 'content', content: objectiveFileContent };
   },
   writeGoalObjectiveFile: async (_sessionId: string, content: string, options?: { record?: boolean }) => {
+    if (objectiveFileSaveFails) return { saved: false, truncated: false, versionId: null };
     objectiveFileWrites.push(content);
     objectiveFileWriteRecords.push(options?.record !== false);
     objectiveFileContent = content;
@@ -102,7 +108,7 @@ mock.module('@/lib/goalObjectiveFiles', () => ({
 }));
 
 mock.module('@/lib/smallModel', () => ({
-  distillGoalObjective: async () => null,
+  distillGoalObjective: async () => distillResult,
 }));
 
 mock.module('@/lib/goalWriter', () => ({
@@ -233,32 +239,32 @@ describe('goal record for a save', () => {
   });
 });
 
+const priorText = 'Prior objective text';
+const newText = 'New objective text';
+
+const storedGoal = (overrides: Metadata = {}): Metadata => ({
+  id: 'goal-1',
+  status: 'active',
+  objective: '',
+  objectiveFile: true,
+  objectiveRevision: goalObjectiveRevision(priorText),
+  tokensUsed: 900,
+  turnsUsed: 4,
+  lastAccountedMessageID: 'msg-9',
+  updatedAt: 50,
+  ...overrides,
+});
+
+const editPayload = (): SessionGoalPayload => ({
+  ...existing,
+  objectiveRevision: goalObjectiveRevision(priorText),
+});
+
+// SAFETY: the harness only ever stores `{ openchamber: { goal } }`, so
+// this reads back the goal record the harness itself placed there.
+const storedGoalNow = (): Metadata => (storedMetadata.openchamber as Metadata).goal as Metadata;
+
 describe('session-goal save against the objective file', () => {
-  const priorText = 'Prior objective text';
-  const newText = 'New objective text';
-
-  const storedGoal = (overrides: Metadata = {}): Metadata => ({
-    id: 'goal-1',
-    status: 'active',
-    objective: '',
-    objectiveFile: true,
-    objectiveRevision: goalObjectiveRevision(priorText),
-    tokensUsed: 900,
-    turnsUsed: 4,
-    lastAccountedMessageID: 'msg-9',
-    updatedAt: 50,
-    ...overrides,
-  });
-
-  const editPayload = (): SessionGoalPayload => ({
-    ...existing,
-    objectiveRevision: goalObjectiveRevision(priorText),
-  });
-
-  // SAFETY: the harness only ever stores `{ openchamber: { goal } }`, so
-  // this reads back the goal record the harness itself placed there.
-  const storedGoalNow = (): Metadata => (storedMetadata.openchamber as Metadata).goal as Metadata;
-
   // The check completing the goal while this save is in flight aborts the
   // metadata write; before #1372 the aborted save had already overwritten
   // the objective file, leaving the surviving goal pointing at text its
@@ -353,5 +359,108 @@ describe('session-goal save against the objective file', () => {
     expect(result).toEqual({ outcome: 'changed' });
     expect(objectiveFileWrites).toEqual([]);
     expect(objectiveFileContent).toBe(priorText);
+  });
+});
+
+// #2044: every fixed-offset cut in the objective fit must move a boundary
+// that lands inside a surrogate pair back to the pair boundary, or the lone
+// surrogate bakes into the stored objective as U+FFFD. Each case straddles
+// an astral character across its cut and asserts the written text carries no
+// lone surrogate and no replacement character after a UTF-8 round-trip.
+describe('objective fitting never splits a surrogate pair', () => {
+  const UI_LIMIT = 100_000;
+  // A lone surrogate is a high surrogate not followed by a low one, or a
+  // low surrogate not preceded by a high one.
+  const hasLoneSurrogate = (text: string): boolean =>
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+  const roundTripsClean = (text: string): boolean =>
+    !new TextDecoder().decode(new TextEncoder().encode(text)).includes('�');
+
+  test('the ignoreLimit cut drops a straddling pair instead of keeping a lone high surrogate', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    // Cut at SESSION_GOAL_CHAR_LIMIT_MAX lands between the pair halves.
+    const raw = `${'a'.repeat(SESSION_GOAL_CHAR_LIMIT_MAX - 1)}😀${'b'.repeat(100)}`;
+    const result = await setSessionGoal(
+      'session-1',
+      undefined,
+      { objective: raw, ignoreLimit: true, tokenBudget: null },
+      editPayload(),
+    );
+    expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+    const written = objectiveFileWrites[0];
+    expect(written).toBe('a'.repeat(SESSION_GOAL_CHAR_LIMIT_MAX - 1));
+    expect(hasLoneSurrogate(written)).toBe(false);
+    expect(roundTripsClean(written)).toBe(true);
+  });
+
+  test('the distilled cut drops a straddling pair', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    // Distillation answers over the limit with the pair straddling the cut.
+    distillResult = `${'x'.repeat(UI_LIMIT - 1)}😀${'y'.repeat(100)}`;
+    try {
+      const result = await setSessionGoal(
+        'session-1',
+        undefined,
+        { objective: `${'z'.repeat(UI_LIMIT + 1)}`, tokenBudget: null },
+        editPayload(),
+      );
+      expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+      const written = objectiveFileWrites[0];
+      expect(written).toBe('x'.repeat(UI_LIMIT - 1));
+      expect(hasLoneSurrogate(written)).toBe(false);
+      expect(roundTripsClean(written)).toBe(true);
+    } finally {
+      distillResult = null;
+    }
+  });
+
+  test('the head/tail fallback drops both straddling halves and keeps the trim marker', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    // half is 49953 at the mocked 100000 limit: the head cut lands between
+    // the first pair's halves and the tail cut between the second pair's.
+    const raw = `${'a'.repeat(49952)}😀${'m'.repeat(200)}😀${'b'.repeat(49952)}`;
+    const result = await setSessionGoal(
+      'session-1',
+      undefined,
+      { objective: raw, tokenBudget: null },
+      editPayload(),
+    );
+    expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+    const written = objectiveFileWrites[0];
+    expect(written).toContain('objective trimmed for the auditor');
+    expect(written.length).toBeLessThanOrEqual(UI_LIMIT);
+    expect(hasLoneSurrogate(written)).toBe(false);
+    expect(roundTripsClean(written)).toBe(true);
+  });
+
+  test('the inline cut drops a straddling pair when the objective file write fails', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    objectiveFileSaveFails = true;
+    // ignoreLimit fits near a million characters; the inline cut back down
+    // to the UI limit lands between the pair halves.
+    const raw = `${'a'.repeat(UI_LIMIT - 1)}😀${'c'.repeat(SESSION_GOAL_CHAR_LIMIT_MAX)}`;
+    const result = await setSessionGoal(
+      'session-1',
+      undefined,
+      { objective: raw, ignoreLimit: true, tokenBudget: null },
+      editPayload(),
+    );
+    expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+    expect(objectiveFileWrites).toEqual([]);
+    // Exact equality with a pair-boundary string: the pre-fix cut kept the
+    // lone high surrogate in place of the emoji, so this fails without the fix.
+    expect(storedGoalNow().objective).toBe('a'.repeat(UI_LIMIT - 1));
+  });
+
+  test('under-limit and ASCII objectives pass through byte-identical', async () => {
+    resetGoalHarness(storedGoal(), priorText);
+    const result = await setSessionGoal(
+      'session-1',
+      undefined,
+      { objective: 'Plain ASCII objective under the limit', tokenBudget: null },
+      editPayload(),
+    );
+    expect(result).toEqual({ outcome: 'saved', rewrittenSpec: null });
+    expect(objectiveFileWrites).toEqual(['Plain ASCII objective under the limit']);
   });
 });
