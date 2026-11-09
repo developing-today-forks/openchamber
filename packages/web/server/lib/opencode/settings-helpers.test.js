@@ -92,6 +92,93 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ pwaAppName: 'a'.repeat(80) }).pwaAppName).toBe('a'.repeat(64));
   });
 
+  // Oracle for every clamp below: a value that round-trips through UTF-8 has no
+  // lone surrogate, because a lone surrogate encodes as U+FFFD and comes back
+  // different.
+  const utf8RoundTrips = (value) => new TextDecoder().decode(new TextEncoder().encode(value)) === value;
+  const straddle = (limit) => 'a'.repeat(limit - 1) + '😀' + 'tail';
+
+  it('never splits a surrogate pair at the custom font caps', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({
+      customUiFont: straddle(100),
+      customMonoFont: straddle(100),
+    });
+    expect(sanitized.customUiFont).toBe('a'.repeat(99));
+    expect(sanitized.customMonoFont).toBe('a'.repeat(99));
+    expect(utf8RoundTrips(sanitized.customUiFont)).toBe(true);
+    expect(utf8RoundTrips(sanitized.customMonoFont)).toBe(true);
+  });
+
+  it('never splits a surrogate pair at the vim mappings cap', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({ fileEditorVimMappings: straddle(10_000) });
+    expect(sanitized.fileEditorVimMappings).toBe('a'.repeat(9_999));
+    expect(utf8RoundTrips(sanitized.fileEditorVimMappings)).toBe(true);
+  });
+
+  it('never splits a surrogate pair at the shortcut override caps', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({
+      shortcutOverrides: { [straddle(128)]: straddle(128) },
+    });
+    const [[key, combo]] = Object.entries(sanitized.shortcutOverrides);
+    expect(key).toBe('a'.repeat(127));
+    expect(combo).toBe('a'.repeat(127));
+    expect(utf8RoundTrips(key)).toBe(true);
+    expect(utf8RoundTrips(combo)).toBe(true);
+  });
+
+  it('never splits a surrogate pair at the usage model group caps', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({
+      usageModelGroups: {
+        openai: {
+          customGroups: [{ id: straddle(64), label: straddle(128), models: [], order: 0 }],
+          renamedGroups: { g1: straddle(128) },
+        },
+      },
+    });
+    const provider = sanitized.usageModelGroups.openai;
+    expect(provider.customGroups[0].id).toBe('a'.repeat(63));
+    expect(provider.customGroups[0].label).toBe('a'.repeat(127));
+    expect(provider.renamedGroups.g1).toBe('a'.repeat(127));
+    for (const value of [provider.customGroups[0].id, provider.customGroups[0].label, provider.renamedGroups.g1]) {
+      expect(utf8RoundTrips(value)).toBe(true);
+    }
+  });
+
+  it('never splits a surrogate pair at the dismissed update version cap', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({ openCodeUpdateToastDismissedVersion: straddle(128) });
+    expect(sanitized.openCodeUpdateToastDismissedVersion).toBe('a'.repeat(127));
+    expect(utf8RoundTrips(sanitized.openCodeUpdateToastDismissedVersion)).toBe(true);
+  });
+
+  it('still cuts over-cap ASCII values at exactly the limit', () => {
+    const helpers = createTestHelpers();
+    const sanitized = helpers.sanitizeSettingsUpdate({
+      customUiFont: 'a'.repeat(120),
+      fileEditorVimMappings: 'a'.repeat(10_010),
+      shortcutOverrides: { ['a'.repeat(130)]: 'a'.repeat(130) },
+      usageModelGroups: {
+        openai: {
+          customGroups: [{ id: 'a'.repeat(70), label: 'a'.repeat(130), models: [], order: 0 }],
+          renamedGroups: { g1: 'a'.repeat(130) },
+        },
+      },
+      openCodeUpdateToastDismissedVersion: 'a'.repeat(130),
+    });
+    expect(sanitized.customUiFont).toBe('a'.repeat(100));
+    expect(sanitized.fileEditorVimMappings).toBe('a'.repeat(10_000));
+    expect(Object.keys(sanitized.shortcutOverrides)).toEqual(['a'.repeat(128)]);
+    expect(sanitized.shortcutOverrides['a'.repeat(128)]).toBe('a'.repeat(128));
+    expect(sanitized.usageModelGroups.openai.customGroups[0].id).toBe('a'.repeat(64));
+    expect(sanitized.usageModelGroups.openai.customGroups[0].label).toBe('a'.repeat(128));
+    expect(sanitized.usageModelGroups.openai.renamedGroups.g1).toBe('a'.repeat(128));
+    expect(sanitized.openCodeUpdateToastDismissedVersion).toBe('a'.repeat(128));
+  });
+
   it('keeps the machine of the Docker over SSH place as an SSH destination, and takes it away with an empty string', () => {
     const helpers = createTestHelpers();
     expect(helpers.sanitizeSettingsUpdate({ isolatedSpacesSshHost: ' debian-box ' })).toEqual({ isolatedSpacesSshHost: 'debian-box' });
