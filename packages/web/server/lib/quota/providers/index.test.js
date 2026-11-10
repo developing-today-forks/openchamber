@@ -584,3 +584,58 @@ describe('prototype provider ids', () => {
     },
   );
 });
+
+describe('opencode-go folded instance credentials (popesdrew labelled row)', () => {
+  // The popesdrew account's credential is a Console sign-in stored under its
+  // OWN instance integration (opencode-go.popesdrew), not under the shared
+  // `opencode` integration the base per-credential walk reads. The base
+  // answer must fold the instance row in, labelled, and the instance ask
+  // must answer for it instead of "Not configured".
+  const consoleInstanceRow = {
+    id: 'cred_popesdrew',
+    integrationID: 'opencode-go.popesdrew',
+    label: 'OpenCode Go (popesdrew)',
+    active: true,
+    value: {
+      type: 'oauth',
+      access: 'token-org_POPESDREW1',
+      refresh: 'rt',
+      expires: Date.now() + 3_600_000,
+      server: 'https://opencode.ai/console',
+      orgID: 'org_POPESDREW1',
+    },
+  };
+
+  beforeEach(() => {
+    setMergedConfig({
+      provider: {
+        'opencode-go.popesdrew': { instanceOf: 'opencode-go', name: 'OpenCode Go (popesdrew)' },
+      },
+    });
+    authState.rows = [consoleInstanceRow];
+  });
+
+  it('folds the instance console row into the base answer, labelled', async () => {
+    const results = await fetchQuotaForProviderInstances('opencode-go', authDeps);
+    const popesdrew = results.find((result) => result.credentialId === 'cred_popesdrew');
+    expect(popesdrew).toBeDefined();
+    expect(popesdrew.providerId).toBe('opencode-go');
+    expect(popesdrew.providerName).toBe('OpenCode Go (popesdrew)');
+    expect(popesdrew.credentialLabel).toBe('OpenCode Go (popesdrew)');
+    expect(popesdrew.ok).toBe(true);
+    expect(popesdrew.accountLabel).toBe('org_POPESDREW1');
+    expect(popesdrew.usage.windows['5h'].usedPercent).toBe(25);
+  });
+
+  it('answers the instance ask for the console row stored under the instance integration', async () => {
+    const results = await fetchQuotaForProviderInstances('opencode-go.popesdrew', authDeps);
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(true);
+    expect(results[0].credentialId).toBe('cred_popesdrew');
+  });
+
+  it('lists the instance as configured', async () => {
+    const configured = await listConfiguredQuotaProviders({}, authDeps);
+    expect(configured).toContain('opencode-go.popesdrew');
+  });
+});
