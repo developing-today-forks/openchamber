@@ -241,6 +241,22 @@ const getConsoleCredential = (auth) => {
 
 export const isConfigured = (auth) => Boolean(getConsoleCredential(auth) || getApiKey(auth));
 
+/**
+ * Row-scoped usability for the dispatcher's per-credential walks: a row is
+ * usable when it reads as a Console sign-in or carries an API key, judged on
+ * the row itself. The dispatcher's default verdict re-keys an instance row
+ * under its base provider id, where a Console sign-in stored under its own
+ * instance integration (opencode-go.popesdrew) reads as neither — the row
+ * fetch below already re-keys it under the Console integration, so the
+ * judgement must match that read or the row never gets a labelled result.
+ */
+export const isCredentialUsable = (credential) => {
+  const value = credential?.value;
+  if (!value) return false;
+  if (getConsoleCredential({ [CONSOLE_INTEGRATION_ID]: value })) return true;
+  return Boolean(asNonEmptyString(value.key));
+};
+
 export const fetchQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl = fetch } = {}) => {
   try {
     deleteLegacyOpenCodeGoCredential();

@@ -247,6 +247,12 @@ const registry = {
     // combined fetch prefers a Console sign-in over the API key, so the
     // per-credential rows keep that precedence (first active = primary).
     credentialAliases: ['opencode', 'opencode-go'],
+    isCredentialUsable: opencodeGo.isCredentialUsable,
+    // Go accounts live under instance integrations (opencode-go.drewrypope,
+    // opencode-go.popesdrew, ...): fold their rows into the base answer like
+    // Codex does, so an instance whose credential the base walk cannot see
+    // still gets a labelled row.
+    foldInstanceCredentials: true,
     fetchQuotaForCredential: opencodeGo.fetchQuotaForCredential
   },
   neuralwatt: {
@@ -397,6 +403,13 @@ const resolveInstanceProvider = (facts, instanceId) => {
 
 const isCredentialUsable = (provider, row, authKey = row.integrationID) => {
   try {
+    // A provider's row-scoped hook wins when it has one: the single-row
+    // isConfigured verdict re-keys the row under the base id, which cannot
+    // judge a row whose credential lives under another integration (a
+    // Console sign-in stored under its own instance integration).
+    if (typeof provider.isCredentialUsable === 'function') {
+      return Boolean(provider.isCredentialUsable(row));
+    }
     return Boolean(provider.isConfigured({ [authKey]: row.value }));
   } catch {
     return false;
