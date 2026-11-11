@@ -1,4 +1,5 @@
 import React from 'react';
+import { clipPwaInstallName } from '@/lib/pwa-clamps';
 import { ThemeImportButton } from './ThemeImportButton';
 import { ThemePicker } from './ThemePicker';
 import { SessionRowDisplaySettings } from './SessionRowDisplaySettings';
@@ -84,14 +85,6 @@ const THEME_MODE_OPTIONS: Array<{ value: ThemeMode; labelKey: string; descriptio
 
 const DEFAULT_PWA_INSTALL_NAME = 'OpenChamber - AI Coding Assistant';
 
-// Same pair-safe cap as the server's normalizePwaAppName: a plain slice at
-// 64 can land between the halves of a surrogate pair and hand the server a
-// name whose last code unit is a lone high surrogate (U+FFFD once encoded).
-const clipPwaInstallName = (value: string): string => {
-    const clipped = value.slice(0, 64);
-    const last = clipped.charCodeAt(clipped.length - 1);
-    return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
-};
 const PWA_ORIENTATION_OPTIONS: Option<'system' | 'portrait' | 'landscape'>[] = [
     {
         id: 'system',
