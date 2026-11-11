@@ -135,7 +135,13 @@ export function registerGitRoutes(app, {
   };
 
   const resolveDirectoryQuery = (value, preserveWhitespace = false) => {
-    const raw = Array.isArray(value) ? value[0] : value;
+    // A repeated query parameter arrives as an array and is ambiguous:
+    // never silently select its first value (issue #2121). Returning null
+    // routes it through each consumer's invalid-parameter response.
+    if (Array.isArray(value)) {
+      return null;
+    }
+    const raw = value;
     if (typeof raw !== 'string') {
       return null;
     }
@@ -314,6 +320,11 @@ export function registerGitRoutes(app, {
   });
 
   app.get('/api/git/contributor-destinations', async (req, res) => {
+    // A duplicated directory parameter is invalid input (issue #2121), not
+    // a capability gap: reject it before the unavailable-runtime response.
+    if (Array.isArray(req.query?.directory)) {
+      return res.status(400).json({ error: 'directory parameter must appear at most once', code: 'INVALID_REQUEST' });
+    }
     const directory = resolveDirectoryQuery(req.query?.directory);
     if (!directory || !(getSourceControlBinding instanceof Function)
       || !(contributorProvenance?.read instanceof Function)) {
@@ -566,7 +577,11 @@ export function registerGitRoutes(app, {
     const directories = [];
     const seen = new Set();
     for (const value of body.directories) {
-      const directory = resolveDirectoryQuery(value);
+      // Batch entries are JSON body data, not query parameters: keep the
+      // legacy one-level normalization of a nested entry here, while query
+      // parameters reject duplicates outright (issue #2121).
+      const candidate = Array.isArray(value) ? value[0] : value;
+      const directory = resolveDirectoryQuery(candidate);
       if (!directory || seen.has(directory)) continue;
       seen.add(directory);
       directories.push(directory);
@@ -1938,6 +1953,11 @@ export function registerGitRoutes(app, {
       const directory = resolveDirectoryQuery(req.query.directory);
       const hash = resolveDirectoryQuery(req.query.hash);
       if (!directory || !hash) return res.status(400).json({ error: 'directory and hash are required' });
+      // path/previousPath are optional, so a repeated value would otherwise
+      // degrade silently to an unscoped diff (issue #2121).
+      if (Array.isArray(req.query.path) || Array.isArray(req.query.previousPath)) {
+        return res.status(400).json({ error: 'path parameters must appear at most once' });
+      }
       const diff = await getCommitDiff(directory, {
         hash,
         path: resolveDirectoryQuery(req.query.path, true) ?? undefined,
