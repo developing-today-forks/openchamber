@@ -546,6 +546,20 @@ describe('session folders routes', () => {
       expect(onChanged).not.toHaveBeenCalled();
     });
 
+    it('rejects a create whose id is already used in another scope', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+      });
+
+      const response = await routes.patch([create('/worktree', 'shared', 'Collision')]);
+
+      expect(response.body.foldersMap).toEqual({ '/repo': [folder('shared', 'Keep', ['s1'])] });
+      expect(response.body.collapsedFolderIds).toEqual(['shared']);
+      expect(response.body.updatedAt).toBe(20);
+    });
+
     it('ignores a move into a folder another client deleted meanwhile', async () => {
       const routes = createPersistingRoutes({
         ...folderPayload(20),
@@ -637,6 +651,19 @@ describe('session folders routes', () => {
         ['l', 'Local', ['s2']],
       ]);
       expect(response.body.foldersMap['/wt'].map((entry) => entry.id)).toEqual(['w']);
+    });
+
+    it('rejects an imported id already used in another scope without affecting that folder', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+      });
+
+      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2'])] }));
+
+      expect(response.body.foldersMap).toEqual({ '/repo': [folder('shared', 'Keep', ['s1'])] });
+      expect(response.body.collapsedFolderIds).toEqual(['shared']);
     });
 
     it('joins a local folder with a same-name server folder instead of making a duplicate', async () => {
