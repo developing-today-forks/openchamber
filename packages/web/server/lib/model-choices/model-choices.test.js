@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +12,7 @@ import { OPENCHAMBER_AGENT_TOOL_ACTIONS } from '../openchamber-control/actions.j
 import { buildModelChoiceNotes, buildModelChoiceSuggestions, goalWriterSuggestionId } from './notes.js';
 import { registerModelChoiceRoutes } from './routes.js';
 import { createModelChoiceService } from './service.js';
-import { createModelChoiceStore, MAX_MODEL_CHOICE_EVENTS, MODEL_CHOICE_RETENTION_MS } from './store.js';
+import { createModelChoiceStore, MAX_MODEL_CHOICE_DECISIONS, MAX_MODEL_CHOICE_EVENTS, MODEL_CHOICES_MAX_BYTES, MODEL_CHOICE_RETENTION_MS } from './store.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -98,6 +99,52 @@ describe('model choice store', () => {
     const store = makeStore();
     await Promise.all([store.record(choice()), store.record(choice({ kind: 'model' }))]);
     expect((await store.snapshot()).events).toHaveLength(2);
+  });
+
+  it('refuses an over-cap file through the error path and leaves it in place (#1610)', async () => {
+    const store = makeStore();
+    await fs.writeFile(store.filePath, '{"version":1,"events":[],"decisions":[]}');
+    await fs.truncate(store.filePath, MODEL_CHOICES_MAX_BYTES + 1);
+    await expect(store.snapshot()).rejects.toMatchObject({ statusCode: 500 });
+    await expect(store.record(choice())).rejects.toMatchObject({ statusCode: 500 });
+    expect((await fs.stat(store.filePath)).size).toBe(MODEL_CHOICES_MAX_BYTES + 1);
+  });
+
+  it('reads a file at exactly the read cap unchanged (#1610)', async () => {
+    const store = makeStore();
+    const data = { version: 1, events: [stamped({}, clock)], decisions: [{ id: 'd-cap', decision: 'approved', at: clock }] };
+    const text = JSON.stringify(data);
+    await fs.writeFile(store.filePath, text + ' '.repeat(MODEL_CHOICES_MAX_BYTES - text.length));
+    expect(await store.snapshot()).toEqual({ events: data.events, decisions: data.decisions });
+  });
+
+  it('refuses a FIFO at the store path promptly and still serves the next operation (#1610)', async () => {
+    const store = makeStore();
+    execFileSync('mkfifo', [store.filePath]);
+    const settled = await Promise.race([
+      store.snapshot().then(() => 'resolved', (error) => error),
+      new Promise((resolve) => { setTimeout(() => resolve('did-not-settle'), 2_000); }),
+    ]);
+    expect(settled).toMatchObject({ statusCode: 500 });
+    await fs.rm(store.filePath, { force: true });
+    await expect(store.snapshot()).resolves.toEqual({ events: [], decisions: [] });
+  });
+
+  it('refuses a directory at the store path through the error path (#1610)', async () => {
+    const store = makeStore();
+    await fs.mkdir(store.filePath);
+    await expect(store.snapshot()).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it('keeps at most the newest 5,000 decisions (#1610)', async () => {
+    const store = makeStore();
+    const planted = Array.from({ length: MAX_MODEL_CHOICE_DECISIONS + 10 }, (_, index) => ({ id: `d-${index}`, decision: 'declined', at: clock }));
+    await fs.writeFile(store.filePath, JSON.stringify({ version: 1, events: [], decisions: planted }));
+    await store.decide('d-newest', 'approved');
+    const { decisions } = await store.snapshot();
+    expect(decisions).toHaveLength(MAX_MODEL_CHOICE_DECISIONS);
+    expect(decisions[0].id).toBe('d-11');
+    expect(decisions.at(-1)).toEqual({ id: 'd-newest', decision: 'approved', at: clock });
   });
 
   it('clears every choice and decision', async () => {
