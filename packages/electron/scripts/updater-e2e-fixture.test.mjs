@@ -51,3 +51,41 @@ test('serves only staged fixture files over loopback', async () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a registered file removed after startup returns 404 and the server keeps serving (#2078)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-updater-removed-'));
+  fs.writeFileSync(path.join(root, 'test.yml'), 'version: 1\n');
+  fs.writeFileSync(path.join(root, 'keep.yml'), 'version: 2\n');
+  const { server, url } = await createFixtureServer({ directory: root });
+  try {
+    fs.rmSync(path.join(root, 'test.yml'));
+    const removed = await fetch(`${url}test.yml`);
+    assert.equal(removed.status, 404);
+    const kept = await fetch(`${url}keep.yml`);
+    assert.equal(kept.status, 200);
+    assert.equal(await kept.text(), 'version: 2\n');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a read-stream failure aborts only that response and the server keeps serving (#2078)', { skip: process.getuid?.() === 0 && 'root ignores file permission bits' }, async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-updater-unreadable-'));
+  const artifact = path.join(root, 'OpenChamber.AppImage');
+  fs.writeFileSync(artifact, 'fixture');
+  const { server, url } = await createFixtureServer({ directory: root });
+  try {
+    // stat still succeeds but opening the file for reading fails (EACCES),
+    // which surfaces as a read-stream error after headers are sent.
+    fs.chmodSync(artifact, 0o000);
+    await assert.rejects(fetch(`${url}OpenChamber.AppImage`));
+    fs.chmodSync(artifact, 0o644);
+    const recovered = await fetch(`${url}OpenChamber.AppImage`);
+    assert.equal(recovered.status, 200);
+    assert.equal(await recovered.text(), 'fixture');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
