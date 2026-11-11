@@ -1742,12 +1742,16 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
     persistSessionMetadataPatch(sessionID, { openchamber: { goal } }, { directory }),
   setSessionAutoAccept: (sessionId, enabled, directory) => permissionAutoAcceptRuntime.setSessionPolicy(sessionId, enabled, directory),
   emitTaskRunEvent: (event) => {
+    const publicProjectId = scheduledChatsScope.toPublicID(event.projectID);
+    // Persist the run before fan-out (#2174 Gap 1): the history is keyed
+    // by the same public project id the event stream carries.
+    featureRoutesRuntime.recordScheduledTaskRun({ ...event, projectID: publicProjectId });
     for (const client of uiOpenChamberEventClients) {
       try {
         writeSseEvent(client, {
           type: 'openchamber:scheduled-task-ran',
           properties: {
-            projectId: scheduledChatsScope.toPublicID(event.projectID),
+            projectId: publicProjectId,
             taskId: event.taskID,
             ranAt: event.ranAt,
             status: event.status,

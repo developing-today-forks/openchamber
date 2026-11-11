@@ -717,6 +717,7 @@ export const createScheduledTasksRuntime = (deps) => {
       emitTaskRunEvent?.({
         projectID,
         taskID: task.id,
+        taskName: task.name,
         ranAt: startedAt,
         status: 'running',
         sessionID,
@@ -1209,6 +1210,9 @@ export const createScheduledTasksRuntime = (deps) => {
         emitTaskRunEvent?.({
           projectID,
           taskID,
+          ...((stateResult.task?.name ?? recoveredTask?.name)
+            ? { taskName: stateResult.task?.name ?? recoveredTask?.name }
+            : {}),
           ranAt: finishedAt,
           status,
           ...(sessionID ? { sessionID } : {}),
