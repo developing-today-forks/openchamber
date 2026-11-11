@@ -1,4 +1,5 @@
 import React from 'react';
+import { normalizeRecentTitle } from '@/lib/pwa-clamps';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessions } from '@/sync/sync-context';
 import { isWebRuntime } from '@/lib/desktop';
@@ -16,21 +17,6 @@ type ManifestSyncWindow = Window & {
 const MAX_RECENT_SHORTCUTS = 3;
 const MANIFEST_UPDATE_DELAY_MS = 2_000;
 
-const normalizeRecentTitle = (value: string | undefined, fallback: string): string => {
-  if (typeof value !== 'string') {
-    return fallback;
-  }
-  const normalized = value.trim().replace(/\s+/g, ' ');
-  if (!normalized) {
-    return fallback;
-  }
-  // Pair-safe cap, matching the server manifest route: a plain slice at
-  // 48 can land between the halves of a surrogate pair and build the
-  // shortcuts signature from a title ending in a lone high surrogate.
-  const clipped = normalized.slice(0, 48);
-  const last = clipped.charCodeAt(clipped.length - 1);
-  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
-};
 
 const buildRecentShortcuts = (
   sessions: Array<{ id: string; title?: string }>,
