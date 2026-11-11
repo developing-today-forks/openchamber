@@ -135,7 +135,13 @@ export function registerGitRoutes(app, {
   };
 
   const resolveDirectoryQuery = (value, preserveWhitespace = false) => {
-    const raw = Array.isArray(value) ? value[0] : value;
+    // A repeated query parameter arrives as an array and is ambiguous:
+    // never silently select its first value (issue #2121). Returning null
+    // routes it through each consumer's invalid-parameter response.
+    if (Array.isArray(value)) {
+      return null;
+    }
+    const raw = value;
     if (typeof raw !== 'string') {
       return null;
     }
@@ -314,6 +320,11 @@ export function registerGitRoutes(app, {
   });
 
   app.get('/api/git/contributor-destinations', async (req, res) => {
+    // A duplicated directory parameter is invalid input (issue #2121), not
+    // a capability gap: reject it before the unavailable-runtime response.
+    if (Array.isArray(req.query?.directory)) {
+      return res.status(400).json({ error: 'directory parameter must appear at most once', code: 'INVALID_REQUEST' });
+    }
     const directory = resolveDirectoryQuery(req.query?.directory);
     if (!directory || !(getSourceControlBinding instanceof Function)
       || !(contributorProvenance?.read instanceof Function)) {
