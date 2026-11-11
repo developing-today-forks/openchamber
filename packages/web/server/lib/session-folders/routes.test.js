@@ -673,6 +673,22 @@ describe('session folders routes', () => {
       expect(response.body.collapsedFolderIds).toEqual(['shared']);
     });
 
+    it('skips a tombstoned replacement id when remapping an imported collision', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+        deletedFolderIds: { 'shared--imported': 99_000 },
+      }, { now: () => 100_000 });
+
+      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2'])] }));
+
+      expect(response.body.foldersMap).toEqual({
+        '/repo': [folder('shared', 'Keep', ['s1'])],
+        '/worktree': [{ id: 'shared--imported-2', name: 'Collision', sessionIds: ['s2'], createdAt: 1, parentId: null }],
+      });
+    });
+
     it('joins a local folder with a same-name server folder instead of making a duplicate', async () => {
       const routes = createPersistingRoutes({
         ...folderPayload(20),
