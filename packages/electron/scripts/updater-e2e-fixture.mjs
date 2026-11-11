@@ -89,13 +89,34 @@ export const createFixtureServer = ({ directory, port = 0 }) => {
       response.writeHead(404).end();
       return;
     }
-    const stat = fs.statSync(filePath);
+    // The feed directory is snapshotted at startup, so a registered file
+    // can disappear or become unreadable before a request arrives (#2078):
+    // answer with an HTTP error instead of crashing the fixture process.
+    let stat;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (error) {
+      response.writeHead(error?.code === 'ENOENT' ? 404 : 500).end();
+      return;
+    }
+    if (!stat.isFile()) {
+      response.writeHead(404).end();
+      return;
+    }
     response.writeHead(200, {
       'Content-Length': stat.size,
       'Content-Type': filePath.endsWith('.yml') ? 'text/yaml' : 'application/octet-stream',
     });
-    if (request.method === 'HEAD') response.end();
-    else fs.createReadStream(filePath).pipe(response);
+    if (request.method === 'HEAD') {
+      response.end();
+      return;
+    }
+    const stream = fs.createReadStream(filePath);
+    // A read failure after stat (file removed mid-request, permissions,
+    // I/O error) must not take the server down either: headers are already
+    // sent, so abort this response and keep serving the rest of the feed.
+    stream.on('error', () => response.destroy());
+    stream.pipe(response);
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
