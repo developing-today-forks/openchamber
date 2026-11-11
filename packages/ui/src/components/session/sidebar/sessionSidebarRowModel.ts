@@ -1084,7 +1084,19 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     }
   }
 
-  if (rows.length === 0) {
+  // A search whose only matches sit in projects hidden from all
+  // sessions leaves just their headers behind; that is still no
+  // visible result, so the search-empty row shows alongside them.
+  const onlyHiddenProjectHeaders =
+    search &&
+    searchMatchCount === 0 &&
+    rows.length > 0 &&
+    rows.every(
+      (row) =>
+        row.kind === 'project-header' &&
+        args.hiddenFromAllProjectIds?.has(row.section.project.id),
+    );
+  if (rows.length === 0 || onlyHiddenProjectHeaders) {
     push({ kind: 'empty', key: search ? 'sidebar:search-empty' : 'sidebar:empty', estimateSize: 72, emptyKind: search ? 'search' : 'sidebar' });
   }
   const guides = computeSessionTreeGuides(rows.map(treeLevelOf));
