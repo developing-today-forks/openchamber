@@ -295,6 +295,15 @@ dataset existed (developing-today/code#2174, Gap 1).
   join key.
 - Recording never throws into the run path: a failed append is logged
   and the run proceeds. Malformed lines are skipped at load.
+- Retention bound (#2116): at most 5,000 rows are kept — the newest
+  (`MAX_RUN_HISTORY_ROWS`). An append that crosses the cap rewrites
+  the file from the retained rows, so the JSONL on disk is bounded by
+  the same cap. Startup reads at most the last 8 MiB of the file
+  (`MAX_RUN_HISTORY_LOAD_BYTES`, the tracked-items bounded-read cap),
+  dropping a partial first line, and keeps only the newest 5,000
+  valid rows — a file grown large before the bound existed still
+  loads bounded. Dedupe covers retained rows only: a duplicate
+  terminal event for a row already aged out is not recognised.
 - Read path: `GET /api/projects/:projectId/scheduled-tasks/run-history`
   with optional `taskId`, `since`, `until` (epoch ms or any
   `Date.parse`-able string), and `limit` (default 200, max 1000)

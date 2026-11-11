@@ -98,6 +98,65 @@ describe('createScheduledTaskRunHistory', () => {
     expect(history.listRuns({ projectID: 'other' })).toEqual([]);
   });
 
+  // Oracle (#2116): retention keeps exactly the newest maxRows rows —
+  // in memory, on disk, and across a reload — so neither the JSONL file
+  // nor the in-memory mirror grows with total historical runs.
+  it('retains only the newest maxRows rows, on disk and across reload', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-history-'));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, 'scheduled-task-run-history.jsonl');
+    const history = createScheduledTaskRunHistory({ filePath, logger: { warn: vi.fn() }, maxRows: 3 });
+    for (let i = 1; i <= 5; i += 1) {
+      history.recordEvent({ projectID: 'code', taskID: 'task-1', status: 'success', ranAt: i * 1000, sessionID: `ses_${i}` });
+    }
+    expect(history.listRuns({ projectID: 'code' }).map((r) => r.finishedAt)).toEqual([5000, 4000, 3000]);
+    expect(fs.readFileSync(filePath, 'utf8').trim().split('\n')).toHaveLength(3);
+
+    const reloaded = createScheduledTaskRunHistory({ filePath, logger: { warn: vi.fn() }, maxRows: 3 });
+    expect(reloaded.listRuns({ projectID: 'code' }).map((r) => r.finishedAt)).toEqual([5000, 4000, 3000]);
+  });
+
+  // Oracle (#2116): a file grown past the row cap before the bound
+  // existed loads trimmed to the newest maxRows rows.
+  it('trims an oversized existing file to the newest maxRows rows at load', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-history-'));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, 'scheduled-task-run-history.jsonl');
+    const lines = [];
+    for (let i = 1; i <= 5; i += 1) {
+      lines.push(JSON.stringify({
+        projectId: 'code', taskId: 'task-1', taskName: null, startedAt: null,
+        finishedAt: i * 1000, outcome: 'success', sessionId: `ses_${i}`, tokens: null,
+      }));
+    }
+    fs.writeFileSync(filePath, `${lines.join('\n')}\n`);
+    const history = createScheduledTaskRunHistory({ filePath, logger: { warn: vi.fn() }, maxRows: 2 });
+    expect(history.listRuns({ projectID: 'code' }).map((r) => r.finishedAt)).toEqual([5000, 4000]);
+  });
+
+  // Oracle (#2116): startup load reads only the tail of an oversized
+  // file — the partial first line of the tail window is dropped and
+  // the complete newest rows survive.
+  it('bounds the startup read to the newest bytes of an oversized file', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-history-'));
+    tempDirs.push(dir);
+    const filePath = path.join(dir, 'scheduled-task-run-history.jsonl');
+    const lines = [];
+    for (let i = 1; i <= 5; i += 1) {
+      lines.push(JSON.stringify({
+        projectId: 'code', taskId: 'task-1', taskName: null, startedAt: null,
+        finishedAt: i * 1000, outcome: 'success', sessionId: `ses_${i}`, tokens: null,
+      }));
+    }
+    const content = `${lines.join('\n')}\n`;
+    fs.writeFileSync(filePath, content);
+    const lineBytes = Buffer.byteLength(lines[0]) + 1;
+    // Tail window: the newest two full rows plus half of the third.
+    const maxLoadBytes = lineBytes * 2 + Math.floor(lineBytes / 2);
+    const history = createScheduledTaskRunHistory({ filePath, logger: { warn: vi.fn() }, maxLoadBytes });
+    expect(history.listRuns({ projectID: 'code' }).map((r) => r.finishedAt)).toEqual([5000, 4000]);
+  });
+
   it('never throws when the file cannot be written', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'run-history-'));
     tempDirs.push(dir);
