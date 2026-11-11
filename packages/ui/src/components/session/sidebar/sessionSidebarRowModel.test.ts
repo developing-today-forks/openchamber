@@ -228,6 +228,19 @@ describe('buildSessionSidebarRowModel', () => {
     expect(sessions).toEqual(['shown']);
   });
 
+  test('tree keeps the header of a project hidden from all sessions but none of its rows', () => {
+    const hidden: ProjectSection = { project: { id: 'project-b', normalizedPath: '/other' }, groups: [group([node('hidden-session')], { directory: '/other' })] };
+    const input = args([project([group([node('shown-session')])]), hidden]);
+    input.hiddenFromAllProjectIds = new Set(['project-b']);
+
+    const rows = buildSessionSidebarRowModel(input).rows;
+    const headers = rows.flatMap((row) => (row.kind === 'project-header' ? [row.section.project.id] : []));
+    const sessions = rows.flatMap((row) => (row.kind === 'session' ? [row.node.session.id] : []));
+
+    expect(headers).toEqual(['project-a', 'project-b']);
+    expect(sessions).toEqual(['shown-session']);
+  });
+
   test('timeline reveals seven sessions per project, seven more per Show more', () => {
     const input = args([project([group([])])]);
     input.viewMode = 'timeline';

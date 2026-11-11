@@ -1057,6 +1057,11 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         markSectionStart('projects', rowIndex, section.project.id);
       }
       if (projectCollapsed) continue;
+      // A project hidden from all sessions keeps its header, the way back
+      // to the project, but contributes no group or session rows, as in
+      // the List view. A single project opened on its own, or the main
+      // workspace shown alone, is an explicit focus and still lists rows.
+      if (!args.singleProjectMode && !args.showOnlyMainWorkspace && args.hiddenFromAllProjectIds?.has(section.project.id)) continue;
       for (const descriptor of descriptors) appendGroup(descriptor.group, descriptor.groupKey, descriptor.projectId, descriptor.hideGroupLabel);
     }
   };
