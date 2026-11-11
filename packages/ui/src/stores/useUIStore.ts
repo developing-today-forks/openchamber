@@ -333,9 +333,7 @@ const normalizeContextTabLabel = (value: string | null | undefined): string | nu
     return null;
   }
 
-  return trimmed.length > CONTEXT_PANEL_MAX_LABEL_LENGTH
-    ? clipPairSafe(trimmed, CONTEXT_PANEL_MAX_LABEL_LENGTH)
-    : trimmed;
+  return clipPairSafe(trimmed, CONTEXT_PANEL_MAX_LABEL_LENGTH);
 };
 
 const normalizePendingDiffScope = (value: PersistedUIFieldValue): PendingDiffScope | null => {
