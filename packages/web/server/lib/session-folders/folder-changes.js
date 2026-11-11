@@ -125,7 +125,7 @@ const importFolders = (foldersMap, deletedFolderIds, incomingMap, incomingDeleti
       // folder silently.
       let storedId = folder.id;
       if (folderIdsInOtherScopes.has(storedId)) {
-        const taken = new Set([...folderIdsInOtherScopes, ...folders.map((entry) => entry.id), ...incomingFolders.map((entry) => entry.id), ...idMap.values()]);
+        const taken = new Set([...folderIdsInOtherScopes, ...folders.map((entry) => entry.id), ...incomingFolders.map((entry) => entry.id), ...idMap.values(), ...Object.keys(deletedFolderIds)]);
         storedId = `${folder.id}--imported`;
         let suffix = 1;
         while (taken.has(storedId)) {
