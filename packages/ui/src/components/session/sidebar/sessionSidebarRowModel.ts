@@ -1057,6 +1057,11 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         markSectionStart('projects', rowIndex, section.project.id);
       }
       if (projectCollapsed) continue;
+      // A project hidden from all sessions keeps its header, the way back
+      // to the project, but contributes no group or session rows, as in
+      // the List view. A single project opened on its own, or the main
+      // workspace shown alone, is an explicit focus and still lists rows.
+      if (!args.singleProjectMode && !args.showOnlyMainWorkspace && args.hiddenFromAllProjectIds?.has(section.project.id)) continue;
       for (const descriptor of descriptors) appendGroup(descriptor.group, descriptor.groupKey, descriptor.projectId, descriptor.hideGroupLabel);
     }
   };
@@ -1079,7 +1084,19 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
     }
   }
 
-  if (rows.length === 0) {
+  // A search whose only matches sit in projects hidden from all
+  // sessions leaves just their headers behind; that is still no
+  // visible result, so the search-empty row shows alongside them.
+  const onlyHiddenProjectHeaders =
+    search &&
+    searchMatchCount === 0 &&
+    rows.length > 0 &&
+    rows.every(
+      (row) =>
+        row.kind === 'project-header' &&
+        args.hiddenFromAllProjectIds?.has(row.section.project.id),
+    );
+  if (rows.length === 0 || onlyHiddenProjectHeaders) {
     push({ kind: 'empty', key: search ? 'sidebar:search-empty' : 'sidebar:empty', estimateSize: 72, emptyKind: search ? 'search' : 'sidebar' });
   }
   const guides = computeSessionTreeGuides(rows.map(treeLevelOf));

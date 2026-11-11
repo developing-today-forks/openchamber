@@ -228,6 +228,44 @@ describe('buildSessionSidebarRowModel', () => {
     expect(sessions).toEqual(['shown']);
   });
 
+  test('tree keeps the header of a project hidden from all sessions but none of its rows', () => {
+    const hidden: ProjectSection = { project: { id: 'project-b', normalizedPath: '/other' }, groups: [group([node('hidden-session')], { directory: '/other' })] };
+    const input = args([project([group([node('shown-session')])]), hidden]);
+    input.hiddenFromAllProjectIds = new Set(['project-b']);
+
+    const rows = buildSessionSidebarRowModel(input).rows;
+    const headers = rows.flatMap((row) => (row.kind === 'project-header' ? [row.section.project.id] : []));
+    const sessions = rows.flatMap((row) => (row.kind === 'session' ? [row.node.session.id] : []));
+
+    expect(headers).toEqual(['project-a', 'project-b']);
+    expect(sessions).toEqual(['shown-session']);
+  });
+
+  test('tree search shows the empty row when only a hidden project matches', () => {
+    const hiddenNode = node('ses_hidden');
+    const hiddenGroup = group([hiddenNode], { directory: '/other' });
+    const hidden: ProjectSection = { project: { id: 'project-b', normalizedPath: '/other' }, groups: [hiddenGroup] };
+    const input = args([project([group([node('ses_shown')])]), hidden]);
+    input.mode = 'search';
+    input.normalizedQuery = 'ses_hidden';
+    input.groupSearchDataByGroup.set(hiddenGroup, {
+      filteredNodes: [hiddenNode],
+      matchedSessionCount: countSessionSearchMatches([hiddenNode], 'ses_hidden'),
+      folderNameMatchCount: 0,
+      groupMatches: false,
+      hasMatch: true,
+    });
+    input.hiddenFromAllProjectIds = new Set(['project-b']);
+
+    const model = buildSessionSidebarRowModel(input);
+    const headers = model.rows.flatMap((row) => (row.kind === 'project-header' ? [row.section.project.id] : []));
+    const empties = model.rows.flatMap((row) => (row.kind === 'empty' ? [row.emptyKind] : []));
+
+    expect(headers).toEqual(['project-b']);
+    expect(empties).toEqual(['search']);
+    expect(model.searchMatchCount).toBe(0);
+  });
+
   test('timeline reveals seven sessions per project, seven more per Show more', () => {
     const input = args([project([group([])])]);
     input.viewMode = 'timeline';
