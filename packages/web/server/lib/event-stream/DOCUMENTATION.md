@@ -59,6 +59,8 @@ This module contains the OpenChamber message-stream WebSocket protocol and runti
 
 ### Durable store
 - `createReplayStore({ filePath, ... })`: a bounded append-only store for the global stream's local frames, its head position and upstream cursor, and its retention watermarks. Without a `filePath` it keeps the same records in memory.
+- Loading accepts regular files up to 32 MiB; a larger or non-regular file, or an unexpected read failure, disables persistence for that store instance and leaves the file untouched. A missing file starts an ordinary new store.
+- A malformed tail or a final record without a newline is repaired with an atomic snapshot before another record is appended; if repair fails, the append is not persisted.
 - `resolveGlobalReplayFilePath(env, home)`: the global stream's file under `OPENCHAMBER_DATA_DIR`, or `~/.config/openchamber` when unset.
 
 ## Runtime behavior
