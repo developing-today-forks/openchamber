@@ -183,7 +183,7 @@ describe('model choice suggestions', () => {
   it('suggests the goal writer default when recent goal choices show a clear habit', () => {
     const [suggestion] = buildModelChoiceSuggestions({ events: [...habit(5), stamped({ chosen: { model: 'x/y', variant: null } })], decisions: [], settings: {} });
     expect(suggestion).toMatchObject({
-      id: 'goal-writer:anthropic/claude-opus:low',
+      id: goalWriterSuggestionId({ model: 'anthropic/claude-opus', variant: 'low' }),
       count: 5,
       total: 6,
       settings: { sessionGoalWriterModel: 'anthropic/claude-opus', sessionGoalWriterVariant: 'low' },
@@ -201,6 +201,50 @@ describe('model choice suggestions', () => {
     expect(buildModelChoiceSuggestions({ events: habit(6), decisions: [], settings })).toEqual([]);
     const decisions = [{ id: goalWriterSuggestionId({ model: 'anthropic/claude-opus', variant: 'low' }), decision: 'declined', at: 1 }];
     expect(buildModelChoiceSuggestions({ events: habit(6), decisions, settings: {} })).toEqual([]);
+  });
+
+  it('gives null and a literal default variant different suggestion ids (#2095)', () => {
+    const forNull = goalWriterSuggestionId({ model: 'p/m', variant: null });
+    const forDefault = goalWriterSuggestionId({ model: 'p/m', variant: 'default' });
+    expect(forNull).not.toBe(forDefault);
+    expect(forNull).toMatch(/^goal-writer:v2:[0-9a-f]{64}$/);
+    expect(forDefault).toMatch(/^goal-writer:v2:[0-9a-f]{64}$/);
+  });
+
+  it('does not let a decision for null suppress the literal default suggestion, or the reverse (#2095)', () => {
+    const nullHabit = habit(6, { chosen: { model: 'p/m', variant: null } });
+    const defaultHabit = habit(6, { chosen: { model: 'p/m', variant: 'default' } });
+    const decidedNull = [{ id: goalWriterSuggestionId({ model: 'p/m', variant: null }), decision: 'declined', at: 1 }];
+    const decidedDefault = [{ id: goalWriterSuggestionId({ model: 'p/m', variant: 'default' }), decision: 'declined', at: 1 }];
+    expect(buildModelChoiceSuggestions({ events: defaultHabit, decisions: decidedNull, settings: {} })).toHaveLength(1);
+    expect(buildModelChoiceSuggestions({ events: nullHabit, decisions: decidedDefault, settings: {} })).toHaveLength(1);
+    expect(buildModelChoiceSuggestions({ events: nullHabit, decisions: decidedNull, settings: {} })).toEqual([]);
+    expect(buildModelChoiceSuggestions({ events: defaultHabit, decisions: decidedDefault, settings: {} })).toEqual([]);
+  });
+
+  it('keeps delimiter-shifted selections distinct in ids and in note grouping (#2095)', () => {
+    expect(goalWriterSuggestionId({ model: 'p/m|x', variant: 'y' }))
+      .not.toBe(goalWriterSuggestionId({ model: 'p/m', variant: 'x|y' }));
+    expect(goalWriterSuggestionId({ model: 'p/m', variant: 'a:b' }))
+      .not.toBe(goalWriterSuggestionId({ model: 'p/m:a', variant: 'b' }));
+    const events = [
+      ...habit(2, { chosen: { model: 'p/a|b', variant: 'c' }, replaced: null }),
+      ...habit(2, { chosen: { model: 'p/a', variant: 'b|c' }, replaced: null }),
+    ];
+    expect(buildModelChoiceNotes(events)).toHaveLength(2);
+  });
+
+  it('never suppresses a suggestion for a legacy pre-v2 decision id (#2095)', () => {
+    const legacy = [{ id: 'goal-writer:p/m:default', decision: 'declined', at: 1 }];
+    expect(buildModelChoiceSuggestions({ events: habit(6, { chosen: { model: 'p/m', variant: null } }), decisions: legacy, settings: {} })).toHaveLength(1);
+    expect(buildModelChoiceSuggestions({ events: habit(6, { chosen: { model: 'p/m', variant: 'default' } }), decisions: legacy, settings: {} })).toHaveLength(1);
+  });
+
+  it('keeps ids fixed-size for maximum-length models and variants (#2095)', () => {
+    const model = `p/${'m'.repeat(298)}`;
+    const id = goalWriterSuggestionId({ model, variant: 'v'.repeat(64) });
+    expect(id.length).toBeLessThanOrEqual(400);
+    expect(id).not.toBe(goalWriterSuggestionId({ model: `${model}x`, variant: 'v'.repeat(64) }));
   });
 
   it('reads only goal writer choices', () => {
@@ -259,6 +303,19 @@ describe('model choice service', () => {
     const { service, persistSettings } = makeService({});
     await expect(service.decide('goal-writer:a/b:default', 'approved')).rejects.toMatchObject({ statusCode: 404 });
     expect(persistSettings).not.toHaveBeenCalled();
+  });
+
+  it('preserves legacy decision ids untouched and still offers the suggestion once (#2095)', async () => {
+    const { service } = makeService({});
+    const store = makeStore();
+    await store.decide('goal-writer:p/m:default', 'declined');
+    for (let index = 0; index < 5; index += 1) await service.record(choice({ chosen: { model: 'p/m', variant: null } }));
+    const [suggestion] = (await service.summary()).suggestions;
+    expect(suggestion.id).toMatch(/^goal-writer:v2:[0-9a-f]{64}$/);
+    await service.decide(suggestion.id, 'declined');
+    expect((await service.summary()).suggestions).toEqual([]);
+    const { decisions } = await store.snapshot();
+    expect(decisions.map((entry) => entry.id)).toEqual(['goal-writer:p/m:default', suggestion.id]);
   });
 
   it('returns the newest events first, up to the limit', async () => {

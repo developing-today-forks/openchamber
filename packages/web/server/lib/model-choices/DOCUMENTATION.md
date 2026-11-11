@@ -57,6 +57,16 @@ so nothing is recorded there and the Settings controls are hidden.
   least 70 percent, and differ from the current setting. Once approved or
   declined, a suggestion with that id is never offered again. No suggestion is
   offered while recording is off.
+- Selection and suggestion identities are versioned hashes (`v2:`) of the
+  canonical tuple `[model, variant]`, JSON-encoded with the variant kept as
+  null when unset, so default effort and a literal `default` variant are
+  different selections, delimiters inside a model or variant can never shift
+  a field boundary, and an id stays fixed-size however long the fields are
+  (#2095). Legacy decision ids written before v2 (`goal-writer:<model>:<variant>`,
+  null written as `default`) are ambiguous — their boundaries cannot reliably
+  be recovered — so they are preserved in the file untouched but never match
+  a v2 suggestion: a suggestion decided under a legacy id may be offered once
+  more, and no legacy decision is silently attributed to the wrong selection.
 
 The composer has no suggestion yet: its default lives in `defaultModel`,
 which Settings also mirrors into the live composer state, and an approved
