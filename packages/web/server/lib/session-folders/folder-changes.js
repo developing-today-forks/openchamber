@@ -100,9 +100,7 @@ const importFolders = (foldersMap, deletedFolderIds, incomingMap, incomingDeleti
     // Incoming id -> stored id, filled parents first so a child finds its parent.
     const idMap = new Map();
     const pending = incomingFolders.filter((folder) => deletedFolderIds[folder.id] === undefined
-      && folder.id && folder.name.trim()
-      // An import cannot move or overwrite a folder owned by another scope.
-      && (!folderIdsInOtherScopes.has(folder.id) || folders.some((entry) => entry.id === folder.id)));
+      && folder.id && folder.name.trim());
     const incomingIds = new Set(pending.map((folder) => folder.id));
     while (pending.length > 0) {
       // Parents first; a parent cycle, which only a corrupted copy can hold,
@@ -121,8 +119,22 @@ const importFolders = (foldersMap, deletedFolderIds, incomingMap, incomingDeleti
         if (unfiled.length > 0) folders[folders.indexOf(target)] = { ...target, sessionIds: [...target.sessionIds, ...unfiled] };
         continue;
       }
-      idMap.set(folder.id, folder.id);
-      folders.push({ id: folder.id, name: folder.name.trim(), sessionIds: unfiled, createdAt: folder.createdAt, parentId });
+      // An import cannot move or overwrite a folder owned by another scope:
+      // a colliding incoming id is remapped to a fresh unique id (children
+      // follow through idMap, chats stay filed) instead of dropping the
+      // folder silently.
+      let storedId = folder.id;
+      if (folderIdsInOtherScopes.has(storedId)) {
+        const taken = new Set([...folderIdsInOtherScopes, ...folders.map((entry) => entry.id), ...incomingFolders.map((entry) => entry.id), ...idMap.values()]);
+        storedId = `${folder.id}--imported`;
+        let suffix = 1;
+        while (taken.has(storedId)) {
+          suffix += 1;
+          storedId = `${folder.id}--imported-${suffix}`;
+        }
+      }
+      idMap.set(folder.id, storedId);
+      folders.push({ id: storedId, name: folder.name.trim(), sessionIds: unfiled, createdAt: folder.createdAt, parentId });
     }
     foldersMap[scopeKey] = folders;
   }

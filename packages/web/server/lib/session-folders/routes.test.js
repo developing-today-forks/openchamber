@@ -653,16 +653,23 @@ describe('session folders routes', () => {
       expect(response.body.foldersMap['/wt'].map((entry) => entry.id)).toEqual(['w']);
     });
 
-    it('rejects an imported id already used in another scope without affecting that folder', async () => {
+    it('remaps an imported id already used in another scope, keeping its chats and children', async () => {
       const routes = createPersistingRoutes({
         ...folderPayload(20),
         foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
         collapsedFolderIds: ['shared'],
       });
 
-      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2'])] }));
+      const child = { id: 'kid', name: 'Kid', sessionIds: ['s3'], createdAt: 1, parentId: 'shared' };
+      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2']), child] }));
 
-      expect(response.body.foldersMap).toEqual({ '/repo': [folder('shared', 'Keep', ['s1'])] });
+      expect(response.body.foldersMap).toEqual({
+        '/repo': [folder('shared', 'Keep', ['s1'])],
+        '/worktree': [
+          { id: 'shared--imported', name: 'Collision', sessionIds: ['s2'], createdAt: 1, parentId: null },
+          { id: 'kid', name: 'Kid', sessionIds: ['s3'], createdAt: 1, parentId: 'shared--imported' },
+        ],
+      });
       expect(response.body.collapsedFolderIds).toEqual(['shared']);
     });
 
