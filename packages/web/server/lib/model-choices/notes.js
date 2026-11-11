@@ -2,6 +2,7 @@
  * Notes and suggestions built from the recorded model choices. Deterministic:
  * the same events always give the same notes, and no model is asked.
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 /** The goal writer settings a suggestion compares against; anything else reads as unset. */
@@ -38,7 +39,19 @@ const modelLabel = (ref) => {
 
 const selectionLabel = ({ model, variant }) => `${variant ? `${variant} effort` : 'default effort'} on ${modelLabel(model)}`;
 
-const selectionKey = ({ model, variant }) => `${model}|${variant ?? ''}`;
+/**
+ * A selection's identity: a versioned, domain-separated hash of the canonical
+ * tuple [model, variant], JSON-encoded so null stays distinct from every
+ * string (including 'default' and '') and delimiters inside either field can
+ * never shift a boundary. Fixed-size, so identities stay far under the
+ * 400-character decision-id limit in store.js and routes.js however long
+ * the model or variant is.
+ */
+const selectionDigest = (domain, { model, variant }) => createHash("sha256")
+  .update(JSON.stringify([domain, model, variant ?? null]))
+  .digest("hex");
+
+const selectionKey = (selection) => `v2:${selectionDigest("model-choice-selection", selection)}`;
 
 /** The value that covers at least `DOMINANT_SHARE` of `values`, or null. */
 const dominant = (values) => {
@@ -108,7 +121,16 @@ export const buildModelChoiceNotes = (events) => {
   return notes.sort((a, b) => b.count - a.count).slice(0, MAX_NOTES);
 };
 
-export const goalWriterSuggestionId = ({ model, variant }) => `goal-writer:${model}:${variant ?? 'default'}`;
+/**
+ * Suggestion decision ids are v2 hashes of the same canonical tuple.
+ * Legacy migration policy (#2095): pre-v2 ids (`goal-writer:<model>:<variant>`,
+ * with null written as 'default') are fundamentally ambiguous — their field
+ * boundaries cannot reliably be recovered — so they are preserved in the
+ * store untouched but never match a v2 suggestion id. A suggestion decided
+ * under a legacy id may therefore be offered once more; no legacy decision
+ * is ever silently attributed to a different selection.
+ */
+export const goalWriterSuggestionId = (selection) => `goal-writer:v2:${selectionDigest("goal-writer-suggestion", selection)}`;
 
 /**
  * Settings changes the notes support. Only the goal writer's default model
