@@ -49,6 +49,19 @@ export const historyUrl = (value: string): string => {
  * is places, not events. A visit with no title keeps the title already known,
  * because a page often reports its address before it reports its name.
  */
+/**
+ * Trims a title and cuts it at the cap without leaving a lone high
+ * surrogate: a cut inside a surrogate pair drops the partial character,
+ * so the stored title ends on a pair boundary; the lone half would
+ * encode as U+FFFD in the persisted history store (#2050). Same guard
+ * as the pair-safe clips landed for #2028/#2035.
+ */
+const clampTitle = (value: string): string => {
+  const clipped = value.trim().slice(0, MAX_TITLE_LENGTH);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
 export const recordVisit = (
   entries: readonly BrowserHistoryEntry[],
   visit: { url: string; title?: string; at: number },
@@ -57,7 +70,7 @@ export const recordVisit = (
   if (!url) return entries as BrowserHistoryEntry[];
 
   const previous = entries.find((entry) => entry.url === url);
-  const title = String(visit.title ?? '').trim().slice(0, MAX_TITLE_LENGTH) || previous?.title || '';
+  const title = clampTitle(String(visit.title ?? '')) || previous?.title || '';
   const next: BrowserHistoryEntry = { url, title, lastVisitedAt: visit.at };
 
   return [next, ...entries.filter((entry) => entry.url !== url)].slice(0, MAX_HISTORY_ENTRIES);

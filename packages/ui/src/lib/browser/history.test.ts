@@ -50,6 +50,24 @@ describe('recording visits', () => {
     expect(entries).toEqual([]);
   });
 
+  test('never stores a title ending in a lone surrogate (#2050)', () => {
+    // The stored title is persisted, so a lone half would bake in as U+FFFD.
+    const straddle = recordVisit([], { url: 'http://localhost:3000/', title: `${'a'.repeat(199)}\u{1F600}`, at: 1 });
+    expect(straddle[0]?.title).toBe('a'.repeat(199));
+    expect(straddle[0]?.title.length).toBeLessThanOrEqual(200);
+    expect(new TextDecoder().decode(new TextEncoder().encode(straddle[0]?.title))).not.toContain('\uFFFD');
+
+    // An astral character ending exactly at the cap is kept whole.
+    const atCap = recordVisit([], { url: 'http://localhost:3000/', title: `${'a'.repeat(198)}\u{1F600}`, at: 1 });
+    expect(atCap[0]?.title).toBe(`${'a'.repeat(198)}\u{1F600}`);
+
+    // ASCII over-limit and under-limit titles are unchanged by the guard.
+    const ascii = recordVisit([], { url: 'http://localhost:3000/', title: 'b'.repeat(250), at: 1 });
+    expect(ascii[0]?.title).toBe('b'.repeat(200));
+    const short = recordVisit([], { url: 'http://localhost:3000/', title: 'Docs \u{1F600}', at: 1 });
+    expect(short[0]?.title).toBe('Docs \u{1F600}');
+  });
+
   test('drops the oldest rather than growing without end', () => {
     let entries: BrowserHistoryEntry[] = [];
     for (let index = 0; index < MAX_HISTORY_ENTRIES + 10; index += 1) {
