@@ -69,6 +69,53 @@ describe('useUIStore persisted clamps', () => {
     }
   });
 
+  test('a context-tab label at the exact limit ending in a lone high surrogate is stored pair-safe', () => {
+    useUIStore.getState().openContextPanelTab('/repo', {
+      mode: 'plugin:lone-surrogate',
+      label: `${'a'.repeat(119)}\uD83D`,
+    });
+    const tab = useUIStore.getState().contextPanelByDirectory['/repo']?.tabs.find((entry) => entry.mode === 'plugin:lone-surrogate');
+    expect(tab?.label).toBe('a'.repeat(119));
+    expect(encodeRoundTrip(tab?.label ?? '')).not.toContain('\uFFFD');
+  });
+
+  test('a persisted context tab whose label is at the exact limit ending in a lone high surrogate rehydrates pair-safe', async () => {
+    useUIStore.persist.setOptions({ storage: {
+      getItem: () => ({
+        version: 20,
+        state: {
+          contextPanelByDirectory: {
+            '/repo': {
+              isOpen: true,
+              expanded: false,
+              widthByMode: {},
+              touchedAt: 1,
+              activeTabId: 'chat:session:ses_1',
+              tabs: [{
+                id: 'chat:session:ses_1', mode: 'chat', dedupeKey: 'session:ses_1',
+                targetPath: null, targetDirectory: null,
+                label: `${'a'.repeat(119)}\uD83D`, sessionTitleFallback: null,
+                readOnly: false, stagedDiff: false, diffScope: null, touchedAt: 1,
+              }],
+            },
+          },
+        },
+      }),
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    } });
+
+    try {
+      useUIStore.setState(useUIStore.getInitialState(), true);
+      await useUIStore.persist.rehydrate();
+      const tab = useUIStore.getState().contextPanelByDirectory['/repo']?.tabs[0];
+      expect(tab?.label).toBe('a'.repeat(119));
+      expect(encodeRoundTrip(tab?.label ?? '')).not.toContain('\uFFFD');
+    } finally {
+      useUIStore.persist.setOptions(originalPersistOptions);
+    }
+  });
+
   test('custom font families straddling 100 are stored pair-safe', () => {
     useUIStore.getState().setCustomUiFont(`${'f'.repeat(99)}\u{1F600}tail`);
     expect(useUIStore.getState().customUiFont).toBe('f'.repeat(99));

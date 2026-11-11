@@ -10,6 +10,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     sanitizeProjects,
     projectConfigRuntime,
     scheduledTasksRuntime,
+    scheduledTaskRunHistory = null,
     getOpenChamberEventClients,
     writeSseEvent,
     scheduledTaskService = createScheduledTaskService(dependencies),
@@ -29,6 +30,35 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
       console.error('[ScheduledTasks] failed to load tasks:', error);
       return res.status(500).json({ error: 'Failed to load scheduled tasks' });
     }
+  });
+
+  // Per-run history (#2174 Gap 1): one durable row per completed run,
+  // newest first. since/until accept epoch milliseconds or any
+  // Date.parse-able string; limit defaults to 200 (max 1000).
+  app.get('/api/projects/:projectId/scheduled-tasks/run-history', async (req, res) => {
+    const projectID = parseProjectID(req);
+    if (!projectID) {
+      return res.status(400).json({ error: 'projectId is required' });
+    }
+    if (!scheduledTaskRunHistory) {
+      return res.status(503).json({ error: 'scheduled task run history is unavailable' });
+    }
+    const parseTime = (value) => {
+      if (typeof value !== 'string' || value.length === 0) return undefined;
+      const asNumber = Number(value);
+      if (Number.isFinite(asNumber)) return asNumber;
+      const parsed = Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    const limitRaw = typeof req.query?.limit === 'string' ? Number(req.query.limit) : undefined;
+    const runs = scheduledTaskRunHistory.listRuns({
+      projectID,
+      taskID: asNonEmptyString(req.query?.taskId) ?? undefined,
+      since: parseTime(req.query?.since),
+      until: parseTime(req.query?.until),
+      limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+    });
+    return res.json({ runs });
   });
 
   app.put('/api/projects/:projectId/scheduled-tasks', async (req, res) => {

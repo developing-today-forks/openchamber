@@ -26,7 +26,14 @@ One event per manual choice, in `<dataDir>/model-choices.json`:
 
 Message text is never recorded: the store's schema drops any field it does
 not name. The file keeps the newest 5,000 events from the last 90 days;
-older ones are dropped on every write and ignored on every read. A missing
+older ones are dropped on every write and ignored on every read. Decisions
+have no expiry (a declined suggestion stays declined), so they are bounded
+by count alone: the newest 5,000, dropped on every write the same way.
+Reads go through the shared bounded reader (`readBoundedFile`, #1610) under
+a documented 64 MiB cap with over 2x headroom over that legitimate maximum:
+an over-cap or non-regular file (a FIFO, a directory) is refused promptly
+through the same 500 error path as a malformed file, never read as empty
+history and never buffered whole. A missing
 file is an empty history. A malformed one is an error (500) and is left in
 place, because writing over it would erase it; clearing removes it.
 
@@ -50,6 +57,16 @@ so nothing is recorded there and the Settings controls are hidden.
   least 70 percent, and differ from the current setting. Once approved or
   declined, a suggestion with that id is never offered again. No suggestion is
   offered while recording is off.
+- Selection and suggestion identities are versioned hashes (`v2:`) of the
+  canonical tuple `[model, variant]`, JSON-encoded with the variant kept as
+  null when unset, so default effort and a literal `default` variant are
+  different selections, delimiters inside a model or variant can never shift
+  a field boundary, and an id stays fixed-size however long the fields are
+  (#2095). Legacy decision ids written before v2 (`goal-writer:<model>:<variant>`,
+  null written as `default`) are ambiguous — their boundaries cannot reliably
+  be recovered — so they are preserved in the file untouched but never match
+  a v2 suggestion: a suggestion decided under a legacy id may be offered once
+  more, and no legacy decision is silently attributed to the wrong selection.
 
 The composer has no suggestion yet: its default lives in `defaultModel`,
 which Settings also mirrors into the live composer state, and an approved
