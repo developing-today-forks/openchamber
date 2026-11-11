@@ -26,7 +26,14 @@ One event per manual choice, in `<dataDir>/model-choices.json`:
 
 Message text is never recorded: the store's schema drops any field it does
 not name. The file keeps the newest 5,000 events from the last 90 days;
-older ones are dropped on every write and ignored on every read. A missing
+older ones are dropped on every write and ignored on every read. Decisions
+have no expiry (a declined suggestion stays declined), so they are bounded
+by count alone: the newest 5,000, dropped on every write the same way.
+Reads go through the shared bounded reader (`readBoundedFile`, #1610) under
+a documented 64 MiB cap with over 2x headroom over that legitimate maximum:
+an over-cap or non-regular file (a FIFO, a directory) is refused promptly
+through the same 500 error path as a malformed file, never read as empty
+history and never buffered whole. A missing
 file is an empty history. A malformed one is an error (500) and is left in
 place, because writing over it would erase it; clearing removes it.
 
