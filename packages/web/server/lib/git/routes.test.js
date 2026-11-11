@@ -1332,6 +1332,24 @@ describe('batched project reads', () => {
     expect(gitLibraries.getStatus).toHaveBeenCalledWith('/repo-b');
   });
 
+  it('keeps the legacy one-level normalization of a nested batch entry', async () => {
+    // Batch directories are body data, not query parameters: a nested entry
+    // still resolves to its single directory (issue #2121 disposition).
+    gitLibraries.isGitRepository.mockResolvedValue(true);
+    const { app, getRoute } = createRouteRegistry();
+    registerGitRoutes(app);
+    const response = createMockResponse();
+
+    await getRoute('POST', '/api/git/projects')({ body: { directories: [['/repo'], '/plain'] } }, response);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({ projects: [
+      { directory: '/repo', isGitRepository: true },
+      { directory: '/plain', isGitRepository: true },
+    ] });
+    expect(gitLibraries.isGitRepository).toHaveBeenCalledWith('/repo');
+  });
+
   it('isolates a failing status to its own directory', async () => {
     gitLibraries.isGitRepository.mockResolvedValue(true);
     gitLibraries.getStatus.mockImplementation(async (directory) => {
@@ -1520,6 +1538,23 @@ describe('git route numeric parameters (#463/#464/#465)', () => {
       expect(response.body).toEqual({ diff: 'commit diff' });
       expect(gitLibraries.getCommitDiff).toHaveBeenCalledWith('/repo', expect.objectContaining({ contextLines: expected }));
     }
+  });
+
+  it('rejects repeated path parameters on GET /api/git/commit-diff instead of omitting the pathspec', async () => {
+    gitLibraries.getCommitDiff.mockResolvedValue('commit diff');
+    const { app, getRoute } = createRouteRegistry();
+    registerGitRoutes(app);
+    const handler = getRoute('GET', '/api/git/commit-diff');
+
+    const repeatedPath = createMockResponse();
+    await handler({ query: { directory: '/repo', hash: 'abc1234', path: ['a.txt', 'b.txt'] } }, repeatedPath);
+    expect(repeatedPath.statusCode).toBe(400);
+    expect(gitLibraries.getCommitDiff).not.toHaveBeenCalled();
+
+    const repeatedPrevious = createMockResponse();
+    await handler({ query: { directory: '/repo', hash: 'abc1234', previousPath: ['a.txt', 'b.txt'] } }, repeatedPrevious);
+    expect(repeatedPrevious.statusCode).toBe(400);
+    expect(gitLibraries.getCommitDiff).not.toHaveBeenCalled();
   });
 
   it('judges GET /api/git/log maxCount strictly, so a negative cannot reach git', async () => {
