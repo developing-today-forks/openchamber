@@ -48,3 +48,33 @@ describe('redactSensitiveText (#1920)', () => {
     expect(redactSensitiveText('')).toBe('');
   });
 });
+
+// #2074 oracle: the residual shapes PR #1972 missed — scheme-headed
+// assignment values and quoted JSON forms — must not leak the probe
+// secret either, and must keep the scheme word / JSON structure.
+describe('redactSensitiveText (#2074 residual shapes)', () => {
+  it.each([
+    ['authorization equals Bearer', 'authorization=Bearer SECRET123'],
+    ['authorization equals Basic', 'authorization=Basic SECRET123'],
+    ['token equals Bearer', 'token=Bearer SECRET123'],
+    ['api_key colon Bearer', 'api_key: Bearer SECRET123'],
+    ['JSON authorization Bearer', '{"authorization": "Bearer SECRET123"}'],
+    ['JSON x-api-key', '{"x-api-key": "SECRET123"}'],
+    ['quoted authorization value', 'authorization: "Bearer SECRET123"'],
+  ])('redacts the secret in: %s', (_name, input) => {
+    const output = redactSensitiveText(input);
+    expect(output).not.toContain(SECRET);
+    expect(output).toContain('[redacted]');
+  });
+
+  it('preserves the scheme word and JSON structure', () => {
+    expect(redactSensitiveText('authorization=Bearer SECRET123')).toBe('authorization=Bearer [redacted]');
+    expect(redactSensitiveText('api_key: Bearer SECRET123')).toBe('api_key: Bearer [redacted]');
+    expect(redactSensitiveText('{"authorization": "Bearer SECRET123"}')).toBe('{"authorization": "Bearer [redacted]"}');
+    expect(redactSensitiveText('{"x-api-key": "SECRET123"}')).toBe('{"x-api-key": "[redacted]"}');
+  });
+
+  it('leaves credential-free JSON byte-identical', () => {
+    expect(redactSensitiveText('{"ref": "main", "state": "open"}')).toBe('{"ref": "main", "state": "open"}');
+  });
+});
