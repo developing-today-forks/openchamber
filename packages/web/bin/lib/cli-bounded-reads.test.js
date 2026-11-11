@@ -10,7 +10,7 @@ import {
   readLastManagedLocalConfigPath,
 } from './cli-paths.js';
 import { readInstanceOptions, readPidFile } from './cli-process.js';
-import { readTailLines } from './cli-log-files.js';
+import { followFile, readTailLines } from './cli-log-files.js';
 import { ensureTunnelProfilesMigrated } from './cli-tunnel-profiles.js';
 
 const withTempDataDir = async (fn) => {
@@ -178,5 +178,68 @@ describe('readTailLines bounded tail window (#1706)', () => {
       makeFifo(logPath);
       expect(readTailLines(logPath)).toEqual([]);
     });
+  });
+});
+
+describe('followFile decode (#2059)', () => {
+  const waitForLines = async (lines, count) => {
+    const deadline = Date.now() + 5_000;
+    while (lines.length < count && Date.now() < deadline) {
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
+  };
+
+  it('delivers a character split across two polls whole, with no U+FFFD', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-cli-follow-'));
+    try {
+      const file = path.join(dir, 'follow.log');
+      fs.writeFileSync(file, '');
+      const lines = [];
+      const stop = followFile(file, (line) => lines.push(line));
+      try {
+        const emoji = Buffer.from('\u{1F600}', 'utf8');
+        fs.appendFileSync(file, Buffer.concat([Buffer.from('mood: ', 'utf8'), emoji.subarray(0, 2)]));
+        // Let at least one poll consume the split half before the rest lands.
+        await new Promise((resolve) => { setTimeout(resolve, 900); });
+        fs.appendFileSync(file, Buffer.concat([emoji.subarray(2), Buffer.from(' done\n', 'utf8')]));
+        await waitForLines(lines, 1);
+        expect(lines).toEqual(['mood: \u{1F600} done']);
+        expect(lines[0]).not.toContain('\uFFFD');
+
+        // Controls: a whole-append emoji line and a plain ASCII line are unchanged.
+        fs.appendFileSync(file, 'whole \u{1F600} append\n');
+        fs.appendFileSync(file, 'plain ascii\n');
+        await waitForLines(lines, 3);
+        expect(lines).toEqual(['mood: \u{1F600} done', 'whole \u{1F600} append', 'plain ascii']);
+      } finally {
+        stop();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not carry a split character from before a truncation into the new file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-cli-follow-'));
+    try {
+      const file = path.join(dir, 'follow.log');
+      fs.writeFileSync(file, '');
+      const lines = [];
+      const stop = followFile(file, (line) => lines.push(line));
+      try {
+        const emoji = Buffer.from('\u{1F600}', 'utf8');
+        fs.appendFileSync(file, Buffer.concat([Buffer.from('old: ', 'utf8'), emoji.subarray(0, 2)]));
+        await new Promise((resolve) => { setTimeout(resolve, 900); });
+        // Truncate and rewrite smaller: the reset must drop the held half.
+        fs.writeFileSync(file, 'new\n');
+        await waitForLines(lines, 1);
+        expect(lines).toEqual(['new']);
+        expect(lines[0]).not.toContain('\uFFFD');
+      } finally {
+        stop();
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

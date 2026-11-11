@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { StringDecoder } from 'string_decoder';
 
 const DEFAULT_TAIL_LINES = 200;
 const LOG_ROTATE_MAX_BYTES = 10 * 1024 * 1024;
@@ -100,11 +101,21 @@ function followFile(filePath, onLine) {
   }
 
   let remainder = '';
+  // Bytes, not text, cross a poll boundary: a multi-byte character split
+  // between two polls must decode whole, so the undecoded tail stays in
+  // the decoder (#2059). Decoding each poll on its own turned the split
+  // halves into U+FFFD.
+  let decoder = new StringDecoder('utf8');
   const interval = setInterval(() => {
     try {
       const stats = fs.statSync(filePath);
       if (stats.size < position) {
         position = 0;
+        // The file restarted; the decoder's held bytes and the partial
+        // line both belong to the old file and must not prefix the new
+        // one's first line.
+        decoder = new StringDecoder('utf8');
+        remainder = '';
       }
       if (stats.size === position) {
         return;
@@ -116,7 +127,7 @@ function followFile(filePath, onLine) {
         const buffer = Buffer.alloc(length);
         fs.readSync(fd, buffer, 0, length, position);
         position = stats.size;
-        const chunk = remainder + buffer.toString('utf8');
+        const chunk = remainder + decoder.write(buffer);
         const parts = chunk.split(/\r?\n/);
         remainder = parts.pop() || '';
         for (const line of parts) {
