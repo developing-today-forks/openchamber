@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { StringDecoder } from 'string_decoder';
 
 const DEFAULT_TAIL_LINES = 200;
 const LOG_ROTATE_MAX_BYTES = 10 * 1024 * 1024;
@@ -100,11 +101,19 @@ function followFile(filePath, onLine) {
   }
 
   let remainder = '';
+  // Bytes are decoded incrementally: a multi-byte character split across
+  // two polls must not be decoded in halves (each half would become
+  // U+FFFD), so the decoder holds the undecoded byte tail between polls.
+  let decoder = new StringDecoder('utf8');
   const interval = setInterval(() => {
     try {
       const stats = fs.statSync(filePath);
       if (stats.size < position) {
+        // Truncation/rotation: start over with a clean decoder and no
+        // carried line fragment — both belong to the file that is gone.
         position = 0;
+        remainder = '';
+        decoder = new StringDecoder('utf8');
       }
       if (stats.size === position) {
         return;
@@ -116,7 +125,7 @@ function followFile(filePath, onLine) {
         const buffer = Buffer.alloc(length);
         fs.readSync(fd, buffer, 0, length, position);
         position = stats.size;
-        const chunk = remainder + buffer.toString('utf8');
+        const chunk = remainder + decoder.write(buffer);
         const parts = chunk.split(/\r?\n/);
         remainder = parts.pop() || '';
         for (const line of parts) {
