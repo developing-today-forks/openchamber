@@ -61,4 +61,12 @@ describe('Git redaction (#2074 residual shapes)', () => {
     expect(redactGitText('{"authorization": "Bearer SECRET123"}')).toBe('{"authorization": "Bearer [redacted]"}');
     expect(redactGitText('{"x-api-key": "SECRET123"}')).toBe('{"x-api-key": "[redacted]"}');
   });
+
+  it('redacts single-quoted credential shapes while preserving their structure', () => {
+    expect(redactGitText("{'x-api-key': 'SECRET123'}")).toBe("{'x-api-key': '[redacted]'}");
+    expect(redactGitText("{'password': 'SECRET123'}")).toBe("{'password': '[redacted]'}");
+    expect(redactGitText("{'authorization': 'Bearer SECRET123'}")).toBe("{'authorization': 'Bearer [redacted]'}");
+    expect(redactGitText("authorization: 'Bearer SECRET123'")).toBe("authorization: 'Bearer [redacted]'");
+    expect(redactGitText("{'ref': 'main'}")).toBe("{'ref': 'main'}");
+  });
 });

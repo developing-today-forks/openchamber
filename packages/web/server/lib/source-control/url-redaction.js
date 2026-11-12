@@ -59,15 +59,15 @@ export function redactSensitiveText(value) {
     })
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/@]+)@/gi, '$1')
     .replace(/\b(authorization\s*:\s*(?:bearer|basic))\s+[^\s,;]+/gi, '$1 [redacted]')
-    // #2074: quoted values (JSON-dumped headers/config) — the quote between
+    // #2074/#2128: quoted values (JSON/Python-dumped headers/config) — the quote between
     // key and colon defeated both neighbours, and a quoted value must keep
     // its quotes: redact only the credential inside them, preserving the
     // key, separator, scheme word, and JSON structure.
-    .replace(new RegExp(`\\b(${sensitiveKeyPattern})("?\\s*[:=]\\s*")((?:bearer|basic)\\s+)?[^\\s",;]+`, 'gi'), '$1$2$3[redacted]')
+    .replace(new RegExp(`\\b(${sensitiveKeyPattern})(["']?\\s*[:=]\\s*["'])((?:bearer|basic)\\s+)?[^\\s"',;]+`, 'gi'), '$1$2$3[redacted]')
     // #2074: scheme-headed assignment values for any sensitive key
     // (authorization=Bearer <t>, api_key: Bearer <t>) — the plain assignment
     // pattern below refuses bearer/basic-headed values to protect the
     // scheme word, so redact the credential after it explicitly.
     .replace(new RegExp(`\\b(${sensitiveKeyPattern})(\\s*[:=]\\s*(?:bearer|basic))\\s+[^\\s,;]+`, 'gi'), '$1$2 [redacted]')
-    .replace(new RegExp(`\\b(${sensitiveKeyPattern})\\s*[:=]\\s*(?!(?:bearer|basic)\\s)[^\\s,;]+`, 'gi'), '$1=[redacted]');
+    .replace(new RegExp(`\\b(${sensitiveKeyPattern})\\s*[:=]\\s*(?!(?:bearer|basic)\\s)[^\\s"',;]+`, 'gi'), '$1=[redacted]');
 }
