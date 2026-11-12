@@ -1,11 +1,3 @@
-// Keep UI caps aligned with the server helpers while avoiding lone high
-// surrogates when a UTF-16 slice splits an astral character.
-export const clipPwaInstallName = (value: string): string => {
-  const clipped = value.slice(0, 64);
-  const last = clipped.charCodeAt(clipped.length - 1);
-  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
-};
-
 const clipPairSafe = (value: string, limit: number): string => {
   const clipped = value.slice(0, limit);
   const last = clipped.charCodeAt(clipped.length - 1);
@@ -35,6 +27,11 @@ const clipGraphemeSafe = (value: string, limit: number): string => {
   }
   return clipped;
 };
+
+// Keep UI caps aligned with the server helpers: the install name clamps
+// on grapheme-cluster boundaries like every other PWA name clamp (#2147),
+// so a cut never drops a combining mark or splits a joined emoji sequence.
+export const clipPwaInstallName = (value: string): string => clipGraphemeSafe(value, 64);
 
 export const normalizeRecentTitle = (value: string | undefined, fallback: string): string => {
   if (typeof value !== 'string') {

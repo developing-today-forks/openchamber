@@ -37,6 +37,31 @@ describe("PWA grapheme-safe clamps", () => {
     expect(clipped.endsWith("\u200D")).toBe(false);
   });
 
+  test("clipPwaInstallName drops a combining cluster whole instead of leaving a bare base char (oracle: UAX #29 extended grapheme clusters, cap 64)", () => {
+    // 'e' + U+0301 is one cluster of 2 UTF-16 units: 63 + 2 straddles the cap.
+    expect(clipPwaInstallName("a".repeat(63) + "e\u0301" + "tail")).toBe("a".repeat(63));
+    // Exact fit: 62 + 2 = 64 keeps the complete accented cluster.
+    expect(clipPwaInstallName("a".repeat(62) + "e\u0301")).toBe("a".repeat(62) + "e\u0301");
+  });
+
+  test("clipPwaInstallName never leaves a dangling ZWJ from a joined emoji sequence (oracle: UAX #29 extended grapheme clusters, cap 64)", () => {
+    const clipped = clipPwaInstallName("a".repeat(62) + FAMILY + "tail");
+
+    expect(clipped).toBe("a".repeat(62));
+    expect(clipped.endsWith("\u200D")).toBe(false);
+  });
+
+  test("clipPwaInstallName falls back to pair-safe slicing when Intl.Segmenter is unavailable", () => {
+    const intl = globalThis.Intl as { Segmenter?: unknown };
+    const original = intl.Segmenter;
+    delete intl.Segmenter;
+    try {
+      expect(clipPwaInstallName("a".repeat(63) + "😀tail")).toBe("a".repeat(63));
+    } finally {
+      intl.Segmenter = original;
+    }
+  });
+
   test("normalizeRecentTitle falls back to pair-safe slicing when Intl.Segmenter is unavailable", () => {
     const intl = globalThis.Intl as { Segmenter?: unknown };
     const original = intl.Segmenter;

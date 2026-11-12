@@ -87,6 +87,23 @@ describe('settings helpers', () => {
     expect(new TextDecoder().decode(new TextEncoder().encode(sanitized.pwaAppName))).toBe(sanitized.pwaAppName);
   });
 
+  it('never splits a grapheme cluster at the PWA app-name cap (oracle: UAX #29 extended grapheme clusters, cap 64)', () => {
+    const helpers = createTestHelpers();
+    // 'e' + U+0301 is one cluster of 2 code units: 63 + 2 straddles the
+    // cap, so the cluster drops whole instead of leaving a bare 'e'.
+    const combining = 'a'.repeat(63) + 'e\u0301' + 'tail';
+    expect(helpers.normalizePwaAppName(combining, undefined)).toBe('a'.repeat(63));
+    expect(helpers.sanitizeSettingsUpdate({ pwaAppName: combining }).pwaAppName).toBe('a'.repeat(63));
+    // Exact fit: 62 + 2 = 64 keeps the complete accented cluster.
+    expect(helpers.normalizePwaAppName('a'.repeat(62) + 'e\u0301', undefined)).toBe('a'.repeat(62) + 'e\u0301');
+    // A joined ZWJ family sequence straddling the cap drops whole: no
+    // lone first emoji and no dangling ZWJ.
+    const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}';
+    const joined = helpers.normalizePwaAppName('a'.repeat(62) + family + 'tail', undefined);
+    expect(joined).toBe('a'.repeat(62));
+    expect(joined.endsWith('\u200D')).toBe(false);
+  });
+
   it('still cuts an over-cap ASCII PWA app name at exactly 64 code units', () => {
     const helpers = createTestHelpers();
     expect(helpers.sanitizeSettingsUpdate({ pwaAppName: 'a'.repeat(80) }).pwaAppName).toBe('a'.repeat(64));

@@ -196,6 +196,23 @@ export const createSettingsHelpers = (dependencies) => {
     return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
   };
 
+  // Truncate on grapheme-cluster boundaries instead (#2147, mirroring
+  // pwa-manifest-routes.js): a pair-safe cut can still drop a combining
+  // mark off its base character or leave a dangling ZWJ in a joined emoji
+  // sequence, and the persisted name feeds the manifest. Where
+  // Intl.Segmenter is unavailable, fall back to the pair-safe slice.
+  const clipGraphemeSafe = (text, limit) => {
+    if (text.length <= limit) return text;
+    const Segmenter = globalThis.Intl?.Segmenter;
+    if (!Segmenter) return clipPairSafe(text, limit);
+    let clipped = '';
+    for (const { segment } of new Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+      if (clipped.length + segment.length > limit) break;
+      clipped += segment;
+    }
+    return clipped;
+  };
+
   const normalizePwaAppName = (value, fallback = '') => {
     if (typeof value !== 'string') {
       return fallback;
@@ -204,7 +221,7 @@ export const createSettingsHelpers = (dependencies) => {
     if (!normalized) {
       return fallback;
     }
-    return clipPairSafe(normalized, PWA_APP_NAME_MAX_LENGTH);
+    return clipGraphemeSafe(normalized, PWA_APP_NAME_MAX_LENGTH);
   };
 
   const normalizePwaOrientation = (value, fallback = 'system') => {
