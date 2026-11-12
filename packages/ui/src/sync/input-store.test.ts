@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test"
 import { strToU8, zipSync } from "fflate"
 import { useInputStore } from "./input-store"
+import { MAX_VSCODE_SELECTION_BYTES } from "./vscode-selection-size"
 import { getChatDraftIdentityKey } from "@/lib/chatDraftPersistence"
 
 class MockFileReader {
@@ -202,6 +203,25 @@ describe("input-store attachments", () => {
     await addPromise
 
     expect(useInputStore.getState().attachedFiles).toEqual([])
+  })
+
+  testWithMockFileReader("rejects oversized VS Code selections before reading them", async () => {
+    await useInputStore.getState().addVSCodeSelectionAttachment(
+      "/workspace/large.txt",
+      new File([new Uint8Array(MAX_VSCODE_SELECTION_BYTES + 1)], "large.txt", { type: "text/plain" })
+    )
+
+    expect(pendingReaders).toHaveLength(0)
+    expect(useInputStore.getState().attachedFiles).toEqual([])
+  })
+
+  testWithMockFileReader("accepts a VS Code selection exactly at the byte limit", async () => {
+    const file = new File([new Uint8Array(MAX_VSCODE_SELECTION_BYTES)], "selection.txt", { type: "text/plain" })
+    const addPromise = useInputStore.getState().addVSCodeSelectionAttachment("/workspace/selection.txt", file)
+    expect(pendingReaders).toHaveLength(1)
+    resolveReader(pendingReaders[0], "data:text/plain;base64,AA==")
+    await addPromise
+    expect(useInputStore.getState().attachedFiles.map((attached) => attached.filename)).toEqual(["selection.txt"])
   })
 
   test("moves the selected draft's files onto another draft, merged with its own", () => {
