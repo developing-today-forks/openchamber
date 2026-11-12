@@ -77,4 +77,12 @@ describe('redactSensitiveText (#2074 residual shapes)', () => {
   it('leaves credential-free JSON byte-identical', () => {
     expect(redactSensitiveText('{"ref": "main", "state": "open"}')).toBe('{"ref": "main", "state": "open"}');
   });
+
+  it('redacts single-quoted credential shapes while preserving their structure', () => {
+    expect(redactSensitiveText("{'x-api-key': 'SECRET123'}")).toBe("{'x-api-key': '[redacted]'}");
+    expect(redactSensitiveText("{'password': 'SECRET123'}")).toBe("{'password': '[redacted]'}");
+    expect(redactSensitiveText("{'authorization': 'Bearer SECRET123'}")).toBe("{'authorization': 'Bearer [redacted]'}");
+    expect(redactSensitiveText("authorization: 'Bearer SECRET123'")).toBe("authorization: 'Bearer [redacted]'");
+    expect(redactSensitiveText("{'ref': 'main'}")).toBe("{'ref': 'main'}");
+  });
 });
