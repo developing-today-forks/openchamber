@@ -2171,6 +2171,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'Sélectionnez le début de la semaine',
   'settings.openchamber.visual.actions.reloadThemes': 'Recharger les thèmes',
   'settings.openchamber.visual.actions.reloadingThemes': 'Rechargement des thèmes...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Impossible de charger les thèmes personnalisés. Réessayez.',
   'settings.openchamber.visual.field.themeImportInfoAria': 'Informations sur l\'importation du thème',
   'settings.openchamber.visual.field.themeImportInfoTooltip': 'Importez des thèmes personnalisés depuis ~/.config/openchamber/themes/',
   'settings.openchamber.visual.field.installAppName': 'Nom de l’application installée',

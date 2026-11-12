@@ -219,6 +219,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         setThemeMode,
         availableThemes,
         customThemesLoading,
+        customThemesLoadError,
         reloadCustomThemes,
         lightThemeId,
         darkThemeId,
@@ -534,6 +535,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                 {t('settings.openchamber.visual.field.themeImportInfoTooltip')}
                                             </SettingsInfoHint>
                                         </div>
+                                        {customThemesLoadError && (
+                                            <p role="alert" className="typography-settings-caption text-destructive">
+                                                {t('settings.openchamber.visual.state.customThemesLoadFailed')}
+                                            </p>
+                                        )}
                                         <ThemeImportButton />
                                     </div>
                                 </SettingsTwoColumn>

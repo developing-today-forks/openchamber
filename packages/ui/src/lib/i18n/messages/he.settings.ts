@@ -2264,6 +2264,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'בחירת היום שבו מתחיל השבוע',
   'settings.openchamber.visual.actions.reloadThemes': 'טען מחדש ערכות נושא',
   'settings.openchamber.visual.actions.reloadingThemes': 'טוען מחדש ערכות נושא…',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'לא ניתן לטעון ערכות נושא מותאמות אישית. נסו לטעון מחדש.',
   'settings.openchamber.visual.field.dockBadge': 'תג ב-Dock',
   'settings.openchamber.visual.field.dockBadgeHint': 'הצגת מספר הצ\'אטים עם פעילות שלא נצפתה על סמל האפליקציה ב-Dock של macOS.',
   'settings.openchamber.visual.actions.saveAndRestart': 'שמור והפעל מחדש',
