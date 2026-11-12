@@ -94,4 +94,29 @@ describe('client PWA manifest bootstrap (index.html)', () => {
     expect(api.truncate('a'.repeat(46) + EMOJI, 48)).toBe('a'.repeat(46) + EMOJI);
     expect(api.truncate('a'.repeat(60), 48)).toBe('a'.repeat(48));
   });
+
+  it('never splits a grapheme cluster at the client clamps (oracle: UAX #29 extended grapheme clusters, caps 64, 48, 32 and 30)', () => {
+    const api = loadBootstrap();
+    const combining = 'e\u0301';
+    const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}';
+    // 64: install name — a combining cluster straddling the cap drops
+    // whole instead of leaving a bare base char.
+    expect(api.normalizePwaName('a'.repeat(63) + combining + 'tail', 'fb')).toBe('a'.repeat(63));
+    // Exact fit: 62 + 2 = 64 keeps the complete accented cluster.
+    expect(api.normalizePwaName('a'.repeat(62) + combining, 'fb')).toBe('a'.repeat(62) + combining);
+    // 48: recent-session title truncate — a joined ZWJ sequence
+    // straddling the cap drops whole, with no dangling ZWJ.
+    const truncated = api.truncate('a'.repeat(45) + family + 'tail', 48);
+    expect(truncated).toBe('a'.repeat(45));
+    expect(truncated.endsWith('\u200D')).toBe(false);
+    // 32: shortcut short_name via truncate at 32.
+    expect(api.truncate('a'.repeat(31) + combining + 'tail', 32)).toBe('a'.repeat(31));
+    // 30: manifest short_name.
+    const manifest = api.buildManifest('a'.repeat(29) + combining + 'tail', [], 'system');
+    expect(manifest.short_name).toBe('a'.repeat(29));
+    for (const value of [manifest.name, manifest.short_name, truncated]) {
+      expect(hasLoneSurrogate(value)).toBe(false);
+      expect(encodesClean(value)).toBe(true);
+    }
+  });
 });
