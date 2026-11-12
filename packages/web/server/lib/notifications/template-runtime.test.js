@@ -88,6 +88,32 @@ describe('notification template message extraction', () => {
 
     await expect(runtime.fetchLastAssistantMessageText('session-1', 'msg-1')).resolves.toBe('final answer');
   });
+
+  it('does not substitute another stopped assistant when the requested ID is absent', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ data: [{
+      id: 'newer-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'unrelated answer' }],
+    }], cursor: {} })));
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+  });
+
+  it('keeps newest stopped assistant fallback when no message ID is supplied', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ data: [{
+      id: 'newer-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'latest answer' }],
+    }], cursor: {} })));
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1')).resolves.toBe('latest answer');
+  });
+
+  it('returns empty text for empty or failed message pages', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => Response.json({ data: [], cursor: {} }));
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+    globalThis.fetch = vi.fn(async () => new Response('', { status: 503 }));
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+  });
 });
 
 describe('notification template session info', () => {
