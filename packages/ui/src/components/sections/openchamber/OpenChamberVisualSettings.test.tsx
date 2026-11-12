@@ -21,7 +21,7 @@ describe('OpenChamberVisualSettings', () => {
   let initialAnimatedActivityIndicators: boolean;
   let globalDescriptors: Map<string, PropertyDescriptor | undefined>;
 
-  const globalNames = ['window', 'document', 'HTMLElement', 'Element', 'Node', 'localStorage', 'sessionStorage', 'IS_REACT_ACT_ENVIRONMENT', 'requestAnimationFrame', 'cancelAnimationFrame'];
+  const globalNames = ['window', 'document', 'HTMLElement', 'Element', 'Node', 'localStorage', 'sessionStorage', 'IS_REACT_ACT_ENVIRONMENT', 'requestAnimationFrame', 'cancelAnimationFrame', 'fetch'];
 
   beforeEach(() => {
     windowInstance = new Window();
@@ -71,6 +71,66 @@ describe('OpenChamberVisualSettings', () => {
     ));
 
     expect(host.querySelector('[data-settings-item="appearance.session-activity"]')).not.toBeNull();
+  });
+
+  test('surfaces custom theme load failures and clears them after a successful reload', async () => {
+    let shouldFail = true;
+    globalThis.fetch = (async () => new Response(shouldFail ? 'unavailable' : JSON.stringify({ themes: [] }), {
+      status: shouldFail ? 500 : 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch;
+
+    await act(async () => root.render(
+      <RuntimeAPIContext.Provider value={runtimeAPIs}>
+        <ThemeSystemProvider>
+          <I18nProvider>
+            <OpenChamberVisualSettings visibleSettings={['theme']} />
+          </I18nProvider>
+        </ThemeSystemProvider>
+      </RuntimeAPIContext.Provider>,
+    ));
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not load custom themes');
+    expect(host.querySelectorAll('button').length).toBeGreaterThan(0);
+
+    shouldFail = false;
+    const reload = Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Reload themes'));
+    expect(reload !== undefined).toBe(true);
+    await act(async () => reload?.click());
+
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test('keeps the 401 custom theme auth gate quiet', async () => {
+    globalThis.fetch = (async () => new Response('', { status: 401 })) as typeof fetch;
+
+    await act(async () => root.render(
+      <RuntimeAPIContext.Provider value={runtimeAPIs}>
+        <ThemeSystemProvider>
+          <I18nProvider>
+            <OpenChamberVisualSettings visibleSettings={['theme']} />
+          </I18nProvider>
+        </ThemeSystemProvider>
+      </RuntimeAPIContext.Provider>,
+    ));
+
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test('surfaces rejected custom theme requests', async () => {
+    globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
+
+    await act(async () => root.render(
+      <RuntimeAPIContext.Provider value={runtimeAPIs}>
+        <ThemeSystemProvider>
+          <I18nProvider>
+            <OpenChamberVisualSettings visibleSettings={['theme']} />
+          </I18nProvider>
+        </ThemeSystemProvider>
+      </RuntimeAPIContext.Provider>,
+    ));
+
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not load custom themes');
   });
 
   test('renders the sidebar rows section with a live preview row', async () => {

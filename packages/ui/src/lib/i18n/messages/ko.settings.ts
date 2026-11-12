@@ -2276,6 +2276,7 @@ export const settingsDict = {
   'settings.openchamber.visual.actions.saveAndRestart': '저장 후 재시작',
   'settings.openchamber.visual.actions.restarting': '재시작 중…',
   'settings.openchamber.visual.actions.reloadingThemes': '테마 다시 로드 중...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': '사용자 지정 테마를 불러오지 못했습니다. 다시 불러오세요.',
   'settings.openchamber.visual.field.themeImportInfoAria': '테마 가져오기 정보',
   'settings.openchamber.visual.field.themeImportInfoTooltip': '~/.config/openchamber/themes/에서 사용자 정의 테마를 가져옵니다',
   'settings.openchamber.visual.field.installAppName': '설치 앱 이름',

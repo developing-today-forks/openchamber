@@ -2305,6 +2305,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': '週の開始日を選択',
   'settings.openchamber.visual.actions.reloadThemes': 'テーマを再読み込み',
   'settings.openchamber.visual.actions.reloadingThemes': 'テーマを再読み込み中...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'カスタムテーマを読み込めませんでした。再読み込みしてください。',
   'settings.openchamber.visual.field.dockBadge': 'Dock バッジ',
   'settings.openchamber.visual.field.dockBadgeHint': '未読のアクティビティがあるチャットの数を macOS の Dock アイコンに表示します。',
   'settings.openchamber.visual.actions.saveAndRestart': '保存して再起動',
