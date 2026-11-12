@@ -154,9 +154,9 @@ const messageContent = (message) => {
 
 const collectMarkdownLinesOutsideCode = (message) => {
   const lines = [];
+  let fence = null;
   for (const part of messageContent(message)) {
     if (part?.type !== 'text' || typeof part.text !== 'string') continue;
-    let fence = null;
     for (const line of part.text.split('\n')) {
       const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
       if (fenceMatch) {
