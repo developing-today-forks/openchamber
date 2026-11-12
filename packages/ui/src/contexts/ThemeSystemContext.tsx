@@ -252,9 +252,10 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
 
       const payload = await res.json();
       if (request !== customThemesRequestRef.current || runtimeKey !== getRuntimeKey()) return;
-      const normalized = themeListSchema.parse(payload?.themes);
+      const rawThemes = payload?.themes;
+      const normalized = themeListSchema.parse(rawThemes);
       setCustomThemes(normalized);
-      setCustomThemesLoadError(false);
+      setCustomThemesLoadError(Array.isArray(rawThemes) && normalized.length !== rawThemes.length);
     } catch {
       if (request === customThemesRequestRef.current && runtimeKey === getRuntimeKey()) {
         setCustomThemesLoadError(true);
