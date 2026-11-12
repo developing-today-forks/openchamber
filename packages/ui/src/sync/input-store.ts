@@ -8,6 +8,7 @@ import type { AttachIssueRequest } from '@openchamber/sdk'
 import type { ContextPartMetadata } from '@/lib/messages/contextParts'
 import type { AttachedFile } from "@/stores/types/sessionTypes"
 import { prepareAttachmentFiles } from "./attachment-files"
+import { MAX_VSCODE_SELECTION_BYTES } from "./vscode-selection-size"
 import { getChatDraftIdentityKey, subscribeChatDraftDeletion, type ChatDraftIdentity } from "@/lib/chatDraftPersistence"
 
 const FILE_URI_PREFIX = "file://"
@@ -424,6 +425,7 @@ export const useInputStore = create<InputState>()((set, get) => ({
   },
 
   addVSCodeSelectionAttachment: async (path: string, file: File) => {
+    if (file.size > MAX_VSCODE_SELECTION_BYTES) return
     const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     const generation = attachmentReadGeneration
     const selectionKey = `${generation}\u0000${getVSCodeSelectionKey(path, file.name)}`

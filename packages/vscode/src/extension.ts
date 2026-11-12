@@ -13,6 +13,7 @@ import { stopGitProcesses } from './bridge-git-process-runtime';
 import { registerGenerateCommitMessageCommand } from './scmCommitMessage';
 import { createSessionNotifier } from './sessionNotifications';
 import { fetchOpenCodeDiagnosticsProbe } from './opencode-diagnostics-runtime';
+import { isVSCodeSelectionWithinLimit, MAX_VSCODE_SELECTION_BYTES } from './selection-size';
 
 let chatViewProvider: ChatViewProvider | undefined;
 
@@ -403,6 +404,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
       if (!selectedText) {
         vscode.window.showWarningMessage(t('OpenChamber [Add to Context]: No text selected'));
+        return;
+      }
+
+      if (!isVSCodeSelectionWithinLimit(selectedText)) {
+        vscode.window.showWarningMessage(
+          t('OpenChamber [Add to Context]: Selection exceeds the {0} MiB limit', MAX_VSCODE_SELECTION_BYTES / (1024 * 1024))
+        );
         return;
       }
 

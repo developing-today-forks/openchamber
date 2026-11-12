@@ -169,6 +169,9 @@ The webview build emits each worker as one self-contained file. VS Code webviews
   - A session notification carries "Open Session", which reveals the sidebar and selects that session (`openSession` webview command). A question or permission notification opens the highest session above the session that asked that still runs in the same directory (`resolveBlockingRequestRoot`), whose composer docks every request below it. Every open webview asks for the same session event, so repeats of one session message within 10 seconds show once; a notification without a session, the Settings test, is never deduplicated.
   - Kept free of the `vscode` import so it is unit tested directly.
 
+- Add to Context selection attachments
+  - The extension host rejects selections over 1 MiB of UTF-8 text and warns before sending them to a webview. The webview independently checks the same bound before constructing a `Blob`; the shared input store also checks `File.size` before reading a data URL, so malformed or future callers cannot bypass the limit. The extension and UI-side byte-count helpers intentionally live in their own bundles and must keep the same 1 MiB limit.
+
 - `bridge-permission-auto-accept-runtime.ts`
   - Owns the persisted VS Code permission auto-accept policy and its GET/PUT bridge contract.
   - Serializes reads and read-modify-write updates, persists a monotonic policy revision, and broadcasts the exact committed snapshot to every active OpenChamber webview. Permission replies remain foreground UI-owned because VS Code does not run the OpenChamber server runtime.
