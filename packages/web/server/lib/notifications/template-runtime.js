@@ -198,7 +198,7 @@ export const createNotificationTemplateRuntime = (deps) => {
       if (messageId) {
         target = messages.find((message) => message?.id === messageId && message?.type === 'assistant');
       }
-      if (!target) {
+      if (!target && !messageId) {
         target = messages.find((message) => message?.type === 'assistant' && message?.finish === 'stop') ?? null;
       }
 
