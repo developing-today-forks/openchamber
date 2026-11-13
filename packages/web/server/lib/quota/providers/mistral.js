@@ -30,7 +30,8 @@ import { readOpenCodeCredentials } from '../../opencode/auth.js';
 import {
   getAuthEntry,
   normalizeAuthEntry,
-  buildResult
+  buildResult,
+  asNonEmptyString
 } from '../utils/index.js';
 
 export const providerId = 'mistral';
@@ -41,11 +42,11 @@ const MISTRAL_MODELS_URL = 'https://api.mistral.ai/v1/models';
 
 export const isConfigured = (auth) => {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  return Boolean(entry?.key || entry?.token || entry?.access);
+  return Boolean(asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token) ?? asNonEmptyString(entry?.access));
 };
 
 const fetchQuotaForEntry = async (entry) => {
-  const apiKey = entry?.key ?? entry?.token ?? entry?.access;
+  const apiKey = asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token) ?? asNonEmptyString(entry?.access);
 
   if (!apiKey) {
     return buildResult({

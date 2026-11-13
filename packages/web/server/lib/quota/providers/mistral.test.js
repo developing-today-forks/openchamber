@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const readAuth = async () => ({ mistral: { key: 'test-token' } });
 const readEmptyAuth = async () => ({});
 
-import { fetchQuota, isConfigured } from './mistral.js';
+import { fetchQuota, fetchQuotaForCredential, isConfigured } from './mistral.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -46,6 +46,37 @@ describe('Mistral quota provider (key-validity class)', () => {
     expect(result.error).toBe('Not configured');
     expect(isConfigured({})).toBe(false);
     expect(isConfigured({ mistral: { key: 'test-token' } })).toBe(true);
+  });
+
+  it('fetches with the token when the key field is empty', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(DOCUMENTED_PAYLOAD));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchQuota({ readAuth: async () => ({ mistral: { key: '', token: 'real-token' } }) });
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer real-token');
+    expect(isConfigured({ mistral: { key: '', token: 'real-token' } })).toBe(true);
+  });
+
+  it('fetches with the access value when the key field is whitespace-only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(DOCUMENTED_PAYLOAD));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await fetchQuotaForCredential({ value: { key: '   ', access: 'real-access' } });
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer real-access');
+    expect(isConfigured({ mistral: { key: '   ', access: 'real-access' } })).toBe(true);
+  });
+
+  it('reports not configured from both entry points when every field is empty', async () => {
+    const entry = { key: '', token: '  ', access: '' };
+    const viaAuth = await fetchQuota({ readAuth: async () => ({ mistral: entry }) });
+    expect(viaAuth.configured).toBe(false);
+    expect(viaAuth.error).toBe('Not configured');
+    const viaCredential = await fetchQuotaForCredential({ value: entry });
+    expect(viaCredential.configured).toBe(false);
+    expect(viaCredential.error).toBe('Not configured');
+    expect(isConfigured({ mistral: entry })).toBe(false);
   });
 
   it.each([401, 403])('classifies a %i as an invalid or revoked key', async (status) => {
