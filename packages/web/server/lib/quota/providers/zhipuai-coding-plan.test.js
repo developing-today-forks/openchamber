@@ -176,6 +176,20 @@ describe('Zhipu AI Coding Plan quota provider', () => {
     expect(isConfigured({ 'zhipuai-coding-plan': { key: '   ', token: 'real-token' } })).toBe(true);
   });
 
+  it('fetches with the key when both key and token hold real values', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({
+      data: { limits: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota({ readAuth: async () => ({ 'zhipuai-coding-plan': { key: 'real-key', token: 'real-token' } }) });
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer ' + 'real-key');
+    expect(isConfigured({ 'zhipuai-coding-plan': { key: 'real-key', token: 'real-token' } })).toBe(true);
+  });
+
   it('reports not configured from both entry points when every field is empty', async () => {
     const entry = { key: '', token: '  ' };
     const result = await fetchQuota({ readAuth: async () => ({ 'zhipuai-coding-plan': entry }) });
