@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const readAuth = async () => ({ 'zhipuai-coding-plan': { key: 'test-token' } });
 
-import { fetchQuota } from './zhipuai-coding-plan.js';
+import { fetchQuota, isConfigured } from './zhipuai-coding-plan.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -146,6 +146,42 @@ describe('Zhipu AI Coding Plan quota provider', () => {
     expect(result.configured).toBe(true);
     expect(result.error).toBe('令牌已过期或验证不正确');
     expect(result.usage).toBeNull();
+  });
+
+  it('fetches with the token when the key field is empty', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({
+      data: { limits: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota({ readAuth: async () => ({ 'zhipuai-coding-plan': { key: '', token: 'real-token' } }) });
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer ' + 'real-token');
+    expect(isConfigured({ 'zhipuai-coding-plan': { key: '', token: 'real-token' } })).toBe(true);
+  });
+
+  it('fetches with the token when the key field is whitespace-only', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse({
+      data: { limits: [] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota({ readAuth: async () => ({ 'zhipuai-coding-plan': { key: '   ', token: 'real-token' } }) });
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer ' + 'real-token');
+    expect(isConfigured({ 'zhipuai-coding-plan': { key: '   ', token: 'real-token' } })).toBe(true);
+  });
+
+  it('reports not configured from both entry points when every field is empty', async () => {
+    const entry = { key: '', token: '  ' };
+    const result = await fetchQuota({ readAuth: async () => ({ 'zhipuai-coding-plan': entry }) });
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+    expect(isConfigured({ 'zhipuai-coding-plan': entry })).toBe(false);
   });
 
   it('falls back to the code when the envelope carries no message', async () => {

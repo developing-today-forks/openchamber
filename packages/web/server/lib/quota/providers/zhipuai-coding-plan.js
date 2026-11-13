@@ -81,7 +81,7 @@ export const envelopeError = (payload) => {
 
 function getApiKey(auth) {
   const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
-  const apiKeyFromAuth = entry?.key ?? entry?.token;
+  const apiKeyFromAuth = asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.token);
 
   if (apiKeyFromAuth) {
     return apiKeyFromAuth;
