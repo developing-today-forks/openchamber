@@ -51,19 +51,11 @@
       "name": "Command Code",
       "surfaces": {
         "web": true,
-        "vscode_dispatch": false,
-        "vscode_configured": false,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
         "ui_catalog": true,
         "ui_union": true,
         "docs": true
-      },
-      "exception": {
-        "absent_from": [
-          "vscode_dispatch",
-          "vscode_configured"
-        ],
-        "issue": 1744,
-        "reason": "No VS Code fetcher, dispatch case, or configured entry since the provider landed. Adopted by #1744."
       }
     },
     {
@@ -227,19 +219,11 @@
       "name": "Open Design",
       "surfaces": {
         "web": true,
-        "vscode_dispatch": false,
-        "vscode_configured": false,
+        "vscode_dispatch": true,
+        "vscode_configured": true,
         "ui_catalog": true,
         "ui_union": true,
         "docs": true
-      },
-      "exception": {
-        "absent_from": [
-          "vscode_dispatch",
-          "vscode_configured"
-        ],
-        "issue": 1744,
-        "reason": "No VS Code fetcher, dispatch case, or configured entry since the provider landed. Adopted by #1744. (Its DOCUMENTATION.md dispatcher-table row was missing at filing and is added by the change that introduces this manifest, so docs is not an absence.)"
       }
     },
     {

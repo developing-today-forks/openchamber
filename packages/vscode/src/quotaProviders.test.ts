@@ -49,6 +49,7 @@ const baseCredentialList = (): CredentialEntry[] => [
   key('deepinfra'),
   key('hyper'),
   key('mistral'),
+  key('command-code'),
   key('nano-gpt'),
   key('wafer'),
   oauth('github-copilot', copilotEnterpriseUrl ? { enterpriseUrl: copilotEnterpriseUrl } : undefined),
@@ -56,7 +57,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchCommandCodeQuota, fetchOpenDesignQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -3676,4 +3677,132 @@ describe('VS Code quota key selection (#1759)', () => {
       assert.equal(fetchCalls, 0, provider + ' must not send a blank bearer');
     });
   }
+});
+
+describe('Command Code quota provider (VS Code parity, #1744)', () => {
+  const creditsPayload = {
+    credits: { monthlyCredits: 4, purchasedCredits: 25, freeCredits: 0 },
+    windowLimits: {
+      fiveHour: { used: 25, cap: 100, resetAt: 1_700_000_000 },
+      weekly: { used: 10, cap: 50, resetAt: 1_700_000_000_000 },
+    },
+  };
+
+  test('dispatch reaches the fetcher: whoami then credits, plan windows parsed', async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      if (url.endsWith('/alpha/whoami')) return Promise.resolve(mockResponse({ org: { id: 'org_1' } }));
+      return Promise.resolve(mockResponse(creditsPayload));
+    });
+
+    const result = await fetchQuotaForProvider('command-code');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'command-code');
+    assert.equal(result.providerName, 'Command Code');
+    assert.equal(result.configured, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]![0], 'https://api.commandcode.ai/alpha/whoami');
+    assert.equal(calls[1]![0], 'https://api.commandcode.ai/alpha/billing/credits?orgId=org_1');
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Authorization'), 'Bearer test-token');
+    // Monthly plan window: $10 included, 4 remaining -> 60% used.
+    assert.equal(result.usage!.windows.monthly!.usedPercent, 60);
+    assert.equal(result.usage!.windows.monthly!.valueLabel, '6 / 10');
+    assert.equal(result.usage!.windows['5h']!.usedPercent, 25);
+    assert.equal(result.usage!.windows['5h']!.resetAt, 1_700_000_000_000);
+    assert.equal(result.usage!.windows.weekly!.usedPercent, 20);
+    // The top-up balance rides along as a percent-less balance window.
+    assert.equal(result.usage!.windows.purchased_credits!.usedPercent, null);
+    assert.equal(result.usage!.windows.purchased_credits!.valueLabel, '25');
+  });
+
+  test('lists command-code as configured from the enrolled key credential', async () => {
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('command-code'), true);
+  });
+
+  test('reports not configured without a credential', async () => {
+    const result = await fetchCommandCodeQuota({
+      readAuth: () => ({}),
+      fetchImpl: async () => {
+        throw new Error('must not fetch');
+      },
+    });
+    assert.equal(result.configured, false);
+    assert.equal(result.ok, false);
+  });
+});
+
+describe('Open Design quota provider (VS Code parity, #1744)', () => {
+  const credentialDir = path.join(temporaryQuotaDataDirectory, 'quota');
+  const credentialFile = path.join(credentialDir, 'opendesign.json');
+  const usagePayload = {
+    windows: [
+      { durationSeconds: 18000, limitCredits: 100, remainingCredits: 40, resetsAt: '2026-11-15T00:00:00.000Z' },
+      { durationSeconds: 604800, limitCredits: 500, remainingCredits: 500, resetsAt: '2026-11-20T00:00:00.000Z' },
+      { durationSeconds: 3600, limitCredits: 10, remainingCredits: 5, resetsAt: '2026-11-15T00:00:00.000Z' },
+    ],
+  };
+  const writeCredentialFile = () => {
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(credentialFile, JSON.stringify({ cookie: 'tok123', workspaceId: 'ws_1' }));
+  };
+
+  afterEach(() => {
+    fs.rmSync(credentialFile, { force: true });
+  });
+
+  test('dispatch reaches the fetcher: session check then plan windows', async () => {
+    writeCredentialFile();
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      if (url.endsWith('/auth/get-session')) return Promise.resolve(mockResponse({ user: { id: 'u_1' } }));
+      return Promise.resolve(mockResponse(usagePayload));
+    });
+
+    const result = await fetchQuotaForProvider('opendesign');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'opendesign');
+    assert.equal(result.providerName, 'Open Design');
+    assert.equal(result.configured, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]![0], 'https://amr-api.open-design.ai/api/auth/get-session');
+    assert.equal(calls[1]![0], 'https://amr-api.open-design.ai/api/v1/workspaces/ws_1/billing/coding-plan-usage');
+    // The bare token from the store file is wrapped under its cookie name.
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Cookie'), 'better-auth.session_token=tok123');
+    assert.equal(result.usage!.windows['5h']!.usedPercent, 60);
+    assert.equal(result.usage!.windows['5h']!.valueLabel, '40 / 100 credits');
+    assert.equal(result.usage!.windows['7d']!.usedPercent, 0);
+    // A window of an unpublished duration is left out.
+    assert.equal(Object.keys(result.usage!.windows).length, 2);
+  });
+
+  test('lists opendesign as configured when the managed credential is stored', async () => {
+    writeCredentialFile();
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('opendesign'), true);
+  });
+
+  test('reports the import-required error without a stored credential', async () => {
+    const result = await fetchOpenDesignQuota({
+      fetchImpl: async () => {
+        throw new Error('must not fetch');
+      },
+    });
+    assert.equal(result.configured, false);
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /Import the Open Design session cookie/);
+  });
+
+  test('an expired session answers the session-expired error, never zeros', async () => {
+    writeCredentialFile();
+    stubFetchReturning(() => Promise.resolve(mockResponse({}, { ok: false, status: 401 })));
+    const result = await fetchQuotaForProvider('opendesign');
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.match(result.error!, /session expired/);
+  });
 });

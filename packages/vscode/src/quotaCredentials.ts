@@ -6,9 +6,9 @@ import { fetchExeDevUsage } from './exeDevQuota';
 import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseJson } from './bounded-response-body';
 import { renameSyncWithRetry } from './bridge-atomic-write';
 
-export type ManagedProvider = 'exe-dev' | 'cursor' | 'zenmux';
+export type ManagedProvider = 'exe-dev' | 'cursor' | 'zenmux' | 'opendesign';
 type ManagedCredential = Record<string, string>;
-const providers = new Set<ManagedProvider>(['exe-dev', 'cursor', 'zenmux']);
+const providers = new Set<ManagedProvider>(['exe-dev', 'cursor', 'zenmux', 'opendesign']);
 const directory = () => path.join(process.env.OPENCHAMBER_DATA_DIR ? path.resolve(process.env.OPENCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'openchamber'), 'quota');
 const target = (provider: ManagedProvider) => {
   if (!providers.has(provider)) throw new Error('Unsupported credential provider');
@@ -20,6 +20,16 @@ export const normalizeCredential = (provider: ManagedProvider, value: unknown): 
   const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   if (provider === 'exe-dev') return clean(data.usageToken) ? { usageToken: clean(data.usageToken) } : null;
   if (provider === 'zenmux') return clean(data.platformApiKey) ? { platformApiKey: clean(data.platformApiKey) } : null;
+  if (provider === 'opendesign') {
+    // Same shape the web credential store normalizes (credentials/providers.js):
+    // a browser-copied cookie header value, or a bare session token stored
+    // under its Better Auth cookie name, plus the workspace id.
+    const cookieInput = clean(data.cookie);
+    const workspaceId = clean(data.workspaceId);
+    if (!cookieInput || !workspaceId) return null;
+    const cookie = cookieInput.includes('better-auth') ? cookieInput : `better-auth.session_token=${cookieInput}`
+    return { cookie, workspaceId };
+  }
   const accessToken = clean(data.accessToken);
   const refreshToken = clean(data.refreshToken);
   return accessToken || refreshToken ? { accessToken, refreshToken } : null;
