@@ -975,6 +975,7 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   if (openCodeGoApiKey(auth) || openCodeGoConsoleCredential(auth)) configured.add('opencode-go');
   if (readCredential('cursor')) configured.add('cursor');
   if (readCredential('exe-dev')) configured.add('exe-dev');
+  if (readCredential('opendesign')) configured.add('opendesign');
 
   // Ollama Cloud reads its key from OpenCode's credential store, so it is
   // configured exactly when that integration has a key.
@@ -1021,6 +1022,10 @@ export const listConfiguredQuotaProviders = async ({ includeDisabled = false }: 
   const mistralAuth = normalizeAuthEntry(getAuthEntry(auth, ['mistral']));
   if (mistralAuth && (asNonEmptyString(mistralAuth.key) || asNonEmptyString(mistralAuth.token) || asNonEmptyString(mistralAuth.access))) {
     configured.add('mistral');
+  }
+
+  if (commandCodeApiKey(auth)) {
+    configured.add('command-code');
   }
 
   const minimaxAuth = normalizeAuthEntry(getAuthEntry(auth, ['minimax-coding-plan']));
@@ -4845,6 +4850,206 @@ export const fetchMistralQuota = async ({ readAuth = readOpenCodeCredentials, fe
   }
 };
 
+type CommandCodeQuotaDependencies = {
+  readAuth?: () => AuthFile | Promise<AuthFile>;
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+const COMMAND_CODE_API_BASE_URL = 'https://api.commandcode.ai';
+const COMMAND_CODE_ALIASES = ['command-code', 'commandcode', 'command_code', 'command code'];
+
+/** The Go plan's included monthly credits (Drew's quota READ RULE, 2026-11-01). */
+export const COMMAND_CODE_MONTHLY_INCLUDED_CREDITS = 10;
+
+const commandCodeApiKey = (auth: AuthFile): string | null => {
+  const entry = normalizeAuthEntry(getAuthEntry(auth, COMMAND_CODE_ALIASES));
+  const stored = asNonEmptyString(entry?.key) ?? asNonEmptyString(entry?.access) ?? asNonEmptyString(entry?.token);
+  return stored ?? asNonEmptyString(process.env.COMMAND_CODE_API_KEY) ?? null;
+};
+
+const commandCodeFormatCredits = (value: number): string => String(Math.round((value + Number.EPSILON) * 100) / 100);
+
+export const parseCommandCodeCredits = (payload: QuotaJsonValue): Record<string, UsageWindow> => {
+  const root = asObject(payload);
+  const credits = asObject(root?.credits);
+  const limits = asObject(root?.windowLimits);
+  const windows: Record<string, UsageWindow> = {};
+
+  const monthlyRemaining = toNumber(credits?.monthlyCredits);
+  if (monthlyRemaining !== null && monthlyRemaining >= 0 && monthlyRemaining <= COMMAND_CODE_MONTHLY_INCLUDED_CREDITS) {
+    const monthlyUsed = COMMAND_CODE_MONTHLY_INCLUDED_CREDITS - monthlyRemaining;
+    windows.monthly = toUsageWindow({
+      usedPercent: Math.min(100, Math.max(0, (monthlyUsed / COMMAND_CODE_MONTHLY_INCLUDED_CREDITS) * 100)),
+      windowSeconds: null,
+      resetAt: null,
+      valueLabel: `${commandCodeFormatCredits(monthlyUsed)} / ${commandCodeFormatCredits(COMMAND_CODE_MONTHLY_INCLUDED_CREDITS)}`,
+    });
+  }
+
+  // Balance windows carry no percent: purchased/free credits are balances,
+  // not plan usage (the monthly plan window above is the quota figure).
+  for (const [label, field] of [['purchased_credits', 'purchasedCredits'], ['free_credits', 'freeCredits']] as const) {
+    const value = toNumber(credits?.[field]);
+    if (value !== null) {
+      windows[label] = toUsageWindow({ usedPercent: null, windowSeconds: null, resetAt: null, valueLabel: commandCodeFormatCredits(value) });
+    }
+  }
+
+  for (const [label, field, windowSeconds] of [['5h', 'fiveHour', 5 * 60 * 60], ['weekly', 'weekly', 7 * 24 * 60 * 60]] as const) {
+    const limit = asObject(limits?.[field]);
+    const used = toNumber(limit?.used);
+    const cap = toNumber(limit?.cap);
+    if (used === null || cap === null || cap <= 0) continue;
+    const resetAt = toNumber(limit?.resetAt);
+    windows[label] = toUsageWindow({
+      usedPercent: Math.min(100, Math.max(0, (used / cap) * 100)),
+      windowSeconds,
+      resetAt: resetAt === null ? null : resetAt < 1_000_000_000_000 ? resetAt * 1000 : resetAt,
+      valueLabel: `${commandCodeFormatCredits(used)} / ${commandCodeFormatCredits(cap)}`,
+    });
+  }
+
+  return windows;
+};
+
+/**
+ * Command Code quota — ported from the web provider
+ * (packages/web/server/lib/quota/providers/command-code.js), closing the
+ * VS Code surface gap in #1744. Per Drew's quota READ RULE (2026-11-01)
+ * Command Code reads report the PLAN windows; the top-up balance
+ * (purchasedCredits) is never a quota figure — it rides along as a
+ * percent-less balance window, exactly as the web provider publishes it.
+ */
+export const fetchCommandCodeQuota = async ({ readAuth = readOpenCodeCredentials, fetchImpl = fetch }: CommandCodeQuotaDependencies = {}): Promise<ProviderResult> => {
+  const providerId = 'command-code';
+  const providerName = 'Command Code';
+  const apiKey = commandCodeApiKey(await readAuth());
+  if (!apiKey) return buildResult({ providerId, providerName, ok: false, configured: false, error: 'Not configured' });
+
+  const requestJson = async (requestPath: string): Promise<QuotaJsonValue> => {
+    const response = await fetchImpl(`${COMMAND_CODE_API_BASE_URL}${requestPath}`, {
+      headers: {
+        Accept: 'application/json',
+Authorization: `Bearer ${apiKey}`,
+        'User-Agent': 'OpenChamber quota provider',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (response.status === 401 || response.status === 403) throw new Error('Command Code authentication failed');
+    if (!response.ok) throw new Error(`Command Code usage API returned HTTP ${response.status}`);
+    return readQuotaJson(response).catch(() => null);
+  };
+
+  try {
+    const identity = asObject(await requestJson('/alpha/whoami'));
+    const orgId = asNonEmptyString(asObject(identity?.org)?.id) ?? '';
+    const creditsPath = orgId ? `/alpha/billing/credits?orgId=${encodeURIComponent(orgId)}` : '/alpha/billing/credits';
+    const windows = parseCommandCodeCredits(await requestJson(creditsPath));
+    if (Object.keys(windows).length === 0) throw new Error('Command Code usage data could not be parsed');
+    return buildResult({ providerId, providerName, ok: true, configured: true, usage: { windows } });
+  } catch (error) {
+    return buildResult({ providerId, providerName, ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' });
+  }
+};
+
+type OpenDesignQuotaDependencies = {
+  fetchImpl?: (url: string, options: RequestInit) => Promise<Response>;
+};
+
+const OPEN_DESIGN_API_BASE_URL = 'https://amr-api.open-design.ai/api';
+
+export const OPEN_DESIGN_IMPORT_REQUIRED_ERROR = 'Import the Open Design session cookie in Settings to read Open Design quota';
+export const OPEN_DESIGN_SESSION_EXPIRED_ERROR = 'Open Design session expired; import a fresh session cookie in Settings';
+
+// The console reports plan windows by duration: 18000 seconds is the 5-hour
+// window and 604800 is the 7-day window. Windows of any other duration are
+// not part of the published plan shape and are left out.
+const OPEN_DESIGN_WINDOW_LABELS = new Map<number, string>([
+  [18000, '5h'],
+  [604800, '7d'],
+]);
+
+export const parseOpenDesignCodingPlanWindows = (payload: QuotaJsonValue): Record<string, UsageWindow> | null => {
+  const data = asObject(payload);
+  if (!data || !Array.isArray(data.windows)) return null;
+
+  const windows: Record<string, UsageWindow> = {};
+  for (const entry of data.windows) {
+    const record = asObject(entry);
+    if (!record) continue;
+    const label = OPEN_DESIGN_WINDOW_LABELS.get(toNumber(record.durationSeconds) ?? Number.NaN);
+    if (!label) continue;
+    const limit = toNumber(record.limitCredits);
+    const remaining = toNumber(record.remainingCredits);
+    if (limit === null || remaining === null) continue;
+    const usedPercent = limit > 0 ? Math.min(100, Math.max(0, (1 - remaining / limit) * 100)) : null;
+    windows[label] = toUsageWindow({
+      usedPercent,
+      windowSeconds: toNumber(record.durationSeconds),
+      resetAt: toTimestamp(record.resetsAt),
+      valueLabel: `${remaining} / ${limit} credits`,
+    });
+  }
+  return Object.keys(windows).length > 0 ? windows : null;
+};
+
+/**
+ * Open Design quota — ported from the web provider
+ * (packages/web/server/lib/quota/providers/opendesign.js), closing the
+ * VS Code surface gap in #1744. The billing usage API refuses the
+ * OpenCode-held AMR inference key (verified 403): the read rides the
+ * managed Better Auth session credential in the shared managed store
+ * (quota/opendesign.json under the OpenChamber data dir — the same file
+ * the web surface and the renewal keeper use). The web provider's
+ * per-model breakdown is not ported: the VS Code ProviderUsage contract
+ * has no slot for that array shape, so this surface publishes the plan
+ * windows only.
+ */
+export const fetchOpenDesignQuota = async ({ fetchImpl = fetch }: OpenDesignQuotaDependencies = {}): Promise<ProviderResult> => {
+  const providerId = 'opendesign';
+  const providerName = 'Open Design';
+  const credential = readCredential('opendesign');
+  if (!credential) {
+    return buildResult({ providerId, providerName, ok: false, configured: false, error: OPEN_DESIGN_IMPORT_REQUIRED_ERROR });
+  }
+
+  const headers = {
+    Accept: 'application/json',
+Cookie: credential.cookie,
+    'x-vela-workspace-id': credential.workspaceId,
+    'User-Agent': 'OpenChamber quota provider',
+  };
+  const workspaceUrl = (suffix: string): string =>
+    `${OPEN_DESIGN_API_BASE_URL}/v1/workspaces/${encodeURIComponent(credential.workspaceId)}/billing/${suffix}`;
+
+  try {
+    const sessionResponse = await fetchImpl(`${OPEN_DESIGN_API_BASE_URL}/auth/get-session`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const session = sessionResponse.ok ? await readQuotaJson(sessionResponse).catch(() => null) : null;
+    if (!asObject(session)) throw new Error(OPEN_DESIGN_SESSION_EXPIRED_ERROR);
+
+    const usageResponse = await fetchImpl(workspaceUrl('coding-plan-usage'), {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (usageResponse.status === 401 || usageResponse.status === 403) {
+      throw new Error(OPEN_DESIGN_SESSION_EXPIRED_ERROR);
+    }
+    if (!usageResponse.ok) {
+      throw new Error(`Open Design usage API returned HTTP ${usageResponse.status}`);
+    }
+    const windows = parseOpenDesignCodingPlanWindows(await readQuotaJson(usageResponse).catch(() => null));
+    if (!windows) throw new Error('Open Design usage data could not be parsed');
+    return buildResult({ providerId, providerName, ok: true, configured: true, usage: { windows } });
+  } catch (error) {
+    return buildResult({ providerId, providerName, ok: false, configured: true, error: error instanceof Error ? error.message : 'Request failed' });
+  }
+};
+
 const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<ProviderResult> => {
   switch (providerId) {
     case 'claude':
@@ -4923,6 +5128,10 @@ const fetchQuotaForProviderUncoalesced = async (providerId: string): Promise<Pro
       return fetchXaiQuota();
     case 'mistral':
       return fetchMistralQuota();
+    case 'command-code':
+      return fetchCommandCodeQuota();
+    case 'opendesign':
+      return fetchOpenDesignQuota();
     default:
       return buildResult({
         providerId,
