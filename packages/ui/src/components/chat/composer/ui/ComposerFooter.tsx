@@ -348,6 +348,7 @@ function ComposerFooterView(props: ComposerFooterProps) {
                             footerIconButtonClass={footerIconButtonClass}
                             iconSizeClass={iconSizeClass}
                             onInsert={onDictationInsert}
+                            onStart={onDictationStart}
                         /> : null}
                         {parallelRun ? (
                             // Parallel mode keeps the ordinary send button: the strip above

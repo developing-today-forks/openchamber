@@ -13,6 +13,7 @@ import {
     parseFacadeError,
     parseTranscriptionEnvelope,
     preSubmitPrivacyNotice,
+    recordingDurationSeconds,
     recordingSecondsRemaining,
     transcribeViaFacade,
     validateAudioInput,
@@ -28,6 +29,23 @@ describe('buildTranscriptionUrl', () => {
         expect(buildTranscriptionUrl('http://localhost:4096')).toBe('http://localhost:4096/v1/audio/transcriptions');
         expect(buildTranscriptionUrl('https://host.example/api')).toBe('https://host.example/v1/audio/transcriptions');
         expect(buildTranscriptionUrl('/')).toBe('/v1/audio/transcriptions');
+    });
+});
+
+describe('recordingDurationSeconds', () => {
+    test('reports the measured duration for a manual stop', () => {
+        expect(recordingDurationSeconds(1_000, 61_000, false)).toBe(60);
+    });
+
+    test('clamps a cap-stopped recording to the cap so §5.2 validation accepts it', () => {
+        // The cap timer fires at 600s; the recorder stop lands later, so the
+        // raw measurement overshoots — the reported duration must not.
+        expect(recordingDurationSeconds(0, 600_400, true)).toBe(600);
+        expect(validateAudioInput({ sizeBytes: 1024, mediaType: 'audio/webm', durationSeconds: recordingDurationSeconds(0, 600_400, true) })).toBeNull();
+    });
+
+    test('does not clamp a manually stopped recording', () => {
+        expect(recordingDurationSeconds(0, 600_400, false)).toBe(600.4);
     });
 });
 

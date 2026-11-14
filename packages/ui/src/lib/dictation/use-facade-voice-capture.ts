@@ -22,6 +22,7 @@ import {
     FacadeTranscriptionError,
     MAX_AUDIO_DURATION_SECONDS,
     buildTranscriptionUrl,
+    recordingDurationSeconds,
     transcribeViaFacade,
     validateAudioInput,
     voiceCaptureReducer,
@@ -47,6 +48,13 @@ export interface PendingAudio {
 export interface UseFacadeVoiceCaptureOptions {
     /** §6.3: the transcript lands in the composer as editable draft text. */
     onInsert: (text: string) => void;
+    /**
+     * Called when a capture that can produce a transcript starts (record or
+     * attach), so the composer can mark the dictation origin: a transcript
+     * that lands after a session switch is kept for the draft it started in
+     * (the same guard the streaming dictation path uses).
+     */
+    onStart?: () => void;
     model?: string;
     language?: string;
 }
@@ -83,12 +91,22 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
     const chunksRef = React.useRef<Blob[]>([]);
     const startedAtRef = React.useRef(0);
     const capReachedRef = React.useRef(false);
+    // Microphone acquisition ownership: bumped when an acquisition starts
+    // and whenever the capture is torn down (cancel / unmount). A
+    // getUserMedia promise that resolves under a stale generation stops
+    // its tracks immediately instead of starting an ownerless recording.
+    const acquisitionRef = React.useRef(0);
+    const acquiringRef = React.useRef(false);
     const timerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
     const pendingRef = React.useRef<PendingAudio | null>(null);
     const onInsertRef = React.useRef(options.onInsert);
     React.useEffect(() => {
         onInsertRef.current = options.onInsert;
     }, [options.onInsert]);
+    const onStartRef = React.useRef(options.onStart);
+    React.useEffect(() => {
+        onStartRef.current = options.onStart;
+    }, [options.onStart]);
 
     const setPending = React.useCallback((next: PendingAudio | null) => {
         if (pendingRef.current && pendingRef.current.url !== next?.url) {
@@ -128,12 +146,21 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
             );
             return;
         }
+        if (acquiringRef.current || recorderRef.current?.state === 'recording') {
+            // One acquisition owns the microphone at a time: an overlapping
+            // start must not overwrite the live stream/recorder references.
+            return;
+        }
+        acquiringRef.current = true;
+        const acquisition = ++acquisitionRef.current;
+        onStartRef.current?.();
         setError(null);
         setResult(null);
         let stream: MediaStream;
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         } catch (cause) {
+            acquiringRef.current = false;
             // §6.1: a denied permission produces an in-composer explanation
             // with the file-attach fallback, not a modal dead end.
             const denied = cause instanceof DOMException && (cause.name === 'NotAllowedError' || cause.name === 'SecurityError');
@@ -145,6 +172,13 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
                         : 'The microphone could not be opened. Attach an audio file instead.',
                 ),
             );
+            return;
+        }
+        acquiringRef.current = false;
+        if (acquisition !== acquisitionRef.current) {
+            // Torn down (cancel/unmount) while permission was pending: this
+            // stream has no owner and no visible controls — stop it now.
+            stream.getTracks().forEach((track) => track.stop());
             return;
         }
         streamRef.current = stream;
@@ -159,10 +193,16 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
         };
         recorder.onstop = () => {
             stopTracks();
+            if (acquisition !== acquisitionRef.current) {
+                // Superseded or torn down mid-recording: drop the audio
+                // instead of surfacing a review for a dead capture.
+                chunksRef.current = [];
+                return;
+            }
             const mediaType = recorder.mimeType || 'audio/webm';
             const blob = new Blob(chunksRef.current, { type: mediaType });
             chunksRef.current = [];
-            const durationSeconds = Math.max(0, (Date.now() - startedAtRef.current) / 1000);
+            const durationSeconds = recordingDurationSeconds(startedAtRef.current, Date.now(), capReachedRef.current);
             setPending({
                 blob,
                 filename: RECORDING_FILENAME,
@@ -194,6 +234,8 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
     }, [finishRecording]);
 
     const cancel = React.useCallback(() => {
+        acquisitionRef.current += 1;
+        acquiringRef.current = false;
         // §6.1: cancel discards the captured audio immediately and locally.
         if (recorderRef.current && recorderRef.current.state !== 'inactive') {
             recorderRef.current.onstop = null;
@@ -210,6 +252,7 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
 
     const attachFile = React.useCallback(
         (file: File) => {
+            onStartRef.current?.();
             setError(null);
             setResult(null);
             const invalid = validateAudioInput({ sizeBytes: file.size, mediaType: file.type, filename: file.name });
@@ -277,6 +320,8 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
     // Never leave a live microphone or a dangling object URL behind.
     React.useEffect(
         () => () => {
+            acquisitionRef.current += 1;
+            acquiringRef.current = false;
             stopTracks();
             if (pendingRef.current) {
                 URL.revokeObjectURL(pendingRef.current.url);

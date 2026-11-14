@@ -529,6 +529,17 @@ export const voiceCaptureReducer = (state: VoiceCaptureState, event: VoiceCaptur
 
 export const canCancelCapture = (state: VoiceCaptureState): boolean => state === 'recording' || state === 'reviewing';
 
+/**
+ * Duration to report for a finished recording. A cap-stopped recording is
+ * measured after the timer fires, so its raw elapsed time overshoots the
+ * cap by the stop latency and §5.2 validation would reject the very clip
+ * the cap produced; clamp a cap-stopped recording to the cap itself.
+ */
+export const recordingDurationSeconds = (startedAtMs: number, nowMs: number, capReached: boolean): number => {
+    const measured = Math.max(0, (nowMs - startedAtMs) / 1000);
+    return capReached ? Math.min(measured, MAX_AUDIO_DURATION_SECONDS) : measured;
+};
+
 /** Seconds left before the §5.2 duration cap stops capture. */
 export const recordingSecondsRemaining = (elapsedSeconds: number): number =>
     Math.max(0, MAX_AUDIO_DURATION_SECONDS - Math.max(0, Math.floor(elapsedSeconds)));

@@ -30,6 +30,8 @@ interface FacadeVoiceCaptureProps {
     disabled?: boolean;
     /** §6.3 draft insertion, the same callback the dictation surface uses. */
     onInsert: (text: string) => void;
+    /** Marks the dictation origin draft when a capture starts (see the hook). */
+    onStart?: () => void;
     model?: string;
 }
 
@@ -40,9 +42,10 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
     iconSizeClass,
     disabled,
     onInsert,
+    onStart,
     model = DEFAULT_TRANSCRIPTION_MODEL,
 }) => {
-    const capture = useFacadeVoiceCapture({ onInsert, model });
+    const capture = useFacadeVoiceCapture({ onInsert, onStart, model });
     const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
     const openFilePicker = React.useCallback(() => {
@@ -62,7 +65,7 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
 
     const { state, error, pendingAudio, result } = capture;
     const showReview = (state === 'reviewing' || state === 'submitting' || state === 'error') && pendingAudio;
-    const showIdleError = state === 'idle' && error;
+    const showIdleError = (state === 'idle' || state === 'inserted') && error;
     const provenance = result?.provenance;
     const provenanceLine = provenance
         ? [
