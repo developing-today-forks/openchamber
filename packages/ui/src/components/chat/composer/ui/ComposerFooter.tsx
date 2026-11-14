@@ -17,6 +17,7 @@ import React from 'react';
 import { SessionGoalButton, SessionGoalObjectiveCounter, SessionGoalWriterButton } from '@/components/chat/SessionGoalButton';
 import { SubsessionModelsControl } from '@/components/chat/SubsessionModelsControl';
 import { ComposerDictation } from '@/components/dictation/ComposerDictation';
+import { FacadeVoiceCapture } from '@/components/dictation/FacadeVoiceCapture';
 import { Icon } from '@/components/icon/Icon';
 import type { GuestAttachItem } from '@/hooks/useGuestSurfaces';
 import { useI18n } from '@/lib/i18n';
@@ -342,6 +343,11 @@ function ComposerFooterView(props: ComposerFooterProps) {
                             onStart={onDictationStart}
                             onContentHeightChange={onDictationContentHeightChange}
                             onActiveChange={onDictationActiveChange}
+                        /> : null}
+                        {!isBtw ? <FacadeVoiceCapture
+                            footerIconButtonClass={footerIconButtonClass}
+                            iconSizeClass={iconSizeClass}
+                            onInsert={onDictationInsert}
                         /> : null}
                         {parallelRun ? (
                             // Parallel mode keeps the ordinary send button: the strip above
