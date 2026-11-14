@@ -79,6 +79,9 @@ interface ComposerFooterProps {
     onDictationInsertAndSend: (text: string) => void;
     onDictationSendStart: () => void;
     onDictationStart: () => void;
+    /** Facade capture has its own dictation origin (see useDictationOrigin); falls back to the streaming handlers when absent. */
+    onFacadeDictationInsert?: (text: string) => void;
+    onFacadeDictationStart?: () => void;
     onDictationContentHeightChange: (height: number | null) => void;
     /** Desktop only: the composer box hides its other contents while the overlay is up. */
     onDictationActiveChange?: (active: boolean) => void;
@@ -150,6 +153,8 @@ function ComposerFooterView(props: ComposerFooterProps) {
         onDictationInsertAndSend,
         onDictationSendStart,
         onDictationStart,
+        onFacadeDictationInsert,
+        onFacadeDictationStart,
         onDictationContentHeightChange,
         onDictationActiveChange,
         isBtw = false,
@@ -347,8 +352,8 @@ function ComposerFooterView(props: ComposerFooterProps) {
                         {!isBtw ? <FacadeVoiceCapture
                             footerIconButtonClass={footerIconButtonClass}
                             iconSizeClass={iconSizeClass}
-                            onInsert={onDictationInsert}
-                            onStart={onDictationStart}
+                            onInsert={onFacadeDictationInsert ?? onDictationInsert}
+                            onStart={onFacadeDictationStart ?? onDictationStart}
                         /> : null}
                         {parallelRun ? (
                             // Parallel mode keeps the ordinary send button: the strip above
