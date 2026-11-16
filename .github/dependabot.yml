@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # This repo is a bun-managed monorepo (root package.json sets
+  # packageManager: bun@1.4.3; a single root bun.lock covers the
+  # packages/* workspaces, and workspace dirs such as /packages/ui carry
+  # no package-lock.json / yarn.lock / pnpm-lock.yaml of their own).
+  # Without this file, Dependabot auto-detects npm_and_yarn per manifest
+  # directory and fails on those lockfile-less workspace dirs with
+  # dependency_file_not_supported (issue #2325: the simple-git security
+  # job for /packages/ui errored with "Dependabot can't update vulnerable
+  # dependencies for projects without a lockfile ... as the currently
+  # installed version of simple-git isn't known"). Declaring the bun
+  # ecosystem at / routes Dependabot -- version and security updates --
+  # through the bun updater against the root bun.lock, where the
+  # installed versions (e.g. simple-git 3.36.0) are actually recorded.
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Version-update PRs are owned by Renovate (see renovate.json); keep
+    # Dependabot version updates off so the two bots don't file duplicate
+    # PRs. Security updates are exempt from this limit and still run.
+    open-pull-requests-limit: 0
