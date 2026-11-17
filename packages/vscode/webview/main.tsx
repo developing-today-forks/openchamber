@@ -19,6 +19,7 @@ import type { VSCodeActiveEditorFile } from '@/sync/input-store';
 import { usePermissionStore } from '@openchamber/ui/stores/permissionStore';
 import { permissionPolicyWireSchema, policySnapshotFromWire } from '@openchamber/ui/stores/utils/permissionAutoAccept';
 import { processVSCodePermissionAutoAccept } from '@openchamber/ui/sync/vscode-permission-auto-accept';
+import { isVSCodeSelectionWithinLimit } from '@openchamber/ui/sync/vscode-selection-size';
 import { resolveBlockingRequestRoot } from '@openchamber/ui/sync/blocking-request-root';
 import type { AssistantMessage, Part } from '@openchamber/ui/lib/opencode/model';
 import { syncEventSessionID, type SyncEvent } from '@openchamber/ui/lib/opencode/events';
@@ -1293,7 +1294,7 @@ const handleLocalApiRequest = async (input: RequestInfo | URL, url: URL, init: R
     }
   }
 
-  const quotaCredentialMatch = pathname.match(/^\/api\/quota\/credentials\/(exe-dev|cursor|zenmux)(?:\/(validate|import))?$/);
+  const quotaCredentialMatch = pathname.match(/^\/api\/quota\/credentials\/(exe-dev|cursor|zenmux|opendesign)(?:\/(validate|import))?$/);
   if (quotaCredentialMatch) {
     try {
       const body = method === 'PUT' ? await extractJsonBody(input, init, method) : undefined;
@@ -1553,6 +1554,8 @@ onCommand('addContextSelection', (payload) => {
   if (!trimmedPath || !trimmedFilename || !text.trim()) {
     return;
   }
+
+  if (!isVSCodeSelectionWithinLimit(text)) return;
 
   import('@/sync/input-store').then(({ useInputStore }) => {
     const file = new File([new Blob([text], { type: 'text/plain' })], trimmedFilename, { type: 'text/plain' });

@@ -77,16 +77,32 @@ const toCharRanges = (lineBytes, submatches) => {
   return ranges;
 };
 
+const isHighSurrogate = (code) => code >= 0xd800 && code <= 0xdbff;
+const isLowSurrogate = (code) => code >= 0xdc00 && code <= 0xdfff;
+
 const buildPreview = (lineBytes, submatches) => {
   const fullText = lineBytes.toString('utf8').replace(/\r?\n$/, '');
   const fullRanges = toCharRanges(lineBytes, submatches);
   const firstMatchStart = fullRanges[0]?.[0] ?? 0;
 
   const indentation = /^\s*/.exec(fullText)?.[0].length ?? 0;
-  const cut = firstMatchStart - indentation > PREVIEW_UNCUT_MATCH_START
+  const rawCut = firstMatchStart - indentation > PREVIEW_UNCUT_MATCH_START
     ? firstMatchStart - PREVIEW_LEAD_CHARS
     : indentation;
-  const text = fullText.slice(cut, cut + PREVIEW_MAX_CHARS);
+  // Never split a surrogate pair at either window edge (#2152): if the
+  // cut lands on a low surrogate, start one code unit later so the
+  // orphaned half is excluded whole; if the window would end on a high
+  // surrogate, end one code unit earlier. The window only ever shrinks,
+  // so the PREVIEW_MAX_CHARS cap holds and the ranges below, shifted by
+  // cut and clamped to text.length, stay correct.
+  const cut = rawCut > 0 && isLowSurrogate(fullText.charCodeAt(rawCut)) && isHighSurrogate(fullText.charCodeAt(rawCut - 1))
+    ? rawCut + 1
+    : rawCut;
+  const rawEnd = Math.min(fullText.length, cut + PREVIEW_MAX_CHARS);
+  const end = rawEnd < fullText.length && isHighSurrogate(fullText.charCodeAt(rawEnd - 1)) && isLowSurrogate(fullText.charCodeAt(rawEnd))
+    ? rawEnd - 1
+    : rawEnd;
+  const text = fullText.slice(cut, end);
   const ranges = [];
   for (const [start, end] of fullRanges) {
     const shiftedStart = Math.max(0, start - cut);
@@ -176,7 +192,9 @@ export const createContentSearchRuntime = ({
       let aborted = false;
       let settled = false;
       let stderr = '';
+      let stderrBytes = 0;
       const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
       let pending = [];
       let pendingBytes = 0;
       let lineOversized = false;
@@ -251,6 +269,30 @@ export const createContentSearchRuntime = ({
         pendingBytes = 0;
         lineOversized = false;
       };
+      // stderr is decoded the way stdout is: a multi-byte character can be
+      // split across chunks, and per-chunk decoding would corrupt it in the
+      // failure message. The cap counts bytes, not characters; a character
+      // that would cross it is dropped whole rather than sliced, and chunks
+      // keep being drained after the cap so ripgrep never blocks.
+      const appendStderr = (text) => {
+        if (!text || stderrBytes >= STDERR_MAX_BYTES) return;
+        const textBytes = Buffer.byteLength(text, 'utf8');
+        if (stderrBytes + textBytes <= STDERR_MAX_BYTES) {
+          stderr += text;
+          stderrBytes += textBytes;
+          return;
+        }
+        let remaining = STDERR_MAX_BYTES - stderrBytes;
+        let kept = '';
+        for (const character of text) {
+          const characterBytes = Buffer.byteLength(character, 'utf8');
+          if (characterBytes > remaining) break;
+          kept += character;
+          remaining -= characterBytes;
+          stderrBytes += characterBytes;
+        }
+        stderr += kept;
+      };
       child.stdout.on('data', (chunk) => {
         const text = stdoutDecoder.write(chunk);
         let lineStart = 0;
@@ -265,7 +307,7 @@ export const createContentSearchRuntime = ({
       });
       // Read stderr to the end: an unread pipe can block ripgrep forever.
       child.stderr.on('data', (chunk) => {
-        if (stderr.length < STDERR_MAX_BYTES) stderr += chunk.toString('utf8', 0, STDERR_MAX_BYTES - stderr.length);
+        appendStderr(stderrDecoder.write(chunk));
       });
       child.on('error', (error) => finish({ status: 'failed', message: error.message }));
       child.on('close', (code) => {
@@ -274,6 +316,7 @@ export const createContentSearchRuntime = ({
           return;
         }
         pushPiece(stdoutDecoder.end());
+        appendStderr(stderrDecoder.end());
         if (!lineOversized) consume(pending.join(''));
         matches.sort((a, b) => (a.relativePath < b.relativePath ? -1 : a.relativePath > b.relativePath ? 1 : a.line - b.line));
         // 0: matches, 1: none, 2: an error. ripgrep also exits 2 after a

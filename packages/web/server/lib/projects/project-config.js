@@ -19,6 +19,7 @@ import {
 } from './project-setup.js';
 
 const PROJECT_CONFIG_VERSION = 1;
+const PERSONAL_PROJECT_CONFIG_MAX_BYTES = SHARED_PROJECT_CONFIG_MAX_BYTES;
 export const MAX_TASK_NAME_LENGTH = 80;
 const MAX_TASK_PROMPT_LENGTH = 20_000;
 const MAX_CRON_LENGTH = 200;
@@ -32,11 +33,19 @@ const asNonEmptyString = (value) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+// The clamp must not split a surrogate pair: a value cut right after a high
+// surrogate drops that half, because the clamped value is persisted and
+// rendered, where a lone surrogate becomes U+FFFD permanently.
 const clampLength = (value, maxLength) => {
   if (typeof value !== 'string') {
     return '';
   }
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
+  if (value.length <= maxLength) {
+    return value;
+  }
+  const cut = value.slice(0, maxLength);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 };
 
 const normalizeStatus = (value) => {
@@ -544,13 +553,39 @@ export const createProjectConfigRuntime = (deps) => {
   // `missingCodes`). Malformed JSON still throws; it is a broken file, not
   // an empty one.
   const readJsonDocumentIfPresent = async (filePath, missingCodes) => {
-    let raw;
+    let handle;
     try {
-      raw = await fsPromises.readFile(filePath, 'utf8');
+      const constants = fsPromises.constants ?? {};
+      const openFlags = process.platform === 'win32' || constants.O_NONBLOCK === undefined
+        ? 'r'
+        : constants.O_RDONLY | constants.O_NONBLOCK;
+      handle = await fsPromises.open(filePath, openFlags);
     } catch (error) {
       const code = error && typeof error === 'object' ? error.code : null;
       if (missingCodes.includes(code)) return null;
       throw error;
+    }
+    let raw;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        throw new Error(`personal project config is not a regular file: ${filePath}`);
+      }
+      const tooLarge = () => new Error(
+        `personal project config is too large: ${filePath} exceeds the ${PERSONAL_PROJECT_CONFIG_MAX_BYTES}-byte limit`,
+      );
+      if (stat.size > PERSONAL_PROJECT_CONFIG_MAX_BYTES) throw tooLarge();
+      const buffer = Buffer.alloc(PERSONAL_PROJECT_CONFIG_MAX_BYTES + 1);
+      let total = 0;
+      while (total < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+      }
+      if (total > PERSONAL_PROJECT_CONFIG_MAX_BYTES) throw tooLarge();
+      raw = buffer.toString('utf8', 0, total);
+    } finally {
+      await handle.close();
     }
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};

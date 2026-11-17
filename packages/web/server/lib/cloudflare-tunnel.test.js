@@ -3,8 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { execFileSync } from 'node:child_process';
+
 import {
   checkCloudflaredAvailable,
+  extractHostnameFromCloudflaredConfigDetailed,
+  inspectManagedLocalCloudflareConfig,
+  startCloudflareManagedLocalTunnel,
   startCloudflareManagedRemoteTunnel,
   startCloudflareQuickTunnel,
 } from './cloudflare-tunnel.js';
@@ -255,6 +260,155 @@ describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
 
     expect(outcome.status).toBe('resolved');
     expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
+    outcome.value.stop();
+  });
+});
+
+describe('managed local config bounded read', () => {
+  const tempDirs = [];
+  const makeDir = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-config-'));
+    tempDirs.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+  const CONFIG = 'ingress:\n  - hostname: example.com\n    service: http://localhost:3000\n  - service: http_status:404\n';
+
+  it('resolves the ingress hostname of a valid config (control)', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    fs.writeFileSync(configPath, CONFIG);
+    expect(inspectManagedLocalCloudflareConfig({ configPath })).toMatchObject({ ok: true, resolvedHostname: 'example.com' });
+  });
+
+  it('refuses a config grown past the cap after the stat point instead of parsing it whole', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    // The state the extractor faces when the file grew between
+    // assertReadableFile's stat and the read: over the 256 KiB cap with a
+    // valid ingress hostname at the top. Pre-fix this returned the hostname.
+    fs.writeFileSync(configPath, `${CONFIG}\n# ${'x'.repeat(300_000)}\n`);
+    const result = extractHostnameFromCloudflaredConfigDetailed(configPath);
+    expect(result.hostname).toBeNull();
+    expect(result.parseError?.message).toBe('Managed local tunnel config file is too large (max 262144 bytes).');
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a FIFO swapped in at the config path promptly instead of blocking on the read', () => {
+    const configPath = path.join(makeDir(), 'config.yml');
+    execFileSync('mkfifo', [configPath]);
+    // Pre-fix this read blocked forever; the test timeout is the guard.
+    const result = extractHostnameFromCloudflaredConfigDetailed(configPath);
+    expect(result.hostname).toBeNull();
+    expect(result.parseError?.message).toBe('Managed local tunnel config path is not a file. Select a cloudflared config file.');
+    expect(inspectManagedLocalCloudflareConfig({ configPath }).error).toContain('path is not a file');
+  });
+});
+describe('managed tunnel stderr forwarding (#1734)', () => {
+  const originalPath = process.env.PATH;
+  const tempDirs = [];
+  let originalStderrWrite = null;
+  let forwarded = '';
+
+  const installFakeCloudflared = (onTunnelStart) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-forward-'));
+    tempDirs.push(dir);
+    const binary = path.join(dir, 'cloudflared');
+    fs.writeFileSync(binary, `#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "cloudflared version 2025.1.0"\n  exit 0\nfi\n${onTunnelStart}\n`, { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ''}`;
+    return dir;
+  };
+
+  const settleWithin = (promise, timeoutMs = 3000) => new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve({ status: 'resolved', value });
+      },
+      (error) => {
+        clearTimeout(timeout);
+        resolve({ status: 'rejected', error });
+      },
+    );
+  });
+
+  const captureStderr = () => {
+    forwarded = '';
+    originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      forwarded += String(chunk);
+      return true;
+    };
+  };
+
+  afterEach(() => {
+    if (originalStderrWrite) {
+      process.stderr.write = originalStderrWrite;
+      originalStderrWrite = null;
+    }
+    process.env.PATH = originalPath;
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
+    }
+  });
+
+  // Fire emoji (F0 9F 94 A5) split 2/2 and euro sign (E2 82 AC) split 1/2
+  // across stderr pipe chunks, then a ready line so startup settles. The
+  // ready line is a printf format string so its trailing newline is real.
+  const splitChunksScript = [
+    'printf "\\360\\237" >&2',
+    'sleep 0.2',
+    'printf "\\224\\245 euro \\342" >&2',
+    'sleep 0.2',
+    'printf "\\202\\254\\n" >&2',
+    'printf "Registered tunnel connection connIndex=0\\n" >&2',
+    'exec sleep 5',
+  ].join('\n');
+
+  it('forwards split multi-byte stderr intact from the managed-remote starter', async () => {
+    installFakeCloudflared(splitChunksScript);
+    captureStderr();
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(forwarded).toContain('🔥');
+    expect(forwarded).toContain('€');
+    expect(forwarded).not.toContain('�');
+    outcome.value.stop();
+  });
+
+  it('forwards split multi-byte stderr intact from the managed-local starter', async () => {
+    const dir = installFakeCloudflared(splitChunksScript);
+    const configPath = path.join(dir, 'config.yml');
+    fs.writeFileSync(configPath, 'ingress:\n  - hostname: tunnel.example.com\n    service: http://localhost:3000\n  - service: http_status:404\n');
+    captureStderr();
+
+    const outcome = await settleWithin(startCloudflareManagedLocalTunnel({ configPath, hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(forwarded).toContain('🔥');
+    expect(forwarded).toContain('€');
+    expect(forwarded).not.toContain('�');
+    outcome.value.stop();
+  });
+
+  it('forwards unsplit multi-byte stderr intact (control)', async () => {
+    installFakeCloudflared([
+      'printf "fire 🔥 euro €\\n" >&2',
+      'printf "Registered tunnel connection connIndex=0\\n" >&2',
+      'exec sleep 5',
+    ].join('\n'));
+    captureStderr();
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('resolved');
+    expect(forwarded).toContain('🔥');
+    expect(forwarded).toContain('€');
+    expect(forwarded).not.toContain('�');
     outcome.value.stop();
   });
 });

@@ -90,8 +90,12 @@ and OpenChamber resolves the directory itself.
   and publishes through a same-directory hard link so partial files and overwrites
   are impossible. Identical retries reuse the existing file; a manually edited
   collision returns 409. Temporary files are ignored by the loader and removed
-  after publication or failure. Non-missing-directory read failures propagate to
-  the route instead of returning an authoritative empty library.
+  after publication or failure. `readThemeFileBounded` opens with `O_NONBLOCK` on
+  POSIX before checking the opened file type, so a FIFO, including one behind a
+  supported theme symlink, is rejected promptly. The reader follows symlinks to
+  regular theme files; `O_NOFOLLOW` would break that behavior. Non-missing-directory
+  read failures propagate to the route instead of returning an authoritative empty
+  library.
 
   The common request middleware parses theme POST bodies before these routes;
   integration tests must use that middleware rather than an unrestricted test parser.
@@ -357,7 +361,7 @@ The runtime maintains active-session count incrementally from idempotent activit
 
 ### Why the session-activity snapshot is a versioned envelope and not the bare phase map
 
-`getSessionActivitySnapshot()` returns the external observability contract v1 (design #612, phase 1 - #524): `{ version: 1, serverTime, watcherReady, sessions }`, where each session entry keeps the frozen `{ type }` phase and adds `lastActivityAt` (the phase map's recorded `updatedAt`), `status` (session-state map), `model` (the observed `{ modelID, providerID }` pair remembered by the notifications runtime from the session's latest assistant message, or null), `toolInFlight` (null while no in-process source tracks it), and `queue` (the session's queue binding `{ taskId, issueNumber, queue, lane }` from the binding source the launch side registered with the runtime, or null when no binding is known for the session). Unknowns are explicit nulls, never fabricated values, and `watcherReady` stays false until the watcher stream delivers its first payload in the process, so an empty read is distinguishable from a watcher that has not started. The bare `{ [sessionId]: { type } }` map was rejected for the envelope because external consumers cannot version, timestamp, or readiness-mark a bare map without colliding with session IDs.
+`getSessionActivitySnapshot()` returns the external observability contract v1 (design #612, phase 1 - #524): `{ version: 1, serverTime, watcherReady, sessions }`, where each session entry keeps the frozen `{ type }` phase and adds `lastActivityAt` (the phase map's recorded `updatedAt`), `status` (session-state map), `model` (the observed `{ modelID, providerID }` pair remembered by the notifications runtime from the session's latest assistant message, or null), `toolInFlight` (null — the settled contract: no in-process source tracks it, and it stays null until the upstream event model changes; follow-up #1441, decided 2026-11-13/16), and `queue` (the session's queue binding `{ taskId, issueNumber, queue, lane }` from the binding source the launch side registered with the runtime, or null when no binding is known for the session). Unknowns are explicit nulls, never fabricated values, and `watcherReady` is owned by both signals together (follow-up #1441, decided 2026-11-13/16): it stays false until the watcher stream is connected AND has delivered its first payload in the process, and drops back to false when the stream disconnects, so an empty read is distinguishable from a watcher that has not started or has dropped. The bare `{ [sessionId]: { type } }` map was rejected for the envelope because external consumers cannot version, timestamp, or readiness-mark a bare map without colliding with session IDs.
 
 ### Why the queue binding comes from a registered source and not a ledger read
 
@@ -383,7 +387,7 @@ The envelope:
 | --- | --- | --- |
 | `version` | number | Contract version, always `1`. |
 | `serverTime` | number | The server's clock when the snapshot was built, epoch milliseconds. |
-| `watcherReady` | boolean | `false` until the OpenCode watcher stream delivers its first payload in this process. An empty `sessions` map with `watcherReady: false` means "the watcher has not started", not "no sessions exist"; with `watcherReady: true` it means no session has reported activity. |
+| `watcherReady` | boolean | `false` until the OpenCode watcher stream is connected AND has delivered its first payload in this process; `false` again once the stream disconnects. An empty `sessions` map with `watcherReady: false` means "the watcher is not live", not "no sessions exist"; with `watcherReady: true` it means no session has reported activity. |
 | `sessions` | object | Map of session ID to activity entry (below). Entries are pruned after 24 hours without a phase change. |
 
 Each entry in `sessions` has exactly these six keys:
@@ -394,7 +398,7 @@ Each entry in `sessions` has exactly these six keys:
 | `lastActivityAt` | number | When the phase last changed, epoch milliseconds. |
 | `status` | string \| null | The session-state map's status for this session, or `null` when no state has been recorded for it. |
 | `model` | object \| null | The **observed** model pair `{ modelID, providerID }` (each a string or `null` when unreported) from the session's latest assistant message — observed, not the configured model — or `null` when no assistant message has been observed for the session. There is no separate `provider` key. |
-| `toolInFlight` | null | Pinned `null` in v1 today: no in-process source tracks a per-session in-flight tool, and rule 2 forbids fabricating one. The key exists so a future source can fill it without a version break. |
+| `toolInFlight` | null | Pinned `null` in v1, and settled as the long-term contract (follow-up #1441, decided 2026-11-13/16): no in-process source tracks a per-session in-flight tool, rule 2 forbids fabricating one, and real tracking stays out of scope until the upstream event model changes. The key exists so that future source can fill it without a version break. |
 | `queue` | object \| null | The session's queue binding, or `null` when no binding is known for the session (interactive/dispatcher sessions, or no source registered in this process). When bound, exactly `{ taskId, issueNumber, queue, lane }`: the repo-queue task id and issue number (numbers, or `null` when the source cannot verify them), the queue name and the lane id (strings, or `null` likewise). The source is the binding the launch side registered with the session runtime — the task ledger row bound to that session id at launch (code#1656 step 3) — projected through this allowlist, never inferred from the process table (rule 5) and never carrying auth material (rule 4). |
 
 This read is a pollable snapshot, not a stream guarantee: phases are the latest recorded state at `serverTime`, and a phase that starts and ends between two polls may never appear.
@@ -473,7 +477,7 @@ Liveness as landed: a recorded entry appears only while two checks pass for its 
 - Scope: POSIX only. The successor runs under Node, so a foreground server must run under Node: the daemon runs under Bun whenever Bun is installed, and Bun does not expose the listening socket's descriptor, so that handoff is refused and logged. A handoff runs the entry the process was started from, so it does not pick up a newer install; an upgrade still needs a restart.
 - Known gaps: children other than OpenCode may inherit fd 3 in the successor; if a successor changes the OpenCode launch (binary or arguments) and then fails, `state.json` may name its OpenCode; `openchamber restart` still stops OpenCode with SIGINT. Scheduled tasks claim each occurrence in shared config, so the overlap window does not double-run them (read, not tested).
 - Without socket activation, the listener is released on every restart and clients see a short outage.
-- Known gaps: the state file has no migration path beyond version 1; there is no versioned state store yet, and upgrade handoff (a newer install taking over) is not done (see `TODO.md`).
+- Known gaps: the v2 versioned store (`store.json`, `managed-opencode-state.js`: generations, write-ahead handoff record, v1 migration, store-only reaper) is wired into `lifecycle.js` as a dual-write with the v1 `state.json` + `draining.json` pair, kept for one release: the store is the ownership record for action paths, and retiring the v1 pair is the remaining step: retirement first has to move the readers still on the pair (`isOwnedOpenCodePid` v1 ownership/draining checks, startup adoption from the saved `state.json` record, orphan and drain recovery reading `draining.json`), not just delete the files; upgrade handoff (a newer install taking over) is not done (see `TODO.md`).
 
 Managed OpenCode launch also merges the environment returned by the agent-tool
 runtime and the opt-in system prompt optimizer, each appending its `file://`

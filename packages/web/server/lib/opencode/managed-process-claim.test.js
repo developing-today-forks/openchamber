@@ -139,11 +139,24 @@ describe('bounded registry reads (#1736)', () => {
     expect(fs.existsSync(fifo)).toBe(true);
   });
 
-  it('async: a FIFO claim settles the sweep and is left in place', async () => {
-    const fifo = mkfifo('500.claim-from-100');
+  it('async: a FIFO claim for a dead filename pid is reaped by the sweep (#1822)', async () => {
+    const dead = await deadPid();
+    const fifo = mkfifo(`${dead}.claim-from-100`);
     const registry = createManagedProcessRegistry();
     await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
-    expect(fs.existsSync(fifo)).toBe(true);
+    expect(fs.existsSync(fifo)).toBe(false);
+  });
+
+  it('async: a FIFO claim for a live filename pid settles the sweep and is left in place (#1822)', async () => {
+    const live = spawnLiveProcess();
+    try {
+      const fifo = mkfifo(`${live.pid}.claim-from-100`);
+      const registry = createManagedProcessRegistry();
+      await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
+      expect(fs.existsSync(fifo)).toBe(true);
+    } finally {
+      live.kill();
+    }
   });
 
   it('async: an over-cap entry settles as unreadable', async () => {
@@ -153,11 +166,25 @@ describe('bounded registry reads (#1736)', () => {
     await expect(registry.readAllEntries()).resolves.toEqual([]);
   });
 
-  it('async: an over-cap claim is left for a later sweep, not swept as a dead holder', async () => {
-    const claimPath = path.join(dir, '500.claim-from-100');
+  it('async: an over-cap claim for a dead filename pid is reaped by the sweep (#1822)', async () => {
+    const dead = await deadPid();
+    const claimPath = path.join(dir, `${dead}.claim-from-100`);
     fs.writeFileSync(claimPath, `999999${' '.repeat(2048)}`);
     const registry = createManagedProcessRegistry();
     await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
-    expect(fs.existsSync(claimPath)).toBe(true);
+    expect(fs.existsSync(claimPath)).toBe(false);
+  });
+
+  it('async: an over-cap claim for a live filename pid is left in place (#1822)', async () => {
+    const live = spawnLiveProcess();
+    try {
+      const claimPath = path.join(dir, `${live.pid}.claim-from-100`);
+      fs.writeFileSync(claimPath, `999999${' '.repeat(2048)}`);
+      const registry = createManagedProcessRegistry();
+      await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
+      expect(fs.existsSync(claimPath)).toBe(true);
+    } finally {
+      live.kill();
+    }
   });
 });

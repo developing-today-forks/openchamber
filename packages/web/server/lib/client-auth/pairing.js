@@ -24,12 +24,22 @@ const normalizeOptionalString = (value) => {
 // fall back to the device's own reported name instead of this placeholder.
 const PAIRING_LABEL_PLACEHOLDER = 'Pair new device';
 
+// A plain slice at the cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that encodes as U+FFFD on disk and in the
+// device list; move a cut that lands inside a pair back to the pair boundary.
+const clipPairSafe = (text, limit) => {
+  if (text.length <= limit) return text;
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
 // The operator's typed device label, capped. Returns null when unset so callers
 // can distinguish "no name given" from a real name.
 const normalizeStoredLabel = (value) => {
   const normalized = normalizeOptionalString(value);
   if (!normalized) return null;
-  return normalized.length > MAX_LABEL_LENGTH ? normalized.slice(0, MAX_LABEL_LENGTH) : normalized;
+  return clipPairSafe(normalized, MAX_LABEL_LENGTH);
 };
 
 const normalizeTimestamp = (value) => {

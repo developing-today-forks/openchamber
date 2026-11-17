@@ -66,7 +66,9 @@ worktree setup commands and `/api/fs/exec`. There are two layers:
   inherits the previous one's outcome.
 - `opencode-service-env.js`: reads `env` from `service.json` in OpenCode's
   global config directory (the stable channel's file only). Not a published
-  OpenCode contract; anything unexpected reads as no variables.
+  OpenCode contract. The shared bounded reader caps the file at 1 MiB and
+  rejects non-regular files without blocking. Missing, unreadable, over-cap,
+  non-regular or invalid files yield no variables; this file is read-only.
 - `routes.js`: `/api/environment` (user) and `/api/environment/projects/:id`
   (+ `/reload`). On the JSON-body allowlist in `opencode/core-routes.js`.
   Every answer carries `references` (the variables whose value is a vault

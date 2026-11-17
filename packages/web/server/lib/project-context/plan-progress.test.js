@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -136,5 +137,20 @@ describe('createPlanSummaryCache', () => {
     expect(summary.tooLarge).toBe(true);
     expect(summary.progress).toBeNull();
     expect(await readBoundedUtf8(fake, '/plans/growing.md', 8)).toBeNull();
+  });
+});
+
+describe('readBoundedUtf8 non-regular files', () => {
+  test.skipIf(process.platform === 'win32')('a FIFO at a plan path is refused promptly instead of blocking at open', async () => {
+    const dir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'oc-plan-fifo-'));
+    try {
+      const file = path.join(dir, 'plan.md');
+      execFileSync('mkfifo', [file]);
+      await expect(readBoundedUtf8(fsPromises, file, 1024)).rejects.toThrow('not a regular file');
+      const cache = createPlanSummaryCache({ fsPromises, parseTitle: () => 'Plan' });
+      await expect(cache.summaryOf(file)).rejects.toThrow('not a regular file');
+    } finally {
+      await fsPromises.rm(dir, { recursive: true, force: true });
+    }
   });
 });

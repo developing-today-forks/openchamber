@@ -6,14 +6,16 @@ import { TOMBSTONE_TTL_MS, applyFolderChanges, folderChangesBodySchema } from '.
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /**
- * Read cap for the stored snapshot file. The write side refuses any
- * snapshot whose serialized form exceeds MAX_BODY_BYTES (4 MiB), but
- * writeSnapshot persists pretty-printed JSON, which is larger than the
- * compact form the POST check measures, and a stored file must stay
- * readable for everything the writer could legitimately have written.
- * Twice the write cap (8 MiB) gives that headroom while keeping one
- * oversized file from being buffered whole - and a FIFO from wedging
- * the serialized save queue, whose reads go through this cap.
+ * Read cap for the stored snapshot file, and the size invariant for the
+ * whole store: no write path may persist a snapshot whose persisted form
+ * - the pretty-printed JSON writeSnapshot writes, measured exactly -
+ * exceeds this cap, so anything the writer produced stays readable.
+ * Incoming POST bodies are additionally capped at MAX_BODY_BYTES
+ * (4 MiB), but a POST's merged snapshot and a PATCH's resulting snapshot
+ * are judged against this cap (8 MiB), the same limit for both, so a
+ * store POST legitimately wrote can always be PATCHed again. The cap
+ * also keeps one oversized file from being buffered whole - and a FIFO
+ * from wedging the serialized save queue, whose reads go through it.
  */
 export const MAX_STORED_SNAPSHOT_BYTES = 2 * MAX_BODY_BYTES;
 
@@ -268,12 +270,27 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
         // A valid whole copy repairs a malformed file, as it always did.
         const current = await readCurrent() ?? EMPTY_SNAPSHOT;
         const merged = mergeSnapshots(current, body, now());
-        const changed = JSON.stringify(merged.foldersMap) !== JSON.stringify(current.foldersMap ?? {});
+        // #2162: the merge persists more than the folder map — a
+        // collapse-only or tombstone-only POST changes durable state
+        // too, and must advance the revision and announce like any
+        // other change, or connected clients keep stale state.
+        const changed = JSON.stringify(merged.foldersMap) !== JSON.stringify(current.foldersMap ?? {})
+          || JSON.stringify(merged.collapsedFolderIds) !== JSON.stringify(current.collapsedFolderIds ?? [])
+          || JSON.stringify(merged.deletedFolderIds ?? {}) !== JSON.stringify(current.deletedFolderIds ?? {});
         // The writer's clock is its own; a change still moves the revision
         // past the stored one, or clients that saw it would skip the read.
         const outgoing = changed
           ? { ...merged, updatedAt: Math.max(merged.updatedAt, now(), (Number.isFinite(current.updatedAt) ? current.updatedAt : 0) + 1) }
           : merged;
+        // The guard above measures the incoming body, never the thing
+        // actually written: a merge with the stored snapshot can exceed
+        // the read cap even when both halves are under their own caps,
+        // and a stored file over MAX_STORED_SNAPSHOT_BYTES reads back as
+        // malformed forever after (#1761). Measure the merged snapshot
+        // in the persisted (pretty) form and refuse without writing.
+        if (Buffer.byteLength(JSON.stringify(outgoing, null, 2), 'utf8') > MAX_STORED_SNAPSHOT_BYTES) {
+          return res.status(413).json({ error: 'Session folders too large' });
+        }
         await writeSnapshot(outgoing);
         if (changed) announce(outgoing.updatedAt);
         return res.json({ success: true });
@@ -296,7 +313,12 @@ export const registerSessionFoldersRoutes = (app, dependencies) => {
         if (!current) return res.status(500).json({ error: 'Stored session folders are malformed' });
         const { snapshot, changed } = applyFolderChanges(current, parsed.data.changes, now());
         if (changed) {
-          if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > MAX_BODY_BYTES) {
+          // Measure the exact bytes writeSnapshot persists (pretty form),
+          // not the compact form: for session-id-heavy snapshots pretty
+          // can be ~3.75x compact, so a compact check let the writer
+          // produce a file over the read cap that then wedged the store
+          // as malformed (#1745).
+          if (Buffer.byteLength(JSON.stringify(snapshot, null, 2), 'utf8') > MAX_STORED_SNAPSHOT_BYTES) {
             return res.status(413).json({ error: 'Session folders too large' });
           }
           await writeSnapshot(snapshot);

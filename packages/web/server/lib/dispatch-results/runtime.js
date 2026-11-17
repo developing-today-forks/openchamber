@@ -178,9 +178,18 @@ export const readDispatchOutcome = (records, dispatchedAt, afterIdleId) => {
   };
 };
 
+// A fixed-offset cut can land between the halves of a surrogate pair,
+// leaving a lone surrogate that encodes as U+FFFD when the dispatch-result
+// message is encoded for the parent session; move a cut that lands inside
+// a pair back to the pair boundary.
+const dropSplitHead = (text) => {
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+};
+
 const outcomeBody = ({ state, text, errorMessage }, sessionId) => {
   const answer = text.length > ANSWER_CHAR_LIMIT
-    ? `${text.slice(0, ANSWER_CHAR_LIMIT)}\n\n[Cut at ${ANSWER_CHAR_LIMIT} characters; read the rest with session.messages for ${sessionId}.]`
+    ? `${dropSplitHead(text.slice(0, ANSWER_CHAR_LIMIT))}\n\n[Cut at ${ANSWER_CHAR_LIMIT} characters; read the rest with session.messages for ${sessionId}.]`
     : text;
   if (state === 'completed') return answer || 'The session finished without a text reply.';
   if (state === 'error') {
@@ -369,7 +378,7 @@ export function createDispatchResultsRuntime({
   const readWatchedSession = async (sessionId) => {
     const statuses = await activityProbe.fetchActiveSessionStatuses();
     if (!statuses) return null;
-    if (statuses[sessionId]) return { kind: 'running' };
+    if (Object.hasOwn(statuses, sessionId) && statuses[sessionId]) return { kind: 'running' };
     // A turn is over only when its subagents are done too: the session idles
     // while a background subagent works and runs again on its result.
     const subagentsWorking = await activityProbe.hasWorkingChildren(sessionId, statuses);

@@ -35,6 +35,12 @@ const clickupGuest = {
   },
 };
 
+// UTF-8 round-trip oracle: TextEncoder replaces lone surrogates with U+FFFD.
+const isPairSafeAfterUtf8RoundTrip = (account) => {
+  const decoded = new TextDecoder().decode(new TextEncoder().encode(account));
+  return decoded === account && !decoded.includes('\uFFFD');
+};
+
 afterEach(() => {
   clearGuestPendingForTests();
 });
@@ -304,6 +310,28 @@ describe('saveGuestAccessToken with a basic scheme', () => {
     }
   });
 
+  test('keeps a provider account label at the surrogate-pair boundary', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-guest-basic-'));
+    const persistPath = guestAuthPersistPath(dir);
+    const originalFetch = globalThis.fetch;
+    const straddlingLabel = `${'a'.repeat(199)}😀`;
+    const expectedAccount = 'a'.repeat(199);
+    globalThis.fetch = async () => new Response(JSON.stringify({ displayName: straddlingLabel }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    try {
+      const result = await saveGuestAccessToken({ guest: jiraGuest, persistPath, token: 'api-token', username: 'ada' });
+      const stored = await getGuestAuth('jira', persistPath);
+      expect(result.account).toBe(expectedAccount);
+      expect(stored.account).toBe(expectedAccount);
+      expect(isPairSafeAfterUtf8RoundTrip(stored.account)).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test('refuses a basic integration without a username', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-guest-basic-'));
     const persistPath = guestAuthPersistPath(dir);
@@ -322,6 +350,39 @@ describe('saveGuestAccessToken with a basic scheme', () => {
     try {
       const result = await saveGuestAccessToken({ guest, persistPath, token: 'api-token', username: 'ada@acme.example' });
       expect(result).toEqual({ connected: true, account: 'ada@acme.example' });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the username fallback at the surrogate-pair boundary', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-guest-basic-'));
+    const persistPath = guestAuthPersistPath(dir);
+    const guest = { ...jiraGuest, integration: { ...jiraGuest.integration, token: { apiOrigin: 'https://acme.atlassian.net', scheme: 'basic' } } };
+    const straddlingUsername = `${'a'.repeat(199)}😀`;
+    const expectedAccount = 'a'.repeat(199);
+    try {
+      const result = await saveGuestAccessToken({ guest, persistPath, token: 'api-token', username: straddlingUsername });
+      const stored = await getGuestAuth('jira', persistPath);
+      expect(result.account).toBe(expectedAccount);
+      expect(stored.account).toBe(expectedAccount);
+      expect(isPairSafeAfterUtf8RoundTrip(stored.account)).toBe(true);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('still clips ASCII account labels at exactly 200 code units', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-guest-basic-'));
+    const persistPath = guestAuthPersistPath(dir);
+    const guest = { ...jiraGuest, integration: { ...jiraGuest.integration, token: { apiOrigin: 'https://acme.atlassian.net', scheme: 'basic' } } };
+    const username = 'a'.repeat(201);
+    try {
+      const result = await saveGuestAccessToken({ guest, persistPath, token: 'api-token', username });
+      const stored = await getGuestAuth('jira', persistPath);
+      expect(result.account).toBe('a'.repeat(200));
+      expect(stored.account).toBe('a'.repeat(200));
+      expect(isPairSafeAfterUtf8RoundTrip(stored.account)).toBe(true);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

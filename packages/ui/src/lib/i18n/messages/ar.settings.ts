@@ -2264,6 +2264,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'اختيار بداية الأسبوع',
   'settings.openchamber.visual.actions.reloadThemes': 'إعادة تحميل السمات',
   'settings.openchamber.visual.actions.reloadingThemes': 'جارٍ إعادة تحميل السمات…',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'تعذر تحميل السمات المخصصة. حاول إعادة التحميل.',
   'settings.openchamber.visual.field.dockBadge': 'شارة Dock',
   'settings.openchamber.visual.field.dockBadgeHint': 'إظهار عدد المحادثات التي فيها نشاط غير مقروء على أيقونة التطبيق في Dock على macOS.',
   'settings.openchamber.visual.actions.saveAndRestart': 'حفظ وإعادة التشغيل',

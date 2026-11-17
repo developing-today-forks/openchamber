@@ -46,6 +46,7 @@ const PROJECT_ID_PATTERN = /^[a-zA-Z0-9._:-]+$/;
 // id grows with the checkout path, so a long one maps to a fixed-length
 // digest instead of a name the filesystem rejects (ENAMETOOLONG).
 const MAX_PROJECT_CONFIG_FILE_STEM_LENGTH = 200;
+const PERSONAL_PROJECT_CONFIG_MAX_BYTES = SHARED_PROJECT_CONFIG_MAX_BYTES;
 const HASHED_PROJECT_CONFIG_FILE_STEM_PREFIX = 'path_sha256_';
 
 export const projectConfigFileStemOf = (projectId: string): string => {
@@ -75,12 +76,35 @@ const sanitizeProjectId = (value: unknown): string => {
 // The parsed document, or null when there is no file (one of `missingCodes`).
 // Malformed JSON still throws; it is a broken file, not an empty one.
 const readJsonDocumentIfPresent = async (filePath: string, missingCodes: string[]): Promise<Record<string, unknown> | null> => {
-  let raw: string;
+  let handle: fs.promises.FileHandle;
   try {
-    raw = await fs.promises.readFile(filePath, 'utf8');
+    const openFlags = process.platform === 'win32' ? 'r' : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
+    handle = await fs.promises.open(filePath, openFlags);
   } catch (error) {
     if (error instanceof Error && 'code' in error && typeof error.code === 'string' && missingCodes.includes(error.code)) return null;
     throw error;
+  }
+  let raw: string;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new Error(`personal project config is not a regular file: ${filePath}`);
+    }
+    const tooLarge = (): Error => new Error(
+      `personal project config is too large: ${filePath} exceeds the ${PERSONAL_PROJECT_CONFIG_MAX_BYTES}-byte limit`,
+    );
+    if (stat.size > PERSONAL_PROJECT_CONFIG_MAX_BYTES) throw tooLarge();
+    const buffer = Buffer.alloc(PERSONAL_PROJECT_CONFIG_MAX_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    if (total > PERSONAL_PROJECT_CONFIG_MAX_BYTES) throw tooLarge();
+    raw = buffer.toString('utf8', 0, total);
+  } finally {
+    await handle.close();
   }
   const parsed: unknown = JSON.parse(raw);
   return isObjectRecord(parsed) ? parsed : {};
@@ -279,4 +303,3 @@ export async function handleProjectSetupBridgeMessage(
     return { id, type, success: false, error: message };
   }
 }
-

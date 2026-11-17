@@ -51,6 +51,28 @@ exit 128`);
   });
 });
 
+describe.skipIf(process.platform === 'win32')('runGit stderr tail UTF-8 alignment (#1811)', () => {
+  it('a tail cut inside a multi-byte character drops the split half instead of decoding U+FFFD', async () => {
+    // 903 a + one 2-byte character + 4095 b = 5000 bytes; the 4096 tail cut
+    // lands on the character's continuation byte.
+    const { gitBinary } = fakeGit("head -c 903 /dev/zero | tr '\\0' 'a' >&2; printf '\\303\\251' >&2; head -c 4095 /dev/zero | tr '\\0' 'b' >&2; exit 1");
+    const result = await runGit(['clone', 'src', 'dest'], { gitBinary });
+    expect(result.ok).toBe(false);
+    expect(result.stderr).toBe('b'.repeat(4095));
+    expect(result.stderr?.startsWith('�')).toBe(false);
+  });
+
+  it('ASCII and under-cap tails are unchanged', async () => {
+    const ascii = fakeGit("printf 'fatal: nope' >&2; exit 1");
+    const asciiResult = await runGit(['clone', 'src', 'dest'], { gitBinary: ascii.gitBinary });
+    expect(asciiResult.stderr).toBe('fatal: nope');
+
+    const small = fakeGit("printf '\\303\\251clair' >&2; exit 1");
+    const smallResult = await runGit(['clone', 'src', 'dest'], { gitBinary: small.gitBinary });
+    expect(smallResult.stderr).toBe('éclair');
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('runGit captured stdout cap', () => {
   it('returns captured stdout under the cap whole', async () => {
     const { gitBinary } = fakeGit(`printf 'hello'`);

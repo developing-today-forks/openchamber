@@ -576,15 +576,19 @@ export function registerGitHubRoutes(app, options = {}) {
     && (expected.headSha === undefined || pr.head.sha === expected.headSha);
   const definiteFailure = (code) => ({ state: 'failed', result: { failureStatus: 409, failureCode: code } });
   const reconcileCreateMutation = async (octokit, expectedProject, sourceProject, head, base) => {
-    const response = await octokit.rest.pulls.list({
+    // The verdict is uniqueness, so the candidate list must be complete:
+    // exhaust it under the collections cap (#1595, design #1528) — a match
+    // past page 1 must not be invisible to the count.
+    const listed = await readPullContextCollection('pull request', 'GitHub returned an invalid pull request list', (page) => octokit.rest.pulls.list({
       owner: expectedProject.owner,
       repo: expectedProject.name,
       state: 'all',
       head: `${sourceProject.owner}:${head}`,
       base,
-      per_page: 100,
-    });
-    const candidates = requireProviderArray(response?.data, 'GitHub returned an invalid pull request list')
+      per_page: GITHUB_PR_CONTEXT_PAGE_SIZE,
+      page,
+    }));
+    const candidates = listed
       .map((pr) => requireMutationPullRequest(pr, 'GitHub returned an invalid pull request'))
       .filter((pr) => pr.head.ref === head && pr.base.ref === base)
       .filter((pr) => sameProject(pullTargetProject(pr), expectedProject))
@@ -610,10 +614,13 @@ export function registerGitHubRoutes(app, options = {}) {
       return thread.isResolved === operation.resolved ? { state: 'succeeded', result: {} } : { state: 'outcome-unknown' };
     }
     if (kind === 'labels' || kind === 'issue-labels') {
-      const current = await octokit.rest.issues.listLabelsOnIssue({
-        owner: target.project.owner, repo: target.project.name, issue_number: target.number, per_page: 100,
-      });
-      const names = requireProviderArray(current?.data, 'GitHub returned an invalid label list').map((label) => label?.name);
+      // Set equality decides the verdict, so the label list must be complete:
+      // exhaust it under the collections cap (#1595, design #1528) — labels
+      // past page 1 must not let a differing set read as equal.
+      const listed = await readPullContextCollection('label', 'GitHub returned an invalid label list', (page) => octokit.rest.issues.listLabelsOnIssue({
+        owner: target.project.owner, repo: target.project.name, issue_number: target.number, per_page: GITHUB_PR_CONTEXT_PAGE_SIZE, page,
+      }));
+      const names = listed.map((label) => label?.name);
       // Another edit since may have changed them either way: only a match is certain.
       return names.every(isProviderString) && sameNames(names, operation.labels) ? { state: 'succeeded', result: {} } : { state: 'outcome-unknown' };
     }
@@ -751,11 +758,22 @@ export function registerGitHubRoutes(app, options = {}) {
     return {};
   };
   const requestedReviewers = async (octokit, project, number) => {
-    const response = await octokit.rest.pulls.listRequestedReviewers({ owner: project.owner, repo: project.name, pull_number: number });
-    const users = response?.data?.users;
-    if (!Array.isArray(users) || users.some((user) => !isProviderString(user?.login))) {
-      throw invalidProviderPayload('GitHub returned an invalid reviewer list');
-    }
+    // The canonical reviewers operation names user logins only (the request
+    // schema caps it at 50 logins); team review requests sit outside its
+    // vocabulary, so only the users collection is read here. The read must
+    // still be complete — it feeds both the reviewers reconcile and
+    // setReviewers' add/remove diff — so exhaust it under the collections
+    // cap (#1595, design #1528) instead of the previous default page of 30.
+    const users = await readPullContextCollection('requested reviewer', 'GitHub returned an invalid reviewer list', async (page) => {
+      const response = await octokit.rest.pulls.listRequestedReviewers({
+        owner: project.owner, repo: project.name, pull_number: number, per_page: GITHUB_PR_CONTEXT_PAGE_SIZE, page,
+      });
+      const pageUsers = response?.data?.users;
+      if (!Array.isArray(pageUsers) || pageUsers.some((user) => !isProviderString(user?.login))) {
+        throw invalidProviderPayload('GitHub returned an invalid reviewer list');
+      }
+      return { data: pageUsers };
+    });
     return users.map((user) => user.login);
   };
   // GitHub adds and removes review requests separately. Asking again for the

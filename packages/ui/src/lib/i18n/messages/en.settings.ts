@@ -2295,6 +2295,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'Select week start',
   'settings.openchamber.visual.actions.reloadThemes': 'Reload themes',
   'settings.openchamber.visual.actions.reloadingThemes': 'Reloading themes...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Could not load custom themes. Try reloading.',
   'settings.openchamber.visual.field.dockBadge': 'Dock badge',
   'settings.openchamber.visual.field.dockBadgeHint': 'Show a count of chats with unseen activity on the macOS dock icon.',
   'settings.openchamber.visual.actions.saveAndRestart': 'Save & restart',

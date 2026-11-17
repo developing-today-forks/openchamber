@@ -42,8 +42,8 @@ export const readPoolPlanLinks = (dataDir) => {
   let result;
   try {
     result = readBoundedFileSync(file, MAX_POOL_PLAN_LINKS_BYTES);
-  } catch {
-    throw httpError(409, `${file} is not valid JSON. Fix or move it before linking pool targets to plans.`, 'POOL_LINKS_MALFORMED');
+  } catch (error) {
+    throw httpError(409, `${file} is unreadable: ${error?.code ?? 'error'}. Fix its permissions or move it before linking pool targets to plans.`, 'POOL_LINKS_UNREADABLE');
   }
   if (!result.ok) {
     if (result.reason === 'missing') return emptyPoolPlanLinks();

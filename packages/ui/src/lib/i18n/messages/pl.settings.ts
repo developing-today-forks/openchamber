@@ -1216,6 +1216,7 @@ export const settingsDict = {
   'settings.openchamber.visual.actions.saveAndRestart': 'Zapisz i uruchom ponownie',
   'settings.openchamber.visual.actions.restarting': 'Ponowne uruchamianie…',
   'settings.openchamber.visual.actions.reloadingThemes': 'Przeładowywanie motywów...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Nie udało się wczytać niestandardowych motywów. Spróbuj ponownie.',
   'settings.openchamber.visual.actions.resetCodeFontAria': 'Zresetuj czcionkę kodu',
   'settings.openchamber.visual.actions.resetFontSizeAria': 'Zresetuj rozmiar czcionki',
   'settings.openchamber.visual.actions.resetInputBarOffsetAria': 'Zresetuj przesunięcie paska wpisywania',

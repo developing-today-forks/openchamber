@@ -862,6 +862,21 @@ describe('OpenChamber control service', () => {
       .resolves.toEqual({ sessionId: 'ses_unknown', directory: '/current-session', sessionStatus: { type: 'idle' } });
   });
 
+  it('does not report a prototype-named session as busy (#2311)', async () => {
+    const { service, client } = createService();
+    client.session.list.mockResolvedValue({ data: [{ id: 'constructor', location: { directory: '/repo' }, time: {} }] });
+    client.session.active.mockResolvedValue({ ses_active: { type: 'running' } });
+
+    await expect(service.execute('session.status', { sessionId: 'constructor' }, '/current-session'))
+      .resolves.toEqual({ sessionId: 'constructor', directory: '/repo', sessionStatus: { type: 'idle' } });
+    await expect(service.execute('session.status', { sessionId: 'ses_active' }, '/current-session'))
+      .resolves.toEqual({ sessionId: 'ses_active', directory: '/current-session', sessionStatus: { type: 'busy' } });
+    await expect(service.execute('session.list', { limit: 10, withStatus: true }))
+      .resolves.toEqual(expect.objectContaining({
+        sessions: [expect.objectContaining({ id: 'constructor', status: { type: 'idle' } })],
+      }));
+  });
+
   it('rejects an unknown project instead of reading another directory', async () => {
     const { service, client } = createService();
     await expect(service.execute('session.list', { projectId: 'missing' }, '/current-session'))
@@ -1197,6 +1212,19 @@ describe('render.page', () => {
     expect(await named('<title></title><div><h2>Release <b>2.4</b></h2></div>')).toBe('Release 2.4');
     expect(await named(`<h1>${'x'.repeat(200)}</h1>`)).toBe('x'.repeat(120));
     expect(await named(page)).toBe('Page');
+  });
+
+  it('never splits a surrogate pair at the title cap (oracle: astral char straddling offset 120)', async () => {
+    const { service } = createService();
+    const named = (html) => service.execute('render.page', { html }, '/repo').then((result) => result.title);
+
+    const title = await named(`<title>${'a'.repeat(119)}😀tail</title>`);
+    expect(title).toBe('a'.repeat(119));
+    expect(title.length).toBe(119);
+    // A lone surrogate would encode as U+FFFD and not round-trip.
+    expect(new TextDecoder().decode(new TextEncoder().encode(title))).toBe(title);
+    // An over-cap ASCII title still cuts at exactly 120 code units.
+    expect(await named(`<h1>${'a'.repeat(200)}</h1>`)).toBe('a'.repeat(120));
   });
 
   it('asks for html and title in one call when html is missing', async () => {

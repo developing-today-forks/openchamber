@@ -6,6 +6,8 @@ import { OPENCHAMBER_ALL_ACTIONS, OPENCHAMBER_KNOWLEDGE_ACTIONS } from './action
 import { writeScreenshot } from './screenshots.js';
 import { createProjectKnowledgeActions } from './project-knowledge.js';
 import { createPageAnswers, createRenderPageAction } from './render-page.js';
+import { createTierChooserAction } from './tier-chooser-action.js';
+import { createQuotaFallbackAction } from './quota-fallback-action.js';
 import { branchesOffPullRequestsByDefault } from '../git/worktree-start-ref.js';
 
 const DEFAULT_WAIT_TIMEOUT_SECONDS = 600;
@@ -516,6 +518,17 @@ export const createOpenChamberControlService = (dependencies) => {
 
   const pageAnswers = createPageAnswers({ onWaitChange: onPageWaitChange });
   const renderPage = createRenderPageAction({ isEnabled: isRenderToolEnabled, pageAnswers });
+  // `render.tierChooser` (#14 slice 2) and `render.quotaFallback`
+  // (#14 slice 3): the cards' production callers — catalog pricing
+  // assembled and the cards built here; the agent shows each through
+  // render.page's wait and applies the answer.
+  const listCatalogModels = async (directory) => {
+    const client = await getClient(asNonEmptyString(directory) || '');
+    const catalog = await client.model.list();
+    return catalog.data;
+  };
+  const tierChooser = createTierChooserAction({ listModels: listCatalogModels });
+  const quotaFallback = createQuotaFallbackAction({ listModels: listCatalogModels });
 
   const models = async () => {
     const settings = await readSettingsFromDiskMigrated();
@@ -609,7 +622,7 @@ export const createOpenChamberControlService = (dependencies) => {
 
   const sessionStatus = async (client, sessionID) => {
     const statuses = await activeSessions(client);
-    return asPublicStatus(statuses[sessionID]);
+    return asPublicStatus(Object.hasOwn(statuses, sessionID) ? statuses[sessionID] : undefined);
   };
 
   // The message list is cursor-paginated and `order: 'desc'` puts the newest
@@ -1165,6 +1178,22 @@ export const createOpenChamberControlService = (dependencies) => {
           signal: options.signal,
         });
       }
+      if (action === 'render.tierChooser') {
+        return await tierChooser(input, {
+          sessionId: asNonEmptyString(options.contextSessionId),
+          callId: asNonEmptyString(options.contextCallId),
+          directory: asNonEmptyString(contextDirectory),
+          signal: options.signal,
+        });
+      }
+      if (action === 'render.quotaFallback') {
+        return await quotaFallback(input, {
+          sessionId: asNonEmptyString(options.contextSessionId),
+          callId: asNonEmptyString(options.contextCallId),
+          directory: asNonEmptyString(contextDirectory),
+          signal: options.signal,
+        });
+      }
       if (action === 'file.open') {
         if (!fileOpen) {
           throw new OpenChamberControlError('The file viewer is not available on this server', 503);
@@ -1324,7 +1353,7 @@ export const createOpenChamberControlService = (dependencies) => {
             const statuses = await activeSessions(client).catch(() => null);
             sessions = sessions.map((session) => ({
               ...session,
-              status: statuses ? asPublicStatus(statuses[session.id]) : { type: 'unknown' },
+              status: statuses ? asPublicStatus(Object.hasOwn(statuses, session.id) ? statuses[session.id] : undefined) : { type: 'unknown' },
             }));
           }
           return { sessions, limit, directory, archived: input.all === true ? 'included' : 'excluded' };

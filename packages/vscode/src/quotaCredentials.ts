@@ -6,9 +6,17 @@ import { fetchExeDevUsage } from './exeDevQuota';
 import { QUOTA_RESPONSE_MAX_BYTES, readBoundedResponseJson } from './bounded-response-body';
 import { renameSyncWithRetry } from './bridge-atomic-write';
 
-export type ManagedProvider = 'exe-dev' | 'cursor' | 'zenmux';
+export type ManagedProvider = 'exe-dev' | 'cursor' | 'zenmux' | 'opendesign';
 type ManagedCredential = Record<string, string>;
-const providers = new Set<ManagedProvider>(['exe-dev', 'cursor', 'zenmux']);
+/** The managed-credential provider set: the one list every VS Code
+ * credential surface (bridge allowlist, manifest conformance) derives from. */
+export const MANAGED_PROVIDERS: readonly ManagedProvider[] = ['exe-dev', 'cursor', 'zenmux', 'opendesign'];
+const providers = new Set<ManagedProvider>(MANAGED_PROVIDERS);
+
+// Open Design session validation, mirroring the quota fetcher in
+// quotaProviders.ts (which cannot be imported here: it imports this module).
+export const OPEN_DESIGN_API_BASE_URL = 'https://amr-api.open-design.ai/api';
+export const OPEN_DESIGN_SESSION_EXPIRED_ERROR = 'Open Design session expired; import a fresh session cookie in Settings';
 const directory = () => path.join(process.env.OPENCHAMBER_DATA_DIR ? path.resolve(process.env.OPENCHAMBER_DATA_DIR) : path.join(os.homedir(), '.config', 'openchamber'), 'quota');
 const target = (provider: ManagedProvider) => {
   if (!providers.has(provider)) throw new Error('Unsupported credential provider');
@@ -20,6 +28,16 @@ export const normalizeCredential = (provider: ManagedProvider, value: unknown): 
   const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   if (provider === 'exe-dev') return clean(data.usageToken) ? { usageToken: clean(data.usageToken) } : null;
   if (provider === 'zenmux') return clean(data.platformApiKey) ? { platformApiKey: clean(data.platformApiKey) } : null;
+  if (provider === 'opendesign') {
+    // Same shape the web credential store normalizes (credentials/providers.js):
+    // a browser-copied cookie header value, or a bare session token stored
+    // under its Better Auth cookie name, plus the workspace id.
+    const cookieInput = clean(data.cookie);
+    const workspaceId = clean(data.workspaceId);
+    if (!cookieInput || !workspaceId) return null;
+    const cookie = cookieInput.includes('better-auth') ? cookieInput : `better-auth.session_token=${cookieInput}`
+    return { cookie, workspaceId };
+  }
   const accessToken = clean(data.accessToken);
   const refreshToken = clean(data.refreshToken);
   return accessToken || refreshToken ? { accessToken, refreshToken } : null;
@@ -87,6 +105,22 @@ export const importCursorCredential = ({ timeoutMs = SQLITE_READ_TIMEOUT_MS }: {
 };
 
 export const validateCredential = async (provider: ManagedProvider, credential: ManagedCredential, fetchImpl: (url: string, init: RequestInit) => Promise<Response> = fetch) => {
+  if (provider === 'opendesign') {
+    if (!credential.cookie) throw new Error('Open Design session cookie is required');
+    if (!credential.workspaceId) throw new Error('Open Design workspace ID is required');
+    const sessionResponse = await fetchImpl(`${OPEN_DESIGN_API_BASE_URL}/auth/get-session`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        Cookie: credential.cookie,
+        'x-vela-workspace-id': credential.workspaceId,
+        'User-Agent': 'OpenChamber quota provider',
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const session = sessionResponse.ok ? await readBoundedResponseJson(sessionResponse, QUOTA_RESPONSE_MAX_BYTES).catch(() => null) : null;
+    if (!session || typeof session !== 'object') throw new Error(OPEN_DESIGN_SESSION_EXPIRED_ERROR);
+  }
   if (provider === 'zenmux') {
     const platformApiKey = credential.platformApiKey;
     if (!platformApiKey) throw new Error('ZenMux Platform API key is required');

@@ -998,3 +998,23 @@ describe('GitLab live summaries', () => {
     await expect(service.liveSummaries({ refs: [{ owner: 'team', repo: 'app', number: 1 }] })).rejects.toBe(refused);
   });
 });
+
+describe('GitLab merge-request list pagination (#1597)', () => {
+  it('fails the branch-status read instead of passing a capped list off as complete', async () => {
+    const other = { ...openMR, iid: 6, source_branch: 'other', web_url: `${origin}/team/repo/-/merge_requests/6` };
+    const { service } = setup({ MergeRequests: { ...setup().client.MergeRequests, all: list([other], 'next-page') } });
+    await expect(service.changeRequestStatus('/repo', 'feature')).rejects.toThrow('more pages than OpenChamber reads');
+  });
+
+  it('reconciles a create as unknown when the match list is only a prefix', async () => {
+    const exact = { ...openMR, target_branch: 'main' };
+    const { service } = setup(
+      { MergeRequests: { ...setup().client.MergeRequests, all: list([exact], 'next-page') } },
+      { canonicalReads: true },
+    );
+    const providerTarget = { sourceProjectId: '1', targetProjectId: '2' };
+    const target = { project: { id: '2', owner: 'team', name: 'repo' }, head: 'feature', base: 'main' };
+    await expect(service.reconcileCreateMutation(providerTarget, target))
+      .resolves.toEqual({ state: 'outcome-unknown' });
+  });
+});

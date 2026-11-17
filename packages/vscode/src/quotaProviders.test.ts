@@ -48,6 +48,8 @@ const baseCredentialList = (): CredentialEntry[] => [
   key('deepseek'),
   key('deepinfra'),
   key('hyper'),
+  key('mistral'),
+  key('command-code'),
   key('nano-gpt'),
   key('wafer'),
   oauth('github-copilot', copilotEnterpriseUrl ? { enterpriseUrl: copilotEnterpriseUrl } : undefined),
@@ -55,7 +57,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClinePassQuota, fetchDeepinfraQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchOllamaCloudQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchCommandCodeQuota, fetchOpenDesignQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -1103,21 +1105,6 @@ describe('GitHub Copilot quota provider (VS Code parity)', () => {
     assert.equal(result.ok, false);
     assert.equal(result.error, 'Invalid GitHub Copilot Enterprise URL');
     assert.equal(requested, false);
-  });
-
-  test('add-on path mirrors the primary window shaping', async () => {
-    stubFetchReturning(() => Promise.resolve(mockResponse({
-      quota_reset_date: '2026-09-01T00:00:00Z',
-      quota_snapshots: {
-        premium_interactions: { entitlement: 300, remaining: 225 },
-      },
-    })));
-
-    const result = await fetchQuotaForProvider('github-copilot-addon');
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(Object.keys(result.usage!.windows), ['premium_interactions']);
-    assert.equal(result.usage!.windows.premium_interactions!.usedPercent, 25);
   });
 
   test('derives the credit label from the same used axis as VS Code on fractional credits', async () => {
@@ -3452,6 +3439,91 @@ describe('Meta quota provider', () => {
   });
 });
 
+describe('Mistral quota provider (VS Code parity)', () => {
+  test('dispatch reaches the fetcher: a live key answers ok with console-only usage', async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      return Promise.resolve(mockResponse({ object: 'list', data: [{ id: 'mistral-large-latest' }] }));
+    });
+
+    const result = await fetchQuotaForProvider('mistral');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'mistral');
+    assert.equal(result.providerName, 'Mistral AI');
+    assert.equal(result.configured, true);
+    assert.equal(result.usage!.usageAvailability, 'console-only');
+    assert.deepEqual(result.usage!.windows, {});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]![0], 'https://api.mistral.ai/v1/models');
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Authorization'), 'Bearer test-token');
+  });
+
+  test('lists mistral as configured from the enrolled key credential', async () => {
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('mistral'), true);
+  });
+
+  test('maps 401 and 403 to the unauthorized class', async () => {
+    for (const status of [401, 403]) {
+      stubFetchFailing(async () => ({}), { ok: false, status });
+      const result = await fetchQuotaForProvider('mistral');
+      assert.equal(result.ok, false);
+      assert.equal(result.configured, true);
+      assert.equal(result.error, 'Invalid or revoked API key \u2014 Mistral rejected the enrolled credential');
+    }
+  });
+
+  test('maps other HTTP failures to API error', async () => {
+    stubFetchFailing(async () => ({}), { ok: false, status: 500 });
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'API error: 500');
+  });
+
+  test('reports no quota data on a 200 payload without the data array', async () => {
+    stubFetchReturning(() => Promise.resolve(mockResponse({ object: 'list' })));
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.equal(result.error, 'No quota data in response');
+    assert.equal(result.usage, null);
+  });
+
+  test('reports a normalized timeout error', async () => {
+    stubFetchReturning(() => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError')));
+    const result = await fetchQuotaForProvider('mistral');
+    assert.equal(result.ok, false);
+    assert.equal(result.error, 'Request timed out');
+  });
+
+  test('fetcher with no enrolled credential is not configured and sends nothing', async () => {
+    let fetchCalls = 0;
+    const result = await fetchMistralQuota({
+      readAuth: () => ({}),
+      fetchImpl: async () => { fetchCalls += 1; return mockResponse({ data: [] }); },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, false);
+    assert.equal(result.error, 'Not configured');
+    assert.equal(fetchCalls, 0);
+  });
+
+  test('fetcher falls through a blank key to the access field', async () => {
+    const authorizations: Array<string | null> = [];
+    const result = await fetchMistralQuota({
+      readAuth: () => ({ mistral: { key: ' ', access: 'real-access' } }),
+      fetchImpl: async (_url: string, init?: RequestInit) => {
+        authorizations.push(new Headers(init?.headers).get('Authorization'));
+        return mockResponse({ data: [] });
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.deepEqual(authorizations, ['Bearer real-access']);
+  });
+});
+
 describe('Wafer quota provider (VS Code parity) - #616', () => {
   const run = async (payload: {
     remaining_included_requests?: number;
@@ -3522,7 +3594,6 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'claude', listedAs: 'claude', credential: (b) => blankOauth('anthropic', b) },
     { provider: 'codex', listedAs: 'codex', credential: (b) => blankOauth('openai', b) },
     { provider: 'github-copilot', listedAs: 'github-copilot', credential: (b) => blankOauth('github-copilot', b) },
-    { provider: 'github-copilot-addon', listedAs: 'github-copilot-addon', credential: (b) => blankOauth('github-copilot', b) },
     { provider: 'zai-coding-plan', listedAs: 'zai-coding-plan', credential: (b) => blankKey('zai-coding-plan', b) },
     { provider: 'zhipuai-coding-plan', listedAs: 'zhipuai-coding-plan', credential: (b) => blankKey('zhipuai-coding-plan', b) },
     { provider: 'openrouter', listedAs: 'openrouter', credential: (b) => blankKey('openrouter', b) },
@@ -3530,6 +3601,10 @@ describe('VS Code quota key selection (#1759)', () => {
     { provider: 'neuralwatt', listedAs: 'neuralwatt', credential: (b) => blankKey('neuralwatt', b) },
     { provider: 'deepseek', listedAs: 'deepseek', credential: (b) => blankKey('deepseek', b) },
     { provider: 'deepinfra', listedAs: 'deepinfra', credential: (b) => blankKey('deepinfra', b) },
+    { provider: 'minimax-coding-plan', listedAs: 'minimax-coding-plan', credential: (b) => blankKey('minimax-coding-plan', b) },
+    { provider: 'minimax-cn-coding-plan', listedAs: 'minimax-cn-coding-plan', credential: (b) => blankKey('minimax-cn-coding-plan', b) },
+    { provider: 'wafer', listedAs: 'wafer', credential: (b) => blankKey('wafer', b) },
+    { provider: 'mistral', listedAs: 'mistral', credential: (b) => blankKey('mistral', b) },
   ];
 
   for (const { provider, listedAs, credential } of cases) {
@@ -3550,31 +3625,184 @@ describe('VS Code quota key selection (#1759)', () => {
   }
 
   // The second field is the fallback the shared selector exists for:
-  // exercised through DeepInfra's readAuth seam, whose AuthFile entries
-  // carry both fields (the kimi/cline-pass pattern in this file).
-  for (const entry of [
-    { key: '  ', token: 'real-token' },
-    { key: '', token: 'real-token' },
-  ]) {
-    test(`deepinfra skips a blank key and uses the token next to it: ${JSON.stringify(entry)}`, async () => {
-      let authorization: string | null = null;
-      stubFetchReturning((_url, init) => {
-        authorization = new Headers(init?.headers).get('Authorization');
-        return Promise.resolve(mockResponse({ checklist: { stripe_balance: -1 } }));
-      });
+  // every provider in the #1759 set pins it through its fetcher's
+  // readAuth seam (the kimi/cline-pass pattern in this file), so a
+  // selection regression in any one fetch path turns this suite red.
+  // Oracle: the shared asNonEmptyString selection - a blank first field
+  // falls through, so the fetcher is configured and every request it
+  // sends carries the second field, never the blank first one.
+  const fallthroughCases: Array<{
+    provider: string;
+    alias: string;
+    first: 'key' | 'access';
+    fetchQuota: (deps: { readAuth: () => Record<string, Record<string, string>> }) => Promise<{ configured: boolean }>;
+    headerFor: (value: string) => string;
+  }> = [
+    { provider: 'claude', alias: 'anthropic', first: 'access', fetchQuota: fetchClaudeQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'codex', alias: 'openai', first: 'access', fetchQuota: fetchCodexQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'github-copilot', alias: 'github-copilot', first: 'access', fetchQuota: fetchCopilotQuota, headerFor: (v) => 'token ' + v },
+    { provider: 'zai-coding-plan', alias: 'zai-coding-plan', first: 'key', fetchQuota: fetchZaiQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'zhipuai-coding-plan', alias: 'zhipuai-coding-plan', first: 'key', fetchQuota: fetchZhipuaiCodingPlanQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'openrouter', alias: 'openrouter', first: 'key', fetchQuota: fetchOpenRouterQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'nano-gpt', alias: 'nano-gpt', first: 'key', fetchQuota: fetchNanoGptQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'neuralwatt', alias: 'neuralwatt', first: 'key', fetchQuota: fetchNeuralwattQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'deepseek', alias: 'deepseek', first: 'key', fetchQuota: fetchDeepseekQuota, headerFor: (v) => 'Bearer ' + v },
+    { provider: 'deepinfra', alias: 'deepinfra', first: 'key', fetchQuota: fetchDeepinfraQuota, headerFor: (v) => 'Bearer ' + v },
+  ];
 
-      const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: entry }) });
-      assert.equal(result.ok, true);
-      assert.equal(authorization, 'Bearer ' + entry.token);
+  for (const { provider, alias, first, fetchQuota, headerFor } of fallthroughCases) {
+    for (const blank of [' ', '']) {
+      test(provider + ' skips a ' + (blank === '' ? 'empty' : 'whitespace-only') + ' ' + first + ' and uses the token next to it', async () => {
+        const authorizations: Array<string | null> = [];
+        stubFetchReturning((_url, init) => {
+          authorizations.push(new Headers(init?.headers).get('Authorization'));
+          return Promise.resolve(mockResponse({}));
+        });
+
+        const result = await fetchQuota({ readAuth: () => ({ [alias]: { [first]: blank, token: 'real-token' } }) });
+        assert.equal(result.configured, true, provider + ' fetch must read as configured');
+        assert.ok(authorizations.length >= 1, provider + ' must send a request');
+        for (const authorization of authorizations) {
+          assert.equal(authorization, headerFor('real-token'), provider + ' must send the second field');
+        }
+      });
+    }
+
+    test(provider + ' with both fields blank is not configured and sends nothing', async () => {
+      let fetchCalls = 0;
+      stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
+
+      const result = await fetchQuota({ readAuth: () => ({ [alias]: { [first]: ' ', token: ' ' } }) });
+      assert.equal(result.configured, false, provider + ' fetch must read as not configured');
+      assert.equal(fetchCalls, 0, provider + ' must not send a blank bearer');
     });
   }
+});
 
-  test('deepinfra with both fields blank is not configured and sends nothing', async () => {
-    let fetchCalls = 0;
-    stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
+describe('Command Code quota provider (VS Code parity, #1744)', () => {
+  const creditsPayload = {
+    credits: { monthlyCredits: 4, purchasedCredits: 25, freeCredits: 0 },
+    windowLimits: {
+      fiveHour: { used: 25, cap: 100, resetAt: 1_700_000_000 },
+      weekly: { used: 10, cap: 50, resetAt: 1_700_000_000_000 },
+    },
+  };
 
-    const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: { key: ' ', token: ' ' } }) });
+  test('dispatch reaches the fetcher: whoami then credits, plan windows parsed', async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      if (url.endsWith('/alpha/whoami')) return Promise.resolve(mockResponse({ org: { id: 'org_1' } }));
+      return Promise.resolve(mockResponse(creditsPayload));
+    });
+
+    const result = await fetchQuotaForProvider('command-code');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'command-code');
+    assert.equal(result.providerName, 'Command Code');
+    assert.equal(result.configured, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]![0], 'https://api.commandcode.ai/alpha/whoami');
+    assert.equal(calls[1]![0], 'https://api.commandcode.ai/alpha/billing/credits?orgId=org_1');
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Authorization'), 'Bearer test-token');
+    // Monthly plan window: $10 included, 4 remaining -> 60% used.
+    assert.equal(result.usage!.windows.monthly!.usedPercent, 60);
+    assert.equal(result.usage!.windows.monthly!.valueLabel, '6 / 10');
+    assert.equal(result.usage!.windows['5h']!.usedPercent, 25);
+    assert.equal(result.usage!.windows['5h']!.resetAt, 1_700_000_000_000);
+    assert.equal(result.usage!.windows.weekly!.usedPercent, 20);
+    // The top-up balance rides along as a percent-less balance window.
+    assert.equal(result.usage!.windows.purchased_credits!.usedPercent, null);
+    assert.equal(result.usage!.windows.purchased_credits!.valueLabel, '25');
+  });
+
+  test('lists command-code as configured from the enrolled key credential', async () => {
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('command-code'), true);
+  });
+
+  test('reports not configured without a credential', async () => {
+    const result = await fetchCommandCodeQuota({
+      readAuth: () => ({}),
+      fetchImpl: async () => {
+        throw new Error('must not fetch');
+      },
+    });
     assert.equal(result.configured, false);
-    assert.equal(fetchCalls, 0);
+    assert.equal(result.ok, false);
+  });
+});
+
+describe('Open Design quota provider (VS Code parity, #1744)', () => {
+  const credentialDir = path.join(temporaryQuotaDataDirectory, 'quota');
+  const credentialFile = path.join(credentialDir, 'opendesign.json');
+  const usagePayload = {
+    windows: [
+      { durationSeconds: 18000, limitCredits: 100, remainingCredits: 40, resetsAt: '2026-11-15T00:00:00.000Z' },
+      { durationSeconds: 604800, limitCredits: 500, remainingCredits: 500, resetsAt: '2026-11-20T00:00:00.000Z' },
+      { durationSeconds: 3600, limitCredits: 10, remainingCredits: 5, resetsAt: '2026-11-15T00:00:00.000Z' },
+    ],
+  };
+  const writeCredentialFile = () => {
+    fs.mkdirSync(credentialDir, { recursive: true });
+    fs.writeFileSync(credentialFile, JSON.stringify({ cookie: 'tok123', workspaceId: 'ws_1' }));
+  };
+
+  afterEach(() => {
+    fs.rmSync(credentialFile, { force: true });
+  });
+
+  test('dispatch reaches the fetcher: session check then plan windows', async () => {
+    writeCredentialFile();
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    stubFetchReturning((url: string, init?: RequestInit) => {
+      calls.push([url, init]);
+      if (url.endsWith('/auth/get-session')) return Promise.resolve(mockResponse({ user: { id: 'u_1' } }));
+      return Promise.resolve(mockResponse(usagePayload));
+    });
+
+    const result = await fetchQuotaForProvider('opendesign');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.providerId, 'opendesign');
+    assert.equal(result.providerName, 'Open Design');
+    assert.equal(result.configured, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]![0], 'https://amr-api.open-design.ai/api/auth/get-session');
+    assert.equal(calls[1]![0], 'https://amr-api.open-design.ai/api/v1/workspaces/ws_1/billing/coding-plan-usage');
+    // The bare token from the store file is wrapped under its cookie name.
+    assert.equal(new Headers(calls[0]![1]?.headers).get('Cookie'), 'better-auth.session_token=tok123');
+    assert.equal(result.usage!.windows['5h']!.usedPercent, 60);
+    assert.equal(result.usage!.windows['5h']!.valueLabel, '40 / 100 credits');
+    assert.equal(result.usage!.windows['7d']!.usedPercent, 0);
+    // A window of an unpublished duration is left out.
+    assert.equal(Object.keys(result.usage!.windows).length, 2);
+  });
+
+  test('lists opendesign as configured when the managed credential is stored', async () => {
+    writeCredentialFile();
+    const configured = await listConfiguredQuotaProviders();
+    assert.equal(configured.includes('opendesign'), true);
+  });
+
+  test('reports the import-required error without a stored credential', async () => {
+    const result = await fetchOpenDesignQuota({
+      fetchImpl: async () => {
+        throw new Error('must not fetch');
+      },
+    });
+    assert.equal(result.configured, false);
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /Import the Open Design session cookie/);
+  });
+
+  test('an expired session answers the session-expired error, never zeros', async () => {
+    writeCredentialFile();
+    stubFetchReturning(() => Promise.resolve(mockResponse({}, { ok: false, status: 401 })));
+    const result = await fetchQuotaForProvider('opendesign');
+    assert.equal(result.ok, false);
+    assert.equal(result.configured, true);
+    assert.match(result.error!, /session expired/);
   });
 });

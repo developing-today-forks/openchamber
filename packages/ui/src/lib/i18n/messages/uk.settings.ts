@@ -2276,6 +2276,7 @@ export const settingsDict = {
   "settings.openchamber.visual.actions.saveAndRestart": "Зберегти та перезапустити",
   "settings.openchamber.visual.actions.restarting": "Перезапуск…",
   "settings.openchamber.visual.actions.reloadingThemes": "Перезавантаження тем...",
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Не вдалося завантажити власні теми. Спробуйте перезавантажити.',
   "settings.openchamber.visual.field.themeImportInfoAria": "Інформація про імпорт теми",
   "settings.openchamber.visual.field.themeImportInfoTooltip": "Імпорт спеціальних тем із ~/.config/openchamber/themes/",
   "settings.openchamber.visual.field.installAppName": "Назва встановленого застосунку",

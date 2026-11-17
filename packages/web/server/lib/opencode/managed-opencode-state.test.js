@@ -9,6 +9,7 @@ import {
   createLaunchFingerprint,
   decideManagedOpenCodeLaunch,
   hashLaunchSecret,
+  MANAGED_OPENCODE_LOG_READ_MAX_BYTES,
   readDrainingOpenCodeRecords,
   readLogSince,
   readLogTail,
@@ -282,8 +283,52 @@ describe('managed OpenCode log cursor', () => {
     expect(result.text).toBe('a\ufffd');
   });
 
+  it('delivers never-valid UTF-8 lead bytes instead of holding them back forever (#1790)', () => {
+    // Oracle: Buffer.prototype.toString('utf8') is the reference decoder. Every
+    // byte that is not a valid lead (overlong 0xC0/0xC1, never-valid 0xF5-0xFF)
+    // must be delivered in the same poll it was written, with the offset
+    // advanced past it — no later byte can complete it, so holding it back
+    // stalls the cursor for good.
+    for (const lead of [0xc0, 0xc1, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff]) {
+      const bytes = Buffer.from([0x61, lead]);
+      fs.writeFileSync(logPath, bytes);
+      const result = readLogSince(logPath, 0);
+      expect(result.offset).toBe(bytes.length);
+      expect(result.text).toBe(bytes.toString('utf8'));
+      expect(result.text).toBe('a\ufffd');
+    }
+  });
+
+  it('delivers a never-valid lead byte followed by continuation bytes in one poll (#1790)', () => {
+    // The held-back shape the bug produced: the lead byte plus the continuation
+    // bytes that follow it. None of these can ever form a character.
+    fs.writeFileSync(logPath, Buffer.from([0x61, 0xc0, 0x80, 0x80]));
+    const result = readLogSince(logPath, 0);
+    expect(result.offset).toBe(4);
+    expect(result.text).toBe('a\ufffd\ufffd\ufffd');
+  });
+
   it('returns empty text for a missing log', () => {
     expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
+  });
+
+  it.skipIf(isWindows)('treats a FIFO at the log path as no output instead of blocking (#1794)', () => {
+    // The readiness drain calls this synchronously: a plain open would block
+    // the whole server event loop on the FIFO forever. The call returning at
+    // all is the assertion; the result must be the no-output answer.
+    execFileSync('mkfifo', [logPath]);
+    expect(readLogSince(logPath, 0)).toEqual({ text: '', offset: 0 });
+    expect(readLogSince(logPath, 7)).toEqual({ text: '', offset: 7 });
+  });
+
+  it('caps one call at the per-call byte limit and leaves the rest for later polls (#1794)', () => {
+    const total = MANAGED_OPENCODE_LOG_READ_MAX_BYTES + 100;
+    fs.writeFileSync(logPath, 'x'.repeat(total));
+    const first = readLogSince(logPath, 0);
+    expect(first.text.length).toBe(MANAGED_OPENCODE_LOG_READ_MAX_BYTES);
+    expect(first.offset).toBe(MANAGED_OPENCODE_LOG_READ_MAX_BYTES);
+    const second = readLogSince(logPath, first.offset);
+    expect(second).toEqual({ text: 'x'.repeat(100), offset: total });
   });
 
   it('returns the tail of the log from the cursor, capped at maxBytes', () => {
@@ -294,6 +339,20 @@ describe('managed OpenCode log cursor', () => {
 
   it('returns an empty tail for a missing log', () => {
     expect(readLogTail(logPath, 0, 16)).toBe('');
+  });
+
+  it('aligns the tail start to a UTF-8 boundary when the cut lands inside a character (#2033)', () => {
+    // 100 ASCII bytes, the 3-byte euro sign, then 62 ASCII bytes: a
+    // 64-byte tail starts on the euro sign's second byte.
+    fs.writeFileSync(logPath, 'a'.repeat(100) + String.fromCharCode(0x20ac) + 'b'.repeat(62));
+    const tail = readLogTail(logPath, 0, 64);
+    expect(tail).toBe('b'.repeat(62));
+    expect(tail).not.toContain(String.fromCharCode(0xfffd));
+  });
+
+  it('keeps a character whole when the tail start lands exactly on its lead byte (#2033)', () => {
+    fs.writeFileSync(logPath, 'a'.repeat(100) + String.fromCharCode(0x20ac) + 'b'.repeat(61));
+    expect(readLogTail(logPath, 0, 64)).toBe(String.fromCharCode(0x20ac) + 'b'.repeat(61));
   });
 });
 

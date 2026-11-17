@@ -2164,6 +2164,7 @@ export const settingsDict = {
   'settings.openchamber.visual.actions.saveAndRestart': '儲存並重新啟動',
   'settings.openchamber.visual.actions.restarting': '正在重新啟動…',
   'settings.openchamber.visual.actions.reloadingThemes': '正在重新載入主題...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': '無法載入自訂主題，請嘗試重新載入。',
   'settings.openchamber.visual.field.themeImportInfoAria': '主題匯入說明',
   'settings.openchamber.visual.field.themeImportInfoTooltip': '從 ~/.config/openchamber/themes/ 匯入自訂主題',
   'settings.openchamber.visual.field.installAppName': '安裝應用程式名稱',

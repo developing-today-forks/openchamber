@@ -42,6 +42,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   delete process.env.CURSOR_TOKEN;
+  delete process.env.CURSOR_REFRESH_TOKEN;
 });
 
 describe('Cursor quota', () => {
@@ -430,6 +431,88 @@ describe('Cursor request deadline', () => {
     expect(result.configured).toBe(true);
     expect(result.error).toBe('Request timed out');
     expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('reports a stalled token refresh as a timeout result', async () => {
+    const expiredToken = `header.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString('base64url')}.signature`;
+    process.env.CURSOR_TOKEN = expiredToken;
+    process.env.CURSOR_REFRESH_TOKEN = 'refresh-token';
+    const fetchMock = vi.fn(async () => { throw new DOMException('Timed out', 'TimeoutError'); });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(true);
+    expect(result.error).toBe('Request timed out');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe('Cursor token files (bounded read, #1645)', () => {
+  let root = null;
+  const originalDataDir = process.env.OPENCHAMBER_DATA_DIR;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'oc-cursor-token-file-'));
+    process.env.OPENCHAMBER_DATA_DIR = join(root, 'data');
+    delete process.env.CURSOR_TOKEN;
+    delete process.env.CURSOR_ACCESS_TOKEN;
+    delete process.env.CURSOR_REFRESH_TOKEN;
+    delete process.env.CURSOR_REFRESH_TOKEN_FILE;
+  });
+
+  afterEach(() => {
+    delete process.env.CURSOR_TOKEN_FILE;
+    if (originalDataDir === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
+    else process.env.OPENCHAMBER_DATA_DIR = originalDataDir;
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = null;
+  });
+
+  it('uses a small token file as before', async () => {
+    const tokenPath = join(root, 'token.txt');
+    writeFileSync(tokenPath, `${futureToken()}\n`);
+    process.env.CURSOR_TOKEN_FILE = tokenPath;
+    mockResponses({
+      GetCurrentPeriodUsage: ok({
+        enabled: true,
+        planUsage: { totalPercentUsed: 42, totalSpend: 2300 },
+        spendLimitUsage: { individualLimit: 2000, individualRemaining: 1500 }
+      }),
+      GetPlanInfo: ok({ planInfo: { planName: 'Pro' } }),
+      GetCreditGrantsBalance: ok({})
+    });
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+  });
+
+  it('answers not configured for an over-cap token file instead of buffering it whole', async () => {
+    const tokenPath = join(root, 'big-token.txt');
+    writeFileSync(tokenPath, 'x'.repeat(128 * 1024));
+    process.env.CURSOR_TOKEN_FILE = tokenPath;
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+  });
+
+  it.runIf(process.platform !== 'win32')('answers not configured promptly for a FIFO token file instead of blocking', async () => {
+    const { execFileSync } = await import('child_process');
+    const fifoPath = join(root, 'fifo-token.txt');
+    execFileSync('mkfifo', [fifoPath]);
+    process.env.CURSOR_TOKEN_FILE = fifoPath;
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
   });
 });
 

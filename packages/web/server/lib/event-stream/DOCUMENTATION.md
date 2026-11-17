@@ -59,10 +59,13 @@ This module contains the OpenChamber message-stream WebSocket protocol and runti
 
 ### Durable store
 - `createReplayStore({ filePath, ... })`: a bounded append-only store for the global stream's local frames, its head position and upstream cursor, and its retention watermarks. Without a `filePath` it keeps the same records in memory.
+- Loading accepts regular files up to 32 MiB; a larger or non-regular file, or an unexpected read failure, disables persistence for that store instance and leaves the file untouched. A missing file starts an ordinary new store.
+- A malformed tail or a final record without a newline is repaired with an atomic snapshot before another record is appended; if repair fails, the append is not persisted.
 - `resolveGlobalReplayFilePath(env, home)`: the global stream's file under `OPENCHAMBER_DATA_DIR`, or `~/.config/openchamber` when unset.
 
 ## Runtime behavior
 - Browser clients connect to the WS endpoints above.
+- A message-stream upgrade whose URL repeats `directory` or `lastEventId` is ambiguous and is refused with an error frame and a 1008 close instead of silently streaming under the first value (issue #2315); single-value and absent params are unchanged. This mirrors the directory-scoped HTTP surfaces, which reject a repeated `directory` with a 400.
 - OpenChamber still fetches OpenCode upstream event streams over SSE, now from `/api/event`.
 - OpenCode 2.x sends no `id:` SSE lines: the event id is `payload.id` and the directory is `payload.location.directory`. Replay and per-directory routing read both out of the payload.
 - Browser clients receive the RAW wire payload and translate it themselves. Server-side subscribers read `event.translated()` instead, so the translation happens once per event and only when something listens.

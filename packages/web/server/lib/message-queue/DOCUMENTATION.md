@@ -226,7 +226,11 @@ session is deleted or evicted).
 
 Limits: 20 items per session, 50 sessions (oldest evicted, never one with an
 item in flight), 200k characters of content; attachment payloads are bounded
-by the route family's 50 MB JSON limit.
+by the route family's 50 MB JSON limit. An enqueue into a session that
+already holds 20 items is rejected with HTTP 409 — ordinary and scheduled
+items alike — and leaves the existing queue untouched: a queued item is
+never silently evicted to make room, so a scheduled item at the head is
+never reported cancelled by an overflow.
 
 ## UI ownership
 

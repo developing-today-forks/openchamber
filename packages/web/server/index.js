@@ -1249,6 +1249,7 @@ const openCodeWatcherRuntime = createOpenCodeWatcherRuntime({
   getOpenCodeAuthHeaders,
   parseSseDataPayload: (...args) => parseSseDataPayload(...args),
   globalEventHub: globalMessageStreamHub,
+  onConnectionState: (connected) => sessionRuntime.setWatcherConnected(connected),
   onPayload: (payload, { spaceId }) => {
     maybeCacheSessionInfoFromEvent(payload, { spaceId });
     void maybeSendPushForTrigger(payload, { spaceId });
@@ -1742,12 +1743,16 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
     persistSessionMetadataPatch(sessionID, { openchamber: { goal } }, { directory }),
   setSessionAutoAccept: (sessionId, enabled, directory) => permissionAutoAcceptRuntime.setSessionPolicy(sessionId, enabled, directory),
   emitTaskRunEvent: (event) => {
+    const publicProjectId = scheduledChatsScope.toPublicID(event.projectID);
+    // Persist the run before fan-out (#2174 Gap 1): the history is keyed
+    // by the same public project id the event stream carries.
+    featureRoutesRuntime.recordScheduledTaskRun({ ...event, projectID: publicProjectId });
     for (const client of uiOpenChamberEventClients) {
       try {
         writeSseEvent(client, {
           type: 'openchamber:scheduled-task-ran',
           properties: {
-            projectId: scheduledChatsScope.toPublicID(event.projectID),
+            projectId: publicProjectId,
             taskId: event.taskID,
             ranAt: event.ranAt,
             status: event.status,
@@ -1990,10 +1995,15 @@ const openChamberControlService = createOpenChamberControlService({
       void maybeSendPushForTrigger(payload);
       return;
     }
-    broadcastOpenChamberUiEvent({
+    const payload = {
       type: 'openchamber:page-settled',
       properties: { sessionID: change.sessionId, pageID: change.callId },
-    });
+    };
+    broadcastOpenChamberUiEvent(payload);
+    // Forwarded like the waiting branch above, so the trigger
+    // runtime can cancel the session's pending question push
+    // (#2313); until now the settled event never reached it.
+    void maybeSendPushForTrigger(payload);
   },
   // The tool is off by default; a plugin generated before it was switched off
   // must not keep paging the user.

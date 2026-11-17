@@ -2295,6 +2295,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'Kies de startdag van de week',
   'settings.openchamber.visual.actions.reloadThemes': 'Thema\'s opnieuw laden',
   'settings.openchamber.visual.actions.reloadingThemes': 'Thema\'s opnieuw laden...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Aangepaste thema’s konden niet worden geladen. Probeer opnieuw te laden.',
   'settings.openchamber.visual.field.dockBadge': 'Dockbadge',
   'settings.openchamber.visual.field.dockBadgeHint': 'Toon op het macOS-dockicoon een telling van chats met ongeziene activiteit.',
   'settings.openchamber.visual.actions.saveAndRestart': 'Opslaan en herstarten',

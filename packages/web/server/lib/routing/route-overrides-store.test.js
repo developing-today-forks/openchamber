@@ -108,6 +108,27 @@ describe('override store', () => {
     }
   });
 
+  it('enforces the 3 MiB per-entry limit on recorded feedback', () => {
+    // Oracle: the 3 MiB per-entry limit documented in packages/web/server/lib/routing/DOCUMENTATION.md.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+    const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+    const retainBytes = 3 * 1024 * 1024;
+
+    expect(() => {
+      store.recordFeedback({ key: 'oversized', note: 'x'.repeat(retainBytes) });
+    }).toThrow(RangeError);
+    expect(() => {
+      store.recordFeedback({ key: 'oversized', note: 'x'.repeat(retainBytes) });
+    }).toThrow(`Route feedback entries must fit within ${retainBytes} bytes`);
+
+    const overhead = Buffer.byteLength(JSON.stringify({ time: 5_000, key: 'exact', note: '' }) + '\n');
+    store.recordFeedback({ key: 'exact', note: 'x'.repeat(retainBytes - overhead) });
+
+    const feedback = store.readFeedback();
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0].key).toBe('exact');
+  });
+
   it('keeps the newest complete feedback lines when the log reaches its cap', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -127,6 +148,85 @@ describe('override store', () => {
       expect(feedback.at(-1)).toMatchObject({ key: 'newest', accepted: false });
       expect(feedback.some((entry) => entry.key === 'oldest')).toBe(false);
       expect(feedback.some((entry) => entry.key === 'prior')).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('preserves an append that lands during compaction from a second writer', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      const oldest = `${JSON.stringify({ time: 1, key: 'oldest', note: 'x'.repeat(1024) })}\n`;
+      const prior = `${JSON.stringify({ time: 2, key: 'prior', note: 'y'.repeat(1024) })}\n`;
+      const copies = Math.ceil((FEEDBACK_MAX_BYTES + 1 - Buffer.byteLength(oldest)) / Buffer.byteLength(prior));
+      fs.writeFileSync(store.feedbackFile, oldest + prior.repeat(copies));
+
+      let appended = false;
+      const originalWriteFileSync = fs.writeFileSync;
+      const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((file, data, options) => {
+        originalWriteFileSync(file, data, options);
+        if (String(file).includes('.tmp') && !appended) {
+          appended = true;
+          // Simulate second writer appending to feedbackFile before rename
+          fs.appendFileSync(
+            store.feedbackFile,
+            `${JSON.stringify({ time: 5_000, key: 'concurrent', option: 'B', accepted: true })}\n`,
+          );
+        }
+      });
+
+      try {
+        store.recordFeedback({ key: 'newest', option: 'A', accepted: false });
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      const feedback = store.readFeedback();
+      expect(feedback.some((entry) => entry.key === 'concurrent')).toBe(true);
+      expect(feedback.some((entry) => entry.key === 'newest')).toBe(true);
+      expect(feedback.at(-1)).toMatchObject({ key: 'concurrent', accepted: true });
+      expect(feedback.at(-2)).toMatchObject({ key: 'newest', accepted: false });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not overwrite a file that was concurrently compacted by another process', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      const oldest = `${JSON.stringify({ time: 1, key: 'oldest', note: 'x'.repeat(1024) })}\n`;
+      const prior = `${JSON.stringify({ time: 2, key: 'prior', note: 'y'.repeat(1024) })}\n`;
+      const copies = Math.ceil((FEEDBACK_MAX_BYTES + 1 - Buffer.byteLength(oldest)) / Buffer.byteLength(prior));
+      fs.writeFileSync(store.feedbackFile, oldest + prior.repeat(copies));
+
+      let compacted = false;
+      const originalWriteFileSync = fs.writeFileSync;
+      const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((file, data, options) => {
+        originalWriteFileSync(file, data, options);
+        if (String(file).includes('.tmp') && !compacted) {
+          compacted = true;
+          // Simulate another process compacting the file first to a small size
+          fs.writeFileSync(
+            store.feedbackFile,
+            `${JSON.stringify({ time: 4_500, key: 'compacted-by-other', option: 'C', accepted: true })}\n`,
+          );
+        }
+      });
+
+      try {
+        store.recordFeedback({ key: 'newest', option: 'A', accepted: false });
+      } finally {
+        writeSpy.mockRestore();
+      }
+
+      const feedback = store.readFeedback();
+      expect(feedback.some((entry) => entry.key === 'compacted-by-other')).toBe(true);
       expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();

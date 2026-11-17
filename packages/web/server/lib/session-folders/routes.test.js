@@ -241,6 +241,61 @@ describe('session folders routes', () => {
     expect((await routes.get()).updatedAt).toBe(5_001);
   });
 
+  it('announces a collapse-only legacy POST and advances the revision (#2162)', async () => {
+    const onChanged = vi.fn();
+    const routes = createPersistingRoutes({
+      ...folderPayload(5_000),
+      foldersMap: { a: [folder('f1', 'One', ['s1'])] },
+    }, { onChanged, now: () => 10 });
+
+    await routes.post({
+      ...folderPayload(3_000),
+      foldersMap: { a: [folder('f1', 'One', ['s1'])] },
+      collapsedFolderIds: ['f1'],
+    });
+
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledWith(5_001);
+    const after = await routes.get();
+    expect(after.collapsedFolderIds).toEqual(['f1']);
+    expect(after.updatedAt).toBe(5_001);
+  });
+
+  it('announces a tombstone-only legacy POST and advances the revision (#2162)', async () => {
+    const onChanged = vi.fn();
+    const routes = createPersistingRoutes({
+      ...folderPayload(5_000),
+      foldersMap: { a: [folder('f1', 'One', ['s1'])] },
+    }, { onChanged, now: () => 10 });
+
+    await routes.post({
+      ...folderPayload(3_000),
+      foldersMap: { a: [folder('f1', 'One', ['s1'])] },
+      deletedFolderIds: { gone: 2_500 },
+    });
+
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledWith(5_001);
+    const after = await routes.get();
+    expect(after.deletedFolderIds).toEqual({ gone: 2_500 });
+    expect(after.updatedAt).toBe(5_001);
+  });
+
+  it('stays silent for a no-op legacy POST (#2162)', async () => {
+    const onChanged = vi.fn();
+    const snapshot = {
+      ...folderPayload(5_000),
+      foldersMap: { a: [folder('f1', 'One', ['s1'])] },
+      collapsedFolderIds: ['f1'],
+    };
+    const routes = createPersistingRoutes(snapshot, { onChanged, now: () => 10 });
+
+    await routes.post(snapshot);
+
+    expect(onChanged).not.toHaveBeenCalled();
+    expect((await routes.get()).updatedAt).toBe(5_000);
+  });
+
   it('refuses changes on top of a malformed file instead of replacing it', async () => {
     const { app, getRoute } = createRouteRegistry();
     const fsPromises = { readFile: vi.fn(async () => '{broken'), writeFile: vi.fn(), mkdir: vi.fn(), rename: vi.fn() };
@@ -355,6 +410,60 @@ describe('session folders routes', () => {
     expect(saved.foldersMap['/home/ai'].map((entry) => entry.id).sort()).toEqual(['f1', 'f2', 'f3']);
   });
 
+  it('refuses a POST whose merged snapshot would exceed the stored read cap, without writing (#1761)', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    // Seed the store just under the read cap, in the persisted pretty form.
+    const seedFolder = folder('big', '', ['s1']);
+    const seed = { ...folderPayload(20), foldersMap: { '/big': [seedFolder] } };
+    const baseBytes = Buffer.byteLength(JSON.stringify(seed, null, 2), 'utf8');
+    seedFolder.name = 'x'.repeat(MAX_STORED_SNAPSHOT_BYTES - 256 - baseBytes);
+    let persisted = JSON.stringify(seed, null, 2);
+    expect(Buffer.byteLength(persisted, 'utf8')).toBeLessThanOrEqual(MAX_STORED_SNAPSHOT_BYTES);
+    const fsPromises = {
+      readFile: vi.fn(async () => persisted),
+      mkdir: vi.fn(async () => {}),
+      writeFile: vi.fn(async (_tempPath, value) => {
+        persisted = value;
+      }),
+      rename: vi.fn(async () => {}),
+      unlink: vi.fn(async () => {}),
+    };
+    registerSessionFoldersRoutes(app, { readBoundedFile: fakeBoundedReaderFor(fsPromises),
+      fsPromises,
+      path,
+      openchamberDataDir: '/tmp/openchamber-test',
+    });
+
+    // A disjoint, itself well-under-cap POST: the incoming body passes the
+    // body check, but the merged snapshot would cross the read cap.
+    const postResponse = createMockResponse();
+    await getRoute('POST', '/api/session-folders')({
+      body: {
+        ...folderPayload(30),
+        foldersMap: { '/other': [folder('f2', 'y'.repeat(1024), ['s3'])] },
+      },
+    }, postResponse);
+
+    expect(postResponse.statusCode).toBe(413);
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+    expect(persisted).toBe(JSON.stringify(seed, null, 2));
+
+    // GET still serves the pre-POST state (the store was not poisoned).
+    const getResponse = createMockResponse();
+    await getRoute('GET', '/api/session-folders')({}, getResponse);
+    expect(getResponse.statusCode).toBe(200);
+    expect(Object.keys(getResponse.body.foldersMap)).toEqual(['/big']);
+
+    // PATCH still serves the pre-POST state too: unassigning a session that
+    // is not assigned anywhere is a no-op that answers with the snapshot.
+    const patchResponse = createMockResponse();
+    await getRoute('PATCH', '/api/session-folders')({
+      body: { changes: [{ type: 'unassign', scopeKey: '/big', sessionIds: ['not-a-session'] }] },
+    }, patchResponse);
+    expect(patchResponse.statusCode).toBe(200);
+    expect(Object.keys(patchResponse.body.foldersMap)).toEqual(['/big']);
+  });
+
   const createPersistingRoutes = (initial, { onChanged, now } = {}) => {
     const { app, getRoute } = createRouteRegistry();
     const state = { persisted: initial === undefined ? null : JSON.stringify(initial) };
@@ -388,6 +497,56 @@ describe('session folders routes', () => {
     };
     return { post, patch, get, state, fsPromises };
   };
+
+  it('refuses a PATCH whose persisted (pretty) form would exceed the write cap, without writing (#1745)', async () => {
+    // One folder holding 1,000,000 copies of a 1-char session id: the
+    // compact serialization is just under MAX_BODY_BYTES (4 MiB), so the
+    // old compact-measuring PATCH guard let it through, while the pretty
+    // form writeSnapshot persists is ~15 MB - over the 8 MiB read cap,
+    // after which the store read back as malformed forever.
+    const heavy = {
+      ...folderPayload(20),
+      foldersMap: { '/repo': [folder('f1', 'Heavy', Array(1_000_000).fill('a'))] },
+    };
+    expect(Buffer.byteLength(JSON.stringify(heavy), 'utf8')).toBeLessThan(4 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(heavy, null, 2), 'utf8')).toBeGreaterThan(MAX_STORED_SNAPSHOT_BYTES);
+    const routes = createPersistingRoutes(heavy, { now: () => 1_000 });
+
+    const response = await routes.patch([
+      { type: 'assign', scopeKey: '/repo', folderId: 'f1', sessionIds: ['b'] },
+    ]);
+
+    expect(response.statusCode).toBe(413);
+    // Nothing was written: the seeded (compact, under the read cap)
+    // snapshot is still the stored file, and GET still serves it.
+    expect(routes.state.persisted).toBe(JSON.stringify(heavy));
+    const after = await routes.get();
+    expect(after.foldersMap['/repo'][0].sessionIds).toHaveLength(1_000_000);
+  });
+
+  it('accepts a PATCH whose persisted form is over the body cap but under the stored cap (#1745)', async () => {
+    // 500,000 1-char session ids: pretty ~7.5 MB - over MAX_BODY_BYTES
+    // (4 MiB) but under MAX_STORED_SNAPSHOT_BYTES (8 MiB), the size a
+    // POST merge may legitimately have written (#1761). Such a store
+    // must stay PATCHable: the PATCH guard judges the persisted form
+    // against the stored cap, not the body cap.
+    const heavy = {
+      ...folderPayload(20),
+      foldersMap: { '/repo': [folder('f1', 'Heavy', Array(500_000).fill('a'))] },
+    };
+    expect(Buffer.byteLength(JSON.stringify(heavy, null, 2), 'utf8')).toBeGreaterThan(4 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(heavy, null, 2), 'utf8')).toBeLessThan(MAX_STORED_SNAPSHOT_BYTES);
+    const routes = createPersistingRoutes(heavy, { now: () => 1_000 });
+
+    const response = await routes.patch([
+      { type: 'assign', scopeKey: '/repo', folderId: 'f1', sessionIds: ['b'] },
+    ]);
+
+    expect(response.statusCode).toBe(200);
+    expect(Buffer.byteLength(routes.state.persisted, 'utf8')).toBeLessThanOrEqual(MAX_STORED_SNAPSHOT_BYTES);
+    const after = await routes.get();
+    expect(after.foldersMap['/repo'][0].sessionIds).toHaveLength(500_001);
+  });
 
   describe('changes', () => {
     const create = (scopeKey, id, name, parentId = null) => ({ type: 'create', scopeKey, folder: { id, name, parentId, createdAt: 1 } });
@@ -440,6 +599,20 @@ describe('session folders routes', () => {
       expect(response.body.updatedAt).toBe(20);
       expect(routes.fsPromises.writeFile).not.toHaveBeenCalled();
       expect(onChanged).not.toHaveBeenCalled();
+    });
+
+    it('rejects a create whose id is already used in another scope', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+      });
+
+      const response = await routes.patch([create('/worktree', 'shared', 'Collision')]);
+
+      expect(response.body.foldersMap).toEqual({ '/repo': [folder('shared', 'Keep', ['s1'])] });
+      expect(response.body.collapsedFolderIds).toEqual(['shared']);
+      expect(response.body.updatedAt).toBe(20);
     });
 
     it('ignores a move into a folder another client deleted meanwhile', async () => {
@@ -533,6 +706,42 @@ describe('session folders routes', () => {
         ['l', 'Local', ['s2']],
       ]);
       expect(response.body.foldersMap['/wt'].map((entry) => entry.id)).toEqual(['w']);
+    });
+
+    it('remaps an imported id already used in another scope, keeping its chats and children', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+      });
+
+      const child = { id: 'kid', name: 'Kid', sessionIds: ['s3'], createdAt: 1, parentId: 'shared' };
+      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2']), child] }));
+
+      expect(response.body.foldersMap).toEqual({
+        '/repo': [folder('shared', 'Keep', ['s1'])],
+        '/worktree': [
+          { id: 'shared--imported', name: 'Collision', sessionIds: ['s2'], createdAt: 1, parentId: null },
+          { id: 'kid', name: 'Kid', sessionIds: ['s3'], createdAt: 1, parentId: 'shared--imported' },
+        ],
+      });
+      expect(response.body.collapsedFolderIds).toEqual(['shared']);
+    });
+
+    it('skips a tombstoned replacement id when remapping an imported collision', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('shared', 'Keep', ['s1'])] },
+        collapsedFolderIds: ['shared'],
+        deletedFolderIds: { 'shared--imported': 99_000 },
+      }, { now: () => 100_000 });
+
+      const response = await routes.patch(imported({ '/worktree': [folder('shared', 'Collision', ['s2'])] }));
+
+      expect(response.body.foldersMap).toEqual({
+        '/repo': [folder('shared', 'Keep', ['s1'])],
+        '/worktree': [{ id: 'shared--imported-2', name: 'Collision', sessionIds: ['s2'], createdAt: 1, parentId: null }],
+      });
     });
 
     it('joins a local folder with a same-name server folder instead of making a duplicate', async () => {

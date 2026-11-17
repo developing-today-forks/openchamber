@@ -887,6 +887,37 @@ describe('snippets', () => {
     expect(mark(buildSnippet('git\nrebase onto github', ['git', 'rebase']))).toBe('[git] [rebase] onto [git]hub');
   });
 
+  // A lone surrogate: a high half not followed by its low half, or a
+  // low half not preceded by its high half (#1866).
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const EMOJI = String.fromCodePoint(0x1f600);
+
+  it('never splits a surrogate pair at the window end (#1866)', () => {
+    const snippet = buildSnippet('needle' + EMOJI.repeat(40), ['needle'], 31);
+    expect(LONE_SURROGATE.test(snippet)).toBe(false);
+    expect(mark(snippet)).toContain('[needle]');
+    expect(snippet.endsWith('…')).toBe(true);
+  });
+
+  it('never splits a surrogate pair at the window start (#1866)', () => {
+    const snippet = buildSnippet(EMOJI.repeat(50) + 'needle', ['needle'], 89);
+    expect(LONE_SURROGATE.test(snippet)).toBe(false);
+    expect(mark(snippet)).toContain('[needle]');
+    expect(snippet.startsWith('…')).toBe(true);
+  });
+
+  it('never splits a surrogate pair in the no-match fallback cut (#1866)', () => {
+    const snippet = buildSnippet('x' + EMOJI.repeat(100), ['absent'], 90);
+    expect(LONE_SURROGATE.test(snippet)).toBe(false);
+    expect(snippet.length).toBe(181);
+  });
+
+  it('never splits a surrogate pair in the lowercasing-length fallback cut (#1866)', () => {
+    const snippet = buildSnippet('İ' + EMOJI.repeat(100), ['absent'], 90);
+    expect(LONE_SURROGATE.test(snippet)).toBe(false);
+    expect(snippet.length).toBe(181);
+  });
+
   it('centres on the longest word of the query', () => {
     const text = `see github first ${'filler '.repeat(40)} then git rebase later`;
     expect(mark(buildSnippet(text, ['git', 'rebase'], 20))).toContain('[rebase]');

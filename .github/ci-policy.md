@@ -19,8 +19,8 @@ the pipeline to match a new dividing line.
 no CI tier gates a merge.**
 
 The `pr checks` jobs in oc-review.yml are display-named
-`basic: lint`, `basic: type-check`, `full (main tier): tests`, and
-`full (main tier): build` — those names are historical. All four run
+`basic: lint`, `basic: type-check`, `full (main tier): tests`,
+`full (main tier): build`, and `full (main tier): flake eval` — those names are historical. All five run
 automatically only on the nightly schedule; a maintainer can also
 start them manually via `workflow_dispatch` (on a ref of their
 choosing). There is no push trigger: merged code is verified by the
@@ -74,6 +74,7 @@ issues is the tuning signal.
 | `type-check` | ✅ runs | ✅ runs |
 | `tests` | ✅ runs | ✅ runs |
 | `build` | ✅ runs | ✅ runs |
+| `flake-eval` | ✅ runs | ✅ runs |
 
 No job in this workflow runs on `pull_request`; there is no PR column
 because there is no PR trigger.
@@ -94,7 +95,13 @@ it has no `push`, `schedule`, or `pull_request` trigger and is not
 paths-gated (class 4: eval of the flake's outputs only, no build).
 In this repository its `eval` job is skipped outright — the job is
 gated to `openchamber/openchamber`, so a dispatch here validates
-nothing until the flakes are reconciled.
+nothing until the flakes are reconciled. This repo's own flake is
+instead evaluated by the `flake-eval` job in `pr checks` above
+(#1566): on the nightly schedule and on dispatch it runs
+`nix flake show` and evaluates the `drvPath` of this flake's
+packages and devShells for x86_64-linux, without building them —
+the automatic check whose absence let PR #1386's broken flake
+reach main (#1387).
 
 ## Release gate
 

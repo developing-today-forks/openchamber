@@ -2276,6 +2276,7 @@ export const settingsDict = {
   "settings.openchamber.visual.actions.saveAndRestart": "Salvar e reiniciar",
   "settings.openchamber.visual.actions.restarting": "Reiniciando…",
   "settings.openchamber.visual.actions.reloadingThemes": "Recarregando temas...",
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Não foi possível carregar os temas personalizados. Tente recarregar.',
   "settings.openchamber.visual.field.themeImportInfoAria": "Informações de importação de temas",
   "settings.openchamber.visual.field.themeImportInfoTooltip": "Importar temas personalizados de ~/.config/openchamber/themês/",
   "settings.openchamber.visual.field.installAppName": "Nome do aplicativo para instalação",

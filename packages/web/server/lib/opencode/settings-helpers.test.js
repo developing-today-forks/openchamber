@@ -77,6 +77,75 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ gitlabClientId: 42 })).toEqual({});
   });
 
+  it('never splits a surrogate pair at the PWA app-name cap (oracle: astral char straddling offset 64)', () => {
+    const helpers = createTestHelpers();
+    const name = 'a'.repeat(63) + '😀' + 'tail';
+    const sanitized = helpers.sanitizeSettingsUpdate({ pwaAppName: name });
+    expect(sanitized.pwaAppName).toBe('a'.repeat(63));
+    expect(helpers.normalizePwaAppName(name, undefined)).toBe('a'.repeat(63));
+    // A lone surrogate would encode as U+FFFD and not round-trip.
+    expect(new TextDecoder().decode(new TextEncoder().encode(sanitized.pwaAppName))).toBe(sanitized.pwaAppName);
+  });
+
+  it('never splits a grapheme cluster at the PWA app-name cap (oracle: UAX #29 extended grapheme clusters, cap 64)', () => {
+    const helpers = createTestHelpers();
+    // 'e' + U+0301 is one cluster of 2 code units: 63 + 2 straddles the
+    // cap, so the cluster drops whole instead of leaving a bare 'e'.
+    const combining = 'a'.repeat(63) + 'e\u0301' + 'tail';
+    expect(helpers.normalizePwaAppName(combining, undefined)).toBe('a'.repeat(63));
+    expect(helpers.sanitizeSettingsUpdate({ pwaAppName: combining }).pwaAppName).toBe('a'.repeat(63));
+    // Exact fit: 62 + 2 = 64 keeps the complete accented cluster.
+    expect(helpers.normalizePwaAppName('a'.repeat(62) + 'e\u0301', undefined)).toBe('a'.repeat(62) + 'e\u0301');
+    // A joined ZWJ family sequence straddling the cap drops whole: no
+    // lone first emoji and no dangling ZWJ.
+    const family = '\u{1F469}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}';
+    const joined = helpers.normalizePwaAppName('a'.repeat(62) + family + 'tail', undefined);
+    expect(joined).toBe('a'.repeat(62));
+    expect(joined.endsWith('\u200D')).toBe(false);
+  });
+
+  it('still cuts an over-cap ASCII PWA app name at exactly 64 code units', () => {
+    const helpers = createTestHelpers();
+    expect(helpers.sanitizeSettingsUpdate({ pwaAppName: 'a'.repeat(80) }).pwaAppName).toBe('a'.repeat(64));
+  });
+
+  it('never splits a surrogate pair at the settings sanitizer clamps (oracle: astral char straddling each cap drops its high half, ASCII controls cut at exactly the cap)', () => {
+    const helpers = createTestHelpers();
+    const emoji = '\u{1F600}';
+    const clean = (value) => new TextDecoder().decode(new TextEncoder().encode(value));
+    // Fonts at 100.
+    expect(helpers.sanitizeSettingsUpdate({ customUiFont: 'a'.repeat(99) + emoji + 'tail' }).customUiFont).toBe('a'.repeat(99));
+    expect(helpers.sanitizeSettingsUpdate({ customMonoFont: 'b'.repeat(99) + emoji + 'tail' }).customMonoFont).toBe('b'.repeat(99));
+    expect(helpers.sanitizeSettingsUpdate({ customUiFont: 'a'.repeat(150) }).customUiFont).toBe('a'.repeat(100));
+    // Vim mappings at 10,000.
+    const vim = helpers.sanitizeSettingsUpdate({ fileEditorVimMappings: 'a'.repeat(9_999) + emoji + 'tail' }).fileEditorVimMappings;
+    expect(vim).toBe('a'.repeat(9_999));
+    expect(helpers.sanitizeSettingsUpdate({ fileEditorVimMappings: 'a'.repeat(12_000) }).fileEditorVimMappings).toBe('a'.repeat(10_000));
+    // Shortcut override key and value at 128.
+    const overrides = helpers.sanitizeSettingsUpdate({ shortcutOverrides: { ['k'.repeat(127) + emoji + 'tail']: 'v'.repeat(127) + emoji + 'tail' } }).shortcutOverrides;
+    expect(Object.keys(overrides)).toEqual(['k'.repeat(127)]);
+    expect(Object.values(overrides)).toEqual(['v'.repeat(127)]);
+    // Usage model groups: id at 64, label and renamed label at 128.
+    const groups = helpers.sanitizeSettingsUpdate({
+      usageModelGroups: {
+        prov: {
+          customGroups: [{ id: 'g'.repeat(63) + emoji + 'tail', label: 'l'.repeat(127) + emoji + 'tail', models: [] }],
+          renamedGroups: { gid: 'r'.repeat(127) + emoji + 'tail' },
+        },
+      },
+    }).usageModelGroups;
+    expect(groups.prov.customGroups[0].id).toBe('g'.repeat(63));
+    expect(groups.prov.customGroups[0].label).toBe('l'.repeat(127));
+    expect(groups.prov.renamedGroups.gid).toBe('r'.repeat(127));
+    // Dismissed update version at 128.
+    const version = helpers.sanitizeSettingsUpdate({ openCodeUpdateToastDismissedVersion: 'v'.repeat(127) + emoji + 'tail' }).openCodeUpdateToastDismissedVersion;
+    expect(version).toBe('v'.repeat(127));
+    // Nothing persisted ends in a lone surrogate: every value round-trips clean.
+    for (const value of [vim, version, groups.prov.customGroups[0].id, groups.prov.customGroups[0].label]) {
+      expect(clean(value)).toBe(value);
+    }
+  });
+
   it('keeps the machine of the Docker over SSH place as an SSH destination, and takes it away with an empty string', () => {
     const helpers = createTestHelpers();
     expect(helpers.sanitizeSettingsUpdate({ isolatedSpacesSshHost: ' debian-box ' })).toEqual({ isolatedSpacesSshHost: 'debian-box' });

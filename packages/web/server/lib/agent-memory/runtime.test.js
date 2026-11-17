@@ -465,3 +465,23 @@ describe('atomic write rename retry', () => {
     expect(await fsPromises.readdir(path.join(rootDir, 'config'))).toEqual([]);
   });
 });
+
+describe('title clamp surrogate-pair boundary (#1991)', () => {
+  const EMOJI = '\u{1F600}';
+
+  test('a pair straddling the 60-char title cut is dropped whole on create', async () => {
+    const created = await runtime.create(GLOBAL, { title: `${'t'.repeat(59)}${EMOJI}x`, body: 'hello body' });
+    expect(created.entry.title).toBe('t'.repeat(59));
+    const read = await runtime.read(GLOBAL);
+    expect(read.entries[0].title).toBe('t'.repeat(59));
+    const onDisk = await fsPromises.readFile(globalPath(), 'utf8');
+    expect(onDisk).not.toContain('\\ud83d');
+  });
+
+  test('a pair ending exactly at the title limit is kept whole', async () => {
+    const title = `${'t'.repeat(58)}${EMOJI}`;
+    const created = await runtime.create(GLOBAL, { title, body: 'hello body' });
+    expect(created.entry.title).toBe(title);
+    expect(created.entry.title.length).toBe(60);
+  });
+});

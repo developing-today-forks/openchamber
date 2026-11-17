@@ -33,7 +33,10 @@ Auto. There is no env gate — the feature shipped dark behind
   `auto-sessions.json` (the sessions on Auto) in the OpenChamber data dir. An unreadable pick file reads as no pick, an
   unreadable endpoint file as no endpoint. `resolveEffectiveConfig` merges built-ins with stored overrides;
   `toStoredConfig` is its inverse. A missing file is the defaults, a malformed
-  one throws.
+  one throws. The store reads those files through the shared handle-judged bounded reader:
+  1 MiB for routing config, 64 KiB for the auth, classifier and endpoint files, and
+  32 MiB for auto sessions. Over-cap or non-regular config is an error; the pick,
+  endpoint, token and session readers preserve their existing warn-and-empty behavior.
 - `jev.js` — request builders, answer parsing, and the HTTP call with a
   timeout and a 1 MiB response cap (`JEV_MAX_RESPONSE_BYTES`: the endpoint
   can be user- or admin-chosen, so its body is untrusted input) to the
@@ -89,11 +92,23 @@ history. `addNote` stays append-only; the read cap is the visible growth bound.
 `route-feedback.jsonl`. `readFeedback` reads at most 4 MiB through
 `readBoundedFileSync`; a missing file remains `[]`, and damaged lines are
 skipped. An over-cap or non-regular file logs a warning and returns no learned
-choices for that request. After an append takes the log past 4 MiB, the store
-atomically keeps the newest complete lines within 3 MiB. This also trims an
-older over-cap log on the next recorded correction or undo. If compaction
-fails, the store logs the failure and leaves the log intact; a later append can
-retry it.
+choices for that request. Individual feedback entries are bounded to 3 MiB
+(`RETAIN_ROUTE_FEEDBACK_BYTES`). `recordFeedback` throws a `RangeError` if a
+serialized entry line exceeds 3 MiB, because a single line larger than the
+retention window cannot survive compaction as a complete line. Callers must
+keep individual feedback entries within this limit. After an append takes the
+log past 4 MiB, the store atomically keeps the newest complete lines within
+3 MiB. This also trims an older over-cap log on the next recorded correction
+or undo. Before replacing the file via atomic rename, snapshot compaction
+re-stats the live file. If a concurrent writer appended entries during
+snapshot preparation, compaction discards the snapshot and retries (up to
+3 attempts) so the newer append is retained in the compacted tail. If another
+process already compacted the log below the cap, the redundant snapshot is
+cleanly discarded. An append in the small interval between the final pre-rename
+stat check and the filesystem rename can still be overwritten; this residual
+loss window is accepted in exchange for atomic log replacement without
+cross-process locks. If compaction fails, the store logs the failure and leaves
+the log intact; a later append can retry it.
 
 ## Invariants
 

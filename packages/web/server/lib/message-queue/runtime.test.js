@@ -304,6 +304,59 @@ describe('scheduled task items', () => {
   });
 });
 
+describe('per-session cap overflow', () => {
+  const scheduled = (projectId = 'project-1', overrides = {}) => item({
+    scheduledTask: { projectId, taskId: 'task-1' }, sendConfig: {}, ...overrides,
+  });
+
+  const fill = async (runtime, first) => {
+    const ids = [];
+    if (first) ids.push((await runtime.enqueue(SESSION, DIRECTORY, first)).itemId);
+    while (ids.length < 20) {
+      ids.push((await runtime.enqueue(SESSION, DIRECTORY, item({ text: `queued-${ids.length}`, content: `queued-${ids.length}` }))).itemId);
+    }
+    return ids;
+  };
+
+  it('rejects an ordinary enqueue into a full session queue and leaves all 20 items in order', async () => {
+    const { runtime, openCode } = createRuntime();
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    const ids = await fill(runtime);
+    await expect(runtime.enqueue(SESSION, DIRECTORY, item({ text: 'one too many' }))).rejects.toMatchObject({ status: 409 });
+    expect(runtime.sessionSnapshot(SESSION).items.map((entry) => entry.id)).toEqual(ids);
+    runtime.stop();
+    await runtime.flush();
+  });
+
+  it('rejects an ordinary enqueue when the full queue starts with a scheduled item, without reporting it cancelled', async () => {
+    const results = [];
+    const { runtime, openCode } = createRuntime({ onScheduledTaskResult: (_task, status) => results.push(status) });
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    const ids = await fill(runtime, scheduled());
+    await expect(runtime.enqueue(SESSION, DIRECTORY, item({ text: 'one too many' }))).rejects.toMatchObject({ status: 409 });
+    await settle();
+    expect(results).toEqual([]);
+    expect(runtime.sessionSnapshot(SESSION).items.map((entry) => entry.id)).toEqual(ids);
+    runtime.stop();
+    await runtime.flush();
+  });
+
+  it('still rejects a scheduled enqueue into a full queue, and enqueues below the cap still work', async () => {
+    const { runtime, openCode } = createRuntime();
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    await runtime.enqueue(SESSION, DIRECTORY, item({ text: 'below cap ordinary' }));
+    await runtime.enqueue(SESSION, DIRECTORY, scheduled());
+    expect(runtime.sessionSnapshot(SESSION).items).toHaveLength(2);
+    while (runtime.sessionSnapshot(SESSION).items.length < 20) {
+      await runtime.enqueue(SESSION, DIRECTORY, item({ text: 'filler' }));
+    }
+    await expect(runtime.enqueue(SESSION, DIRECTORY, scheduled('project-2'))).rejects.toMatchObject({ status: 409 });
+    expect(runtime.sessionSnapshot(SESSION).items).toHaveLength(20);
+    runtime.stop();
+    await runtime.flush();
+  });
+});
+
 describe('auto routing', () => {
   it('switches a queued prompt and a queued command onto the routed model and agent', async () => {
     const resolveAutoSelection = vi.fn(async ({ model }) => (model?.id === 'auto'
@@ -1079,5 +1132,42 @@ describe('message queue runtime', () => {
       `/api/session/${SESSION}/prompt`,
     ]);
     expect(openCode.state.sent[0].body).toEqual({ sessionId: SESSION, directory: DIRECTORY });
+  });
+});
+
+describe('queued-message preview surrogate-pair cuts (#1959)', () => {
+  const EMOJI = '\u{1F600}';
+
+  it('the stored 103-char cut never persists a lone surrogate', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    const { itemId } = await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }],
+      contextPreview: `${'a'.repeat(102)}${EMOJI}${'b'.repeat(100)}`,
+    }));
+    const taken = await runtime.take(SESSION, itemId);
+    expect(taken.item.contextPreview).toBe('a'.repeat(102));
+  });
+
+  it('the projected 100-char cut never shows a lone surrogate', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }],
+      contextPreview: `${'a'.repeat(99)}${EMOJI}${'b'.repeat(10)}`,
+    }));
+    const projected = runtime.sessionSnapshot(SESSION).items[0];
+    expect(projected.contextPreview).toBe(`${'a'.repeat(99)}...`);
+    expect(Buffer.from(projected.contextPreview, 'utf8').toString('utf8')).toBe(projected.contextPreview);
+  });
+
+  it('a pair ending exactly at the projected limit is kept whole, no ellipsis', async () => {
+    const { runtime } = createRuntime();
+    runtime.start();
+    const preview = `${'a'.repeat(98)}${EMOJI}`;
+    await runtime.enqueue(SESSION, DIRECTORY, item({
+      content: '', text: '', context: [{ kind: 'context', text: 'Full quoted content', metadata: { openchamberContext: { kind: 'chat-quote', quote: 'Original answer', text: 'Explain this' } } }], contextPreview: preview,
+    }));
+    expect(runtime.sessionSnapshot(SESSION).items[0].contextPreview).toBe(preview);
   });
 });

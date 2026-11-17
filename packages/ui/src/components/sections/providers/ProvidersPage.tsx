@@ -110,10 +110,12 @@ export const ProvidersPage: React.FC = () => {
   const setConnectRequested = useUIStore((state) => state.setSettingsProvidersConnectRequested);
   const classificationRequested = useUIStore((state) => state.settingsProvidersClassificationRequested);
   const setClassificationRequested = useUIStore((state) => state.setSettingsProvidersClassificationRequested);
+  const customRequested = useUIStore((state) => state.settingsProvidersCustomRequested);
+  const setCustomRequested = useUIStore((state) => state.setSettingsProvidersCustomRequested);
   const openRequested = useUIStore((state) => state.settingsProvidersOpenRequested);
   const setOpenRequested = useUIStore((state) => state.setSettingsProvidersOpenRequested);
   const [selectedProviderId, setSelectedProvider] = React.useState(() => (
-    connectRequested ? ADD_PROVIDER_ID : classificationRequested ? CLASSIFICATION_PAGE_ID : openRequested ?? ''
+    connectRequested || customRequested ? ADD_PROVIDER_ID : classificationRequested ? CLASSIFICATION_PAGE_ID : openRequested ?? ''
   ));
   React.useEffect(() => {
     if (!connectRequested) return;
@@ -220,6 +222,17 @@ export const ProvidersPage: React.FC = () => {
   const [editingCustomScope, setEditingCustomScope] = React.useState<ProviderConfigScope | null>(null);
   const [customAuthFailureHint, setCustomAuthFailureHint] = React.useState<string | null>(null);
   const [lastCustomPersistId, setLastCustomPersistId] = React.useState<string | null>(null);
+  // Settings search asked for the custom-provider create form (#1765):
+  // enter add mode with the custom candidate preselected, which is
+  // exactly custom-create mode, then clear the one-shot request. The
+  // form's own cancel (setCandidateProviderId('')) returns to the
+  // candidate picker, matching the manual Connect -> Custom path.
+  React.useEffect(() => {
+    if (!customRequested) return;
+    setSelectedProvider(ADD_PROVIDER_ID);
+    setCandidateProviderId(CUSTOM_PROVIDER_ID);
+    setCustomRequested(false);
+  }, [customRequested, setCustomRequested]);
   const isAddMode = selectedProviderId === ADD_PROVIDER_ID;
   const isCustomCreateMode = isAddMode && candidateProviderId === CUSTOM_PROVIDER_ID;
   const isCustomEditMode = Boolean(

@@ -422,11 +422,15 @@ describe('host shutdown', () => {
       const previousStop = stopGuestService('docker');
       accessing = spyOn(fs, 'access');
       const storeRead = Promise.withResolvers();
-      const readFile = fs.readFile.bind(fs);
-      reading = spyOn(fs, 'readFile').mockImplementation(async (...args) => {
-        const result = await readFile(...args);
+      // The store is read through the bounded reader (shared/bounded-file-read),
+      // which opens the file and reads from the handle — it never calls
+      // fs.readFile. The synchronization therefore sits on fs.open: spying on
+      // readFile here waited forever for a call that no longer happens (#1796).
+      const open = fs.open.bind(fs);
+      reading = spyOn(fs, 'open').mockImplementation(async (...args) => {
+        const handle = await open(...args);
         if (args[0] === fixture.persistPath) storeRead.resolve();
-        return result;
+        return handle;
       });
       const replacement = proxyGuestServiceRequest(request(fixture)).catch((error) => error);
       await storeRead.promise;

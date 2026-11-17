@@ -88,6 +88,89 @@ describe('notification template message extraction', () => {
 
     await expect(runtime.fetchLastAssistantMessageText('session-1', 'msg-1')).resolves.toBe('final answer');
   });
+
+  it('does not substitute another stopped assistant when the requested ID is absent', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ data: [{
+      id: 'newer-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'unrelated answer' }],
+    }], cursor: {} })));
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+  });
+
+  it('follows the cursor to find the requested message on a later page', async () => {
+    const runtime = createRuntime();
+    const newer = (id) => ({
+      id, type: 'assistant', finish: 'stop', content: [{ type: 'text', text: `answer ${id}` }],
+    });
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes('cursor=page-2')) {
+        return new Response(JSON.stringify({
+          data: [{ id: 'requested-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'older answer' }] }],
+          cursor: {},
+        }));
+      }
+      return new Response(JSON.stringify({
+        data: [newer('n1'), newer('n2'), newer('n3'), newer('n4'), newer('n5')],
+        cursor: { next: 'page-2' },
+      }));
+    });
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('older answer');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(String(globalThis.fetch.mock.calls[1][0])).toContain('cursor=page-2');
+  });
+
+  it('returns empty text when the requested message is absent after the final page', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).includes('cursor=page-2')) {
+        return new Response(JSON.stringify({
+          data: [{ id: 'other-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'other answer' }] }],
+          cursor: {},
+        }));
+      }
+      return new Response(JSON.stringify({
+        data: [{ id: 'newer-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'newer answer' }] }],
+        cursor: { next: 'page-2' },
+      }));
+    });
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops the page walk at the page bound when the cursor never ends', async () => {
+    const runtime = createRuntime();
+    let pageNumber = 0;
+    globalThis.fetch = vi.fn(async () => {
+      pageNumber += 1;
+      return new Response(JSON.stringify({
+        data: [{ id: `page-${pageNumber}-message`, type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'x' }] }],
+        cursor: { next: `page-${pageNumber + 1}` },
+      }));
+    });
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+    expect(globalThis.fetch).toHaveBeenCalledTimes(10);
+  });
+
+  it('keeps newest stopped assistant fallback when no message ID is supplied', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ data: [{
+      id: 'newer-message', type: 'assistant', finish: 'stop', content: [{ type: 'text', text: 'latest answer' }],
+    }], cursor: {} })));
+
+    await expect(runtime.fetchLastAssistantMessageText('session-1')).resolves.toBe('latest answer');
+  });
+
+  it('returns empty text for empty or failed message pages', async () => {
+    const runtime = createRuntime();
+    globalThis.fetch = vi.fn(async () => Response.json({ data: [], cursor: {} }));
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+    globalThis.fetch = vi.fn(async () => new Response('', { status: 503 }));
+    await expect(runtime.fetchLastAssistantMessageText('session-1', 'requested-message')).resolves.toBe('');
+  });
 });
 
 describe('notification template session info', () => {
@@ -302,5 +385,40 @@ describe('notification template session caches stay bounded', () => {
     // The oldest session was evicted from both caches: it is fetched again.
     await runtime.buildTemplateVariables({ properties: { info: {} } }, 'ses_0');
     expect(fetches.get('ses_0')).toBe(2);
+  });
+});
+
+describe('notification extraction surrogate-pair boundary (#1948)', () => {
+  const EMOJI = '\u{1F600}';
+  const runtime = createRuntime();
+
+  it('parts path: a pair straddling the 1,000-char cut is dropped whole', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(999)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe('a'.repeat(999));
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('content-array path: a pair straddling the cut is dropped whole', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { content: [{ type: 'text', text: `${'a'.repeat(999)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe('a'.repeat(999));
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+  });
+
+  it('a pair fitting whole inside the cut survives intact', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(998)}${EMOJI}${'b'.repeat(100)}` }] } },
+    });
+    expect(out).toBe(`${'a'.repeat(998)}${EMOJI}`);
+  });
+
+  it('a caller-chosen maxLength is pair-safe too', () => {
+    const out = runtime.extractLastMessageText({
+      properties: { info: { parts: [{ type: 'text', text: `${'a'.repeat(9)}${EMOJI}${'b'.repeat(50)}` }] } },
+    }, 10);
+    expect(out).toBe('a'.repeat(9));
   });
 });

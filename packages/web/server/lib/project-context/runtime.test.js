@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createProjectIdFromPath, projectConfigFileStemOf } from '../projects/project-id.js';
-import { CONTEXT_FILE_READ_MAX_BYTES, createProjectContextRuntime, parsePlanMarkdown } from './runtime.js';
+import { CONTEXT_FILE_READ_MAX_BYTES, PROJECT_TODO_ID_MAX_LENGTH, createProjectContextRuntime, parsePlanMarkdown } from './runtime.js';
 import { PLAN_FILE_READ_MAX_BYTES } from './plan-progress.js';
 
 const PROJECT_ID = 'path_dGVzdA';
@@ -158,6 +158,32 @@ describe('atomic todo mutations', () => {
     await fsPromises.writeFile(contextPath(), '{ malformed', 'utf8');
     await expect(guarded.createTodo(PROJECT_ID, { text: 'new' })).rejects.toThrow('malformed');
     expect(changes).toEqual([]);
+  });
+
+  test('rejects an oversized todo id and writes nothing (#2113)', async () => {
+    const oversizedId = 'x'.repeat(PROJECT_TODO_ID_MAX_LENGTH + 1);
+    await expect(runtime.createTodo(PROJECT_ID, { text: 'new', id: oversizedId })).rejects.toMatchObject({ status: 400 });
+    expect((await runtime.readContext(PROJECT_ID)).todos).toEqual([]);
+    const atBound = await runtime.createTodo(PROJECT_ID, { text: 'new', id: 'x'.repeat(PROJECT_TODO_ID_MAX_LENGTH) });
+    expect(atBound.todo.id).toHaveLength(PROJECT_TODO_ID_MAX_LENGTH);
+  });
+
+  test('repeated oversized-id creates cannot brick the stored context (#2113)', async () => {
+    const { todo } = await runtime.createTodo(PROJECT_ID, { text: 'keep' });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(runtime.createTodo(PROJECT_ID, { text: 'x', id: 'y'.repeat(900_000) })).rejects.toMatchObject({ status: 400 });
+    }
+    const context = await runtime.readContext(PROJECT_ID);
+    expect(context.todos.map((entry) => entry.id)).toEqual([todo.id]);
+  });
+
+  test('bulk save drops stored todos whose id exceeds the bound (#2113)', async () => {
+    const saved = await runtime.saveTodos(PROJECT_ID, [
+      { id: 'ok', text: 'keep', createdAt: 1 },
+      { id: 'x'.repeat(PROJECT_TODO_ID_MAX_LENGTH + 1), text: 'drop', createdAt: 1 },
+    ]);
+    expect(saved.todos.map((entry) => entry.id)).toEqual(['ok']);
+    expect((await runtime.readContext(PROJECT_ID)).todos.map((entry) => entry.id)).toEqual(['ok']);
   });
 });
 
@@ -775,6 +801,14 @@ describe('plans', () => {
     expect(await runtime.readPlan(PROJECT_ID, 'nope')).toBeNull();
   });
 
+  test.skipIf(process.platform === 'win32')('reading a plan whose file is a FIFO fails promptly instead of hanging', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Piped', body: 'x' });
+    const file = path.join(plansDir(), plan.file);
+    await fsPromises.rm(file);
+    execFileSync('mkfifo', [file]);
+    await expect(runtime.readPlan(PROJECT_ID, plan.id)).rejects.toThrow('not a regular file');
+  });
+
   test('reading a plan whose markdown was deleted returns null', async () => {
     const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Doomed', body: 'x' });
     await fsPromises.rm(path.join(plansDir(), plan.file));
@@ -1261,5 +1295,62 @@ describe('plan metrics (#16 stage 1)', () => {
     const context = await failingReader.readContext(PROJECT_ID);
     expect(context.plans[0].session?.sessionId).toBe('ses_42');
     expect(context.plans[0].metrics).toBeUndefined();
+  });
+});
+
+describe('clampLength surrogate-pair boundary (#2010)', () => {
+  const EMOJI = '\u{1F600}';
+
+  test('a pair straddling the 3,000-char note body cap is dropped whole, in storage and on disk', async () => {
+    const { note } = await runtime.createNote(PROJECT_ID, { body: `${'a'.repeat(2999)}${EMOJI}${'b'.repeat(10)}` });
+    expect(note.body).toBe('a'.repeat(2999));
+    expect((await runtime.readContext(PROJECT_ID)).notes[0].body).toBe('a'.repeat(2999));
+    const onDisk = await fsPromises.readFile(contextPath(), 'utf8');
+    expect(onDisk).not.toContain('\\ud83d');
+    expect(onDisk).not.toContain('\uFFFD');
+  });
+
+  test('a pair ending exactly at the note body cap is kept whole', async () => {
+    const body = `${'a'.repeat(2998)}${EMOJI}`;
+    const { note } = await runtime.createNote(PROJECT_ID, { body });
+    expect(note.body).toBe(body);
+    expect(note.body.length).toBe(3000);
+  });
+
+  test('a pair straddling the 1,000-char todo cap is dropped whole via saveTodos', async () => {
+    const saved = await runtime.saveTodos(PROJECT_ID, [
+      { id: 't1', text: `${'a'.repeat(999)}${EMOJI}tail`, completed: false, createdAt: 1 },
+    ]);
+    expect(saved.todos[0].text).toBe('a'.repeat(999));
+    const onDisk = await fsPromises.readFile(contextPath(), 'utf8');
+    expect(onDisk).not.toContain('\\ud83d');
+    expect(onDisk).not.toContain('\uFFFD');
+  });
+
+  test('a pair straddling the 160-char plan title cap is dropped whole, in the manifest and the plan file', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: `${'t'.repeat(159)}${EMOJI}tail`, body: 'x' });
+    expect(plan.title).toBe('t'.repeat(159));
+    const read = await runtime.readPlan(PROJECT_ID, plan.id);
+    expect(read.title).toBe('t'.repeat(159));
+    expect(read.raw).not.toContain('\uFFFD');
+    const onDisk = await fsPromises.readFile(path.join(plansDir(), plan.file), 'utf8');
+    expect(onDisk).not.toContain('\uFFFD');
+    expect(onDisk.startsWith(`# ${'t'.repeat(159)}`)).toBe(true);
+  });
+
+  test('a pair straddling the 200,000-char plan body cap is dropped whole and no U+FFFD is baked into the plan file', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Big', body: `${'c'.repeat(199_999)}${EMOJI}tail` });
+    const read = await runtime.readPlan(PROJECT_ID, plan.id);
+    expect(read.body).toBe('c'.repeat(199_999));
+    expect(read.raw).not.toContain('\uFFFD');
+    const bytes = await fsPromises.readFile(path.join(plansDir(), plan.file));
+    expect(bytes.includes(Buffer.from([0xef, 0xbf, 0xbd]))).toBe(false);
+  });
+
+  test('ASCII and under-limit content is unchanged by the pair guard', async () => {
+    const ascii = await runtime.createNote(PROJECT_ID, { body: 'a'.repeat(3010) });
+    expect(ascii.note.body).toBe('a'.repeat(3000));
+    const emoji = await runtime.createNote(PROJECT_ID, { body: `short ${EMOJI} note` });
+    expect(emoji.note.body).toBe(`short ${EMOJI} note`);
   });
 });

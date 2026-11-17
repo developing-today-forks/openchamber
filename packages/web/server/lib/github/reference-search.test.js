@@ -397,3 +397,22 @@ describe('fetchReferenceDetail', () => {
     expect(await fetchReferenceDetail({ octokit: graphqlReturning(null), owner: 'acme', repo: 'app', number: 9 })).toBeNull();
   });
 });
+
+describe('reference preview body surrogate-pair cut (#1957)', () => {
+  const EMOJI = '\u{1F600}';
+  const node = (body) => ({ __typename: 'Issue', ...common(7), body, state: 'OPEN', stateReason: null });
+
+  it('a pair straddling the 20,000-char cut is dropped whole', () => {
+    const ref = toReference(node(`${'a'.repeat(19_999)}${EMOJI}${'b'.repeat(100)}`), repos);
+    expect(ref?.bodyTruncated).toBe(true);
+    expect(ref?.body).toBe('a'.repeat(19_999));
+    expect(Buffer.from(ref?.body ?? '', 'utf8').toString('utf8')).toBe(ref?.body);
+  });
+
+  it('a pair ending exactly at the limit is kept whole', () => {
+    const ref = toReference(node(`${'a'.repeat(19_998)}${EMOJI}${'b'.repeat(100)}`), repos);
+    expect(ref?.bodyTruncated).toBe(true);
+    expect(ref?.body).toBe(`${'a'.repeat(19_998)}${EMOJI}`);
+    expect(ref?.body).toHaveLength(20_000);
+  });
+});

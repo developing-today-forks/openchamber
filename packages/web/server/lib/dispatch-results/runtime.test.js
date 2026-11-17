@@ -210,6 +210,19 @@ describe('dispatch results runtime', () => {
     expect(openCode.state.synthetic).toHaveLength(1);
   });
 
+  it('does not let a prototype-named session read as running (#2311)', async () => {
+    const { runtime, openCode } = await createRuntime();
+    openCode.state.sessions['constructor'] = { id: 'constructor', title: 'Proto-named session' };
+    openCode.state.records['constructor'] = [user(11), assistant('Already done', 20), idle('succeeded', 30)];
+    openCode.state.children['constructor'] = [];
+    await runtime.register({ parentSessionId: 'ses_parent', sessionId: 'constructor', dispatchedAt: 10 });
+    await settle();
+    expect(openCode.state.synthetic).toEqual([
+      expect.objectContaining({ sessionID: 'ses_parent', text: expect.stringContaining('Already done') }),
+    ]);
+    expect(runtime.pending()).toEqual([]);
+  });
+
   it('waits for the dispatched session\'s subagents before calling the turn over', async () => {
     const { runtime, openCode } = await createRuntime();
     openCode.state.records.ses_child.push(user(11), assistant('Waiting on a subagent', 12), idle('succeeded', 13));
@@ -501,5 +514,34 @@ describe('dispatch results runtime', () => {
   it('refuses an entry that would report a session to itself', async () => {
     const { runtime } = await createRuntime();
     await expect(runtime.register({ parentSessionId: 'ses_same', sessionId: 'ses_same', dispatchedAt: 1 })).rejects.toThrow('itself');
+  });
+});
+
+describe('buildDispatchResultMessage surrogate-pair cut (#1908)', () => {
+  const EMOJI = '\u{1F600}';
+  const build = (text) => buildDispatchResultMessage({
+    sessionId: 'ses_cut',
+    title: '',
+    outcome: { state: 'completed', text, errorMessage: '' },
+  }).text;
+
+  it('never ends the 50,000-character cut on a lone high surrogate', () => {
+    const message = build(`${'a'.repeat(49_999)}${EMOJI}${'b'.repeat(100)}`);
+    expect(message).toContain('a'.repeat(49_999));
+    expect(message).not.toContain(EMOJI);
+    expect(message).toContain('[Cut at 50000 characters; read the rest with session.messages for ses_cut.]');
+    expect(Buffer.from(message, 'utf8').toString('utf8')).toBe(message);
+  });
+
+  it('keeps a pair that fits whole inside the limit', () => {
+    const message = build(`${'a'.repeat(49_998)}${EMOJI}${'b'.repeat(100)}`);
+    expect(message).toContain(`${'a'.repeat(49_998)}${EMOJI}`);
+    expect(Buffer.from(message, 'utf8').toString('utf8')).toBe(message);
+  });
+
+  it('cuts plain text at exactly the limit', () => {
+    const message = build('a'.repeat(50_100));
+    expect(message).toContain('a'.repeat(50_000));
+    expect(message).not.toContain('a'.repeat(50_001));
   });
 });

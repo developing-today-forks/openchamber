@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -167,6 +168,17 @@ describe('runGuestFileOperation', () => {
     expect(stat.result.mtime).toBeGreaterThan(0);
     expect(await run({ op: 'stat', path: '.' })).toMatchObject({ ok: true, result: { kind: 'directory' } });
   });
+
+  if (process.platform !== 'win32') {
+    test('refuses a FIFO promptly instead of blocking the read forever (#1787)', async () => {
+      const { project, run } = await base();
+      execFileSync('mkfifo', [path.join(project, 'pipe.txt')]);
+
+      // Without O_NONBLOCK the open never settles; the refusal is the
+      // existing not-a-regular-file path (EISDIR -> BAD_PATH).
+      expect(await run({ op: 'read', path: 'pipe.txt' })).toMatchObject({ ok: false, code: 'BAD_PATH' });
+    });
+  }
 
   test('refuses to read a file over the content cap', async () => {
     const { project, run } = await base();

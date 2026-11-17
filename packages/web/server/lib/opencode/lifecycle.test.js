@@ -30,9 +30,30 @@ vi.mock('./startup-performance.js', () => ({
   recordStartupPerformance: recordStartupPerformanceMock,
 }));
 
-const { createOpenCodeLifecycleRuntime, parsePositiveInt, resolveHealthCheckIntervalOverrideMs, resolveHealthCheckTimeoutMs } =
-  await import('./lifecycle.js');
+const {
+  createOpenCodeLifecycleRuntime,
+  getBoundedTextTail,
+  parsePositiveInt,
+  resolveHealthCheckIntervalOverrideMs,
+  resolveHealthCheckTimeoutMs,
+} = await import('./lifecycle.js');
 const { createServerDiagnosticJournal } = await import('../diagnostics/server-journal.js');
+
+describe('getBoundedTextTail', () => {
+  it('returns the value whole when it fits', () => {
+    expect(getBoundedTextTail(String.fromCharCode(0x20ac) + 'z'.repeat(100), 103)).toBe(String.fromCharCode(0x20ac) + 'z'.repeat(100));
+    expect(getBoundedTextTail('short', 32 * 1024)).toBe('short');
+  });
+
+  it('aligns the byte cut to a UTF-8 boundary, losing at most the straddling character (#2033)', () => {
+    const value = 'a'.repeat(50) + String.fromCharCode(0x20ac) + 'b'.repeat(50);
+    // Byte length 103; a 52-byte tail starts on the euro sign's second
+    // byte, a 53-byte tail starts exactly on its lead byte.
+    expect(getBoundedTextTail(value, 52)).toBe('b'.repeat(50));
+    expect(getBoundedTextTail(value, 52)).not.toContain(String.fromCharCode(0xfffd));
+    expect(getBoundedTextTail(value, 53)).toBe(String.fromCharCode(0x20ac) + 'b'.repeat(50));
+  });
+});
 
 describe('health-check timer readers', () => {
   it('accepts the timer maximum and ordinary values for the timeout reader', () => {

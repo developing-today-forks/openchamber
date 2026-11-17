@@ -352,9 +352,13 @@ const repoKey = (owner, repo) => `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 
 const previewBody = (body) => {
   const text = body ?? '';
-  return text.length > BODY_PREVIEW_MAX
-    ? { body: text.slice(0, BODY_PREVIEW_MAX), bodyTruncated: true }
-    : { body: text, bodyTruncated: false };
+  if (text.length <= BODY_PREVIEW_MAX) return { body: text, bodyTruncated: false };
+  // The cut must not split a surrogate pair: a preview cut right after a
+  // high surrogate drops that half so the preview never ends in a lone
+  // surrogate (which renders as U+FFFD).
+  const cut = text.slice(0, BODY_PREVIEW_MAX);
+  const last = cut.charCodeAt(cut.length - 1);
+  return { body: last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut, bodyTruncated: true };
 };
 
 /**

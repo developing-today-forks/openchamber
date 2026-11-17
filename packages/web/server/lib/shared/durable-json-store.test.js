@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -16,6 +17,8 @@ import {
   writeDurableJsonFile,
   writeDurableJsonFileSync,
 } from './durable-json-store.js';
+
+const fsSyncAll = fs;
 
 const tempDirs = [];
 const makeTempDir = () => {
@@ -454,6 +457,55 @@ describe('bounded reads (#1649)', () => {
     });
     expect(fs.readFileSync(filePath, 'utf8')).toBe(contents);
     expect(fs.readdirSync(dir).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+  });
+
+  // Oracle (#1772): the cap invariant is in-flight, not just at the stat -
+  // no read in this module buffers more than maxBytes + 1 bytes, whatever
+  // the stat said. These tests make the stat and the read disagree (the
+  // file grows after its stat) and pin the chunked half of the gate: a
+  // whole-file read here would pass every other test in this describe.
+  it('refuses a file that grows after its stat, in flight, async spelling', async () => {
+    const maxBytes = 64;
+    const payload = Buffer.from(`{"a":"${'x'.repeat(200)}"}`, 'utf8');
+    let delivered = 0;
+    const handle = {
+      stat: async () => ({ isFile: () => true, size: 10 }),
+      read: async (buffer, offset, length, position) => {
+        const n = Math.max(0, Math.min(length, payload.length - position));
+        payload.copy(buffer, offset, position, position + n);
+        delivered += n;
+        return { bytesRead: n, buffer };
+      },
+      close: async () => {},
+    };
+    const fs = { ...fsPromises, open: async () => handle };
+    await expect(readDurableJsonFile('/virtual/store.json', { maxBytes, fs })).rejects.toMatchObject({
+      code: 'DURABLE_JSON_STORE_TOO_LARGE',
+    });
+    expect(delivered).toBeLessThanOrEqual(maxBytes + 1);
+    expect(delivered).toBe(maxBytes + 1);
+  });
+
+  it('refuses a file that grows after its stat, in flight, sync spelling', () => {
+    const maxBytes = 64;
+    const payload = Buffer.from(`{"a":"${'x'.repeat(200)}"}`, 'utf8');
+    let delivered = 0;
+    const fs = {
+      ...fsSyncAll,
+      openSync: () => 4242,
+      fstatSync: () => ({ isFile: () => true, size: 10 }),
+      readSync: (fd, buffer, offset, length, position) => {
+        const n = Math.max(0, Math.min(length, payload.length - position));
+        payload.copy(buffer, offset, position, position + n);
+        delivered += n;
+        return n;
+      },
+      closeSync: () => {},
+    };
+    expect(() => readDurableJsonFileSync('/virtual/store.json', { maxBytes, fs })).toThrowError(
+      expect.objectContaining({ code: 'DURABLE_JSON_STORE_TOO_LARGE' }),
+    );
+    expect(delivered).toBe(maxBytes + 1);
   });
 
   it('refuses a FIFO promptly instead of blocking, in both spellings and the preserve path', async () => {

@@ -2224,6 +2224,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'Wochenstart auswählen',
   'settings.openchamber.visual.actions.reloadThemes': 'Designs neu laden',
   'settings.openchamber.visual.actions.reloadingThemes': 'Designs werden neu geladen...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Benutzerdefinierte Designs konnten nicht geladen werden. Bitte erneut laden.',
   'settings.openchamber.visual.field.dockBadge': 'Dock-Badge',
   'settings.openchamber.visual.field.dockBadgeHint': 'Zeigt eine Anzahl an Chats mit nicht gesehenem Aktivität auf dem macOS-Dock-Icon an.',
   'settings.openchamber.visual.actions.saveAndRestart': 'Speichern & Neustart',

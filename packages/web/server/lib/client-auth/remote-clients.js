@@ -10,11 +10,22 @@ const TOKEN_BYTES = 32;
 const MAX_LABEL_LENGTH = 80;
 const LAST_USED_WRITE_INTERVAL_MS = 60_000;
 
+// A plain slice at the cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that encodes as U+FFFD. On disk that becomes a
+// literal \ud83d escape and the operator sees a corrupted device name on every
+// surface that reads the store; move the cut back to the pair boundary.
+const clipPairSafe = (text, limit) => {
+  if (text.length <= limit) return text;
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
 const normalizeLabel = (value) => {
   if (typeof value !== 'string') return 'Remote client';
   const trimmed = value.trim();
   if (!trimmed) return 'Remote client';
-  return trimmed.length > MAX_LABEL_LENGTH ? trimmed.slice(0, MAX_LABEL_LENGTH) : trimmed;
+  return clipPairSafe(trimmed, MAX_LABEL_LENGTH);
 };
 
 const normalizeTimestamp = (value) => {

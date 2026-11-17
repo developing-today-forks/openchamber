@@ -96,6 +96,15 @@ describe('settings search', () => {
     expect(results.some((result) => result.id === 'integrations.linear.mapping')).toBe(true);
   });
 
+  test('routing.token is a Providers result and providers.classification is unchanged (#1762)', () => {
+    const ctx = { ...runtimeCtx, routingAvailable: true };
+    const tokenResults = buildSettingsSearchResults({ query: 'typesafe', runtimeCtx: ctx, t, getPageTitle: (page) => page });
+    expect(tokenResults.find((result) => result.id === 'routing.token')?.page).toBe('providers');
+
+    const classificationResults = buildSettingsSearchResults({ query: 'classification', runtimeCtx: ctx, t, getPageTitle: (page) => page });
+    expect(classificationResults.find((result) => result.id === 'providers.classification')?.page).toBe('providers');
+  });
+
   test('finds the chat input history scope setting', () => {
     const results = buildSettingsSearchResults({
       query: 'input history scope',
@@ -370,5 +379,54 @@ describe('settings search anchors', () => {
       return !redirect || !anchors.has(redirect);
     });
     expect(unanchored).toEqual([]);
+  });
+
+  test('routing.token is pinned to Providers and its preparation opens the Classification gate (#1762)', () => {
+    const searchSource = readFileSync(join(__dirname, 'search.ts'), 'utf-8');
+    const entry = searchSource.match(/id: 'routing\.token',\s*page: '([^']+)'/);
+    expect(entry?.[1]).toBe('providers');
+
+    const sources = readComponentSources();
+    const settingsView = sources.get(settingsViewPath) ?? '';
+    // The token field renders only behind the Classification gate, so
+    // prepareSettingsSearchTarget must request that sub-page for
+    // routing.token itself — the global anchor test above cannot see a
+    // wrong-page entry whose anchor exists on another page.
+    expect(/result\.id === 'routing\.token'[\s\S]{0,240}setSettingsProvidersClassificationRequested\(true\)/.test(settingsView)).toBe(true);
+
+    const classificationPage = [...sources.entries()]
+      .find(([filePath]) => filePath.endsWith('ClassificationProvidersPage.tsx'))?.[1] ?? '';
+    expect(classificationPage).toContain('settingsItem="routing.token"');
+  });
+
+  test('providers.custom is pinned to Providers and its preparation enters custom-create mode (#1765)', () => {
+    const searchSource = readFileSync(join(__dirname, 'search.ts'), 'utf-8');
+    const entry = searchSource.match(/id: 'providers\.custom',\s*page: '([^']+)'/);
+    expect(entry?.[1]).toBe('providers');
+
+    const sources = readComponentSources();
+    const settingsView = sources.get(settingsViewPath) ?? '';
+    // The anchored field renders only inside CustomProviderForm, which
+    // the Providers page shows only in custom-create mode, so
+    // prepareSettingsSearchTarget must request that mode for
+    // providers.custom itself - the global anchor test above cannot see
+    // an entry whose anchor exists but renders in a flow state its
+    // result never enters.
+    expect(/result\.id === 'providers\.custom'[\s\S]{0,240}setSettingsProvidersCustomRequested\(true\)/.test(settingsView)).toBe(true);
+
+    const providersPage = [...sources.entries()]
+      // The suffix must name the providers directory as well: plain
+      // 'ProvidersPage.tsx' also matches ClassificationProvidersPage.tsx,
+      // and which of the two the find returns depends on readdir order,
+      // so the assertion passed or failed with the filesystem (#13655).
+      .find(([filePath]) => /[\\/]providers[\\/]ProvidersPage\.tsx$/.test(filePath))?.[1] ?? '';
+    // The page consumes the request by preselecting the custom candidate
+    // in add mode (custom-create mode), then clears the one-shot flag.
+    expect(/customRequested[\s\S]{0,400}setCandidateProviderId\(CUSTOM_PROVIDER_ID\)/.test(providersPage)).toBe(true);
+    expect(providersPage).toContain('setCustomRequested(false)');
+
+    const customForm = [...sources.entries()]
+      .find(([filePath]) => filePath.endsWith('CustomProviderForm.tsx'))?.[1] ?? '';
+    expect(customForm).toContain('settingsItem="providers.custom"');
   });
 });

@@ -112,6 +112,27 @@ describe('scheduled-tasks runtime helpers', () => {
     expect(title).toBe('Morning Sync 2025-03-10 07:05');
   });
 
+  it('never splits a surrogate pair at the session-title name cut (oracle: astral char straddling the cut)', () => {
+    const title = formatScheduledSessionTitle({
+      name: 'a'.repeat(102) + '😀' + 'zzzz',
+      schedule: { timezone: 'UTC' },
+    }, Date.UTC(2025, 2, 10, 7, 5, 0));
+
+    expect(title).toBe('a'.repeat(102) + ' 2025-03-10 07:05');
+    // A lone surrogate would encode as U+FFFD and not round-trip.
+    expect(new TextDecoder().decode(new TextEncoder().encode(title))).toBe(title);
+  });
+
+  it('still produces exactly 120 code units for an over-cap ASCII name, stamp included', () => {
+    const title = formatScheduledSessionTitle({
+      name: 'a'.repeat(130),
+      schedule: { timezone: 'UTC' },
+    }, Date.UTC(2025, 2, 10, 7, 5, 0));
+
+    expect(title).toBe('a'.repeat(103) + ' 2025-03-10 07:05');
+    expect(title.length).toBe(120);
+  });
+
   it('parses slash command prompt for scheduled command mode', () => {
     expect(parseScheduledCommandPrompt('/review src/components')).toEqual({
       command: 'review',

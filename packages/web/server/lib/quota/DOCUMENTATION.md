@@ -10,7 +10,7 @@ extension applies the same policy in its own process at activation.
 
 ## Entrypoints and structure
 - `packages/web/server/lib/quota/index.js`: public entrypoint imported by `packages/web/server/index.js`.
-- The CLI (`packages/web/bin/lib/commands-quota.js`) imports the same entrypoint for `openchamber quota`. No server is running in that process, so the command wires the credential source itself from the external-OpenCode settings (`OPENCODE_HOST` / `OPENCODE_PORT` / `OPENCODE_SERVER_PASSWORD`) before dispatching. When the server is unreachable (a transport failure, never an answered refusal), the CLI falls back to OpenCode's local credential store for that run and stamps each result with the `credentialSource` that served it; its fetches run with bounded concurrency under a per-provider timeout, and each result carries `elapsedMs` (a timed-out provider answers a `status: 'timeout'` row). Those three fields are attached by the CLI, not by the providers.
+- The CLI (`packages/web/bin/lib/commands-quota.js`) imports the same entrypoint for `openchamber quota`. No server is running in that process, so the command wires the credential source itself: the direct local credential-store read (`openCodeLocalCredentialSource`), the single source the aggregator gatherer also uses (code#2490, #2282) — there is no server round-trip and no server-first/store-fallback split, so the CLI cannot diverge from the gatherer about which credentials exist. Every result is stamped `credentialSource: 'local'`; its fetches run with bounded concurrency under a per-provider timeout, and each result carries `elapsedMs` (a timed-out provider answers a `status: 'timeout'` row). Those fields are attached by the CLI, not by the providers. The server endpoint resolves its providers from this same module directly (`routes.js` imports `./index.js`); the `getQuotaProviders` registration option remains only as a test pass-through.
 - `packages/web/server/lib/quota/routes.js`: Express route registration for quota endpoints.
 - `packages/web/server/lib/quota/providers/index.js`: provider registry, configured-provider list, and provider dispatcher.
 - `packages/web/server/lib/quota/providers/antigravity/`: Antigravity-specific auth, API, and transform modules.
@@ -44,12 +44,12 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `google` | Google | `providers/google/index.js` | `google`, `google.oauth` |
 | `hyper` | Charm Hyper | `providers/hyper.js` | `hyper` (API key under `key` or `token`) |
 | `github-copilot` | GitHub Copilot | `providers/copilot.js` | `github-copilot`, `copilot` |
-| `github-copilot-addon` | GitHub Copilot Add-on | `providers/copilot.js` | `github-copilot`, `copilot` |
 | `kimi-for-coding` | Kimi for Coding | `providers/kimi.js` | `kimi-code-plan-cn`, `kimi-for-coding`, `kimi`, `kimi-code-plan-global` (first match wins) |
 | `meta` | Meta Model API | `providers/meta.js` | `meta` (OpenCode credential; plan usage also reads the Muse CLI OAuth store, see below) |
 | `mistral` | Mistral AI | `providers/mistral.js` | `mistral` (API key under `key` or `token`) — key-validity class: usage/balance are not API-readable on a standard key (#1619) |
 | `nano-gpt` | NanoGPT | `providers/nanogpt.js` | `nano-gpt`, `nanogpt`, `nano_gpt` |
 | `openrouter` | OpenRouter | `providers/openrouter.js` | `openrouter` |
+| `opendesign` | Open Design | `providers/opendesign.js` | OpenChamber-managed credential stored under `~/.config/openchamber/quota/opendesign.json` (`{ cookie, workspaceId }`) |
 | `zai-coding-plan` | z.ai | `providers/zai.js` | `zai-coding-plan`, `zai`, `z.ai` |
 | `zhipuai-coding-plan` | Zhipu AI Coding Plan | `providers/zhipuai-coding-plan.js` | `zhipuai-coding-plan`, `zhipuai`, `zhipu`; falls back to `provider.<alias>.options.apiKey` in opencode.json, resolving `{file:...}` (including `~/`) and `{env:...}` with `resolveConfigApiKey` (`utils/auth.js`) |
 | `minimax-coding-plan` | MiniMax Coding Plan (minimax.io) | `providers/minimax-coding-plan.js` / `providers/minimax-shared.js` | `minimax-coding-plan` |
@@ -61,6 +61,37 @@ asked, `/api/quota/providers` answers 500 instead of an empty list.
 | `kilo` | Kilo Code | `providers/kilo.js` | `kilo`, `kilocode`, `kilo-code` (API key under `key`, `token`, or OAuth `access`; organization id under `kilocodeOrganizationId`, `organizationId`, or OAuth `accountId`, else OpenCode `provider.kilo.options.kilocodeOrganizationId`) |
 | `zenmux` | ZenMux | `providers/zenmux.js` | Optional Platform API key stored under `~/.config/openchamber/quota/zenmux.json` (`platformApiKey`). The OpenCode chat key is not used. |
 | `xai` | xAI | `providers/xai.js` | `xai` OAuth entry in OpenCode `auth.json` |
+
+## Provider registry contract (design #1808)
+
+The manifest at `provider-manifest.json` (beside this document) is the one
+checked-in statement of the quota provider set: every provider id that appears
+in any surface list, its display name, and its presence on each surface (web
+registry, VS Code dispatch, VS Code configured set, UI catalog, UI type union,
+and the dispatcher table above). One conformance test per package (web, VS
+Code, UI) asserts that package's lists equal the manifest; a provider that
+appears in a list but not the manifest fails, and so does a manifest provider
+silently absent from a list. The contract the manifest encodes:
+
+1. **One logical provider set.** Exactly one set of quota provider ids; each
+   surface's list is a view of it, stated in the manifest.
+2. **Landed only when landed everywhere.** A new provider lands web fetcher +
+   registration, VS Code fetcher + dispatch + configured entry, UI catalog +
+   type, and the docs row in the same change. A surface that legitimately
+   cannot serve a provider records a **named exception with a reason** in the
+   manifest - never a silent absence.
+3. **Aliases are not providers.** A credential alias (for example `openai` for
+   `codex`, per the web registry's `credentialAliases`) is recorded in the
+   manifest as an alias and appears in no surface's provider list - including
+   the type union, where `openai` currently sits as if it were a provider
+   (recorded as the alias row's open note; fixing the union is not phase 1).
+4. **Configured and fetch select through one function.** Per provider per
+   backend, exactly one credential-selection function serves both the
+   configured predicate and the fetch path; two selection expressions for one
+   provider in one backend is a defect.
+5. **No distinct id for a duplicate fetcher.** A behaviour-identical fetcher's
+   id is folded into its provider (alias / folded instance) or registered with
+   the distinct data it adds stated.
 
 ## Internal-only provider module
 - `providers/openai.js` exists for logic parity/reuse but is intentionally not registered for dispatcher ID routing.

@@ -2164,6 +2164,7 @@ export const settingsDict = {
   'settings.openchamber.visual.field.selectWeekStartAria': 'Hafta başlangıcı seç',
   'settings.openchamber.visual.actions.reloadThemes': 'Temaları yeniden yükle',
   'settings.openchamber.visual.actions.reloadingThemes': 'Temalar yeniden yükleniyor...',
+  'settings.openchamber.visual.state.customThemesLoadFailed': 'Özel temalar yüklenemedi. Yeniden yüklemeyi deneyin.',
   'settings.openchamber.visual.field.dockBadge': 'Dock rozeti',
   'settings.openchamber.visual.field.dockBadgeHint': 'Görülmeyen etkinlik içeren sohbetlerin sayısını macOS dock simgesinde göster.',
   'settings.openchamber.visual.actions.saveAndRestart': 'Kaydet ve yeniden başlat',

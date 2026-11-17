@@ -38,6 +38,7 @@ import { registerConfigEntityRoutes } from './config-entity-routes.js';
 import { registerSettingsUtilityRoutes } from './core-routes.js';
 import { registerProjectIconRoutes } from './project-icon-routes.js';
 import { registerScheduledTaskRoutes } from '../scheduled-tasks/routes.js';
+import { createScheduledTaskRunHistory } from '../scheduled-tasks/run-history.js';
 import { createTrackedItemsService } from '../tracked-items/service.js';
 import { createProviderReadCache } from '../provider-read-cache/index.js';
 import { createTrackedItemReaders } from '../tracked-items/readers.js';
@@ -106,14 +107,6 @@ export const createFeatureRoutesRuntime = (dependencies) => {
     platform: process.env.OPENCHAMBER_RUNTIME === 'desktop' ? 'desktop' : 'web',
   });
 
-  let quotaProviders = null;
-  const getQuotaProviders = async () => {
-    if (!quotaProviders) {
-      quotaProviders = await import('../quota/index.js');
-    }
-    return quotaProviders;
-  };
-
   let smallModelService = null;
   const getSmallModelService = async () => {
     if (!smallModelService) {
@@ -128,6 +121,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
   let networkOperations = null;
   let gitWorktreeCreation = null;
   let guestOperations = null;
+  let scheduledTaskRunHistory = null;
   let linearOperations = null;
   const getWalkthroughService = async () => {
     if (!walkthroughService) {
@@ -360,12 +354,19 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       resolveGitBinaryForSpawn,
     });
 
+    if (!scheduledTaskRunHistory) {
+      scheduledTaskRunHistory = createScheduledTaskRunHistory({
+        filePath: path.join(openchamberDataDir, 'scheduled-task-run-history.jsonl'),
+        logger: console,
+      });
+    }
     registerScheduledTaskRoutes(app, {
       readSettingsFromDiskMigrated,
       sanitizeProjects,
       projectConfigRuntime,
       scheduledTasksRuntime,
       scheduledTaskService,
+      scheduledTaskRunHistory,
       getOpenChamberEventClients,
       writeSseEvent,
     });
@@ -446,7 +447,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
 
     const { getProfiles, getProfile, getGlobalIdentity, resolveRepositoryGitPaths } = await import('../git/index.js');
 
-    registerQuotaRoutes(app, { getQuotaProviders });
+    registerQuotaRoutes(app);
     registerSmallModelRoutes(app, { getSmallModelService });
     registerSessionGoalRoutes(app);
     const gitBinary = resolveGitBinaryForSpawn();
@@ -815,5 +816,7 @@ export const createFeatureRoutesRuntime = (dependencies) => {
       : null),
     /** Writes the Git credential helper's endpoint file; a no-op until the Git routes are registered. */
     publishRepositoryCredentialEndpoint: async () => { await gitRepositoryCredentialRuntime?.publish(); },
+    /** Records one scheduled-task run event into the durable run history (#2174 Gap 1); a no-op until the routes are registered. */
+    recordScheduledTaskRun: (event) => { scheduledTaskRunHistory?.recordEvent(event); },
   };
 };

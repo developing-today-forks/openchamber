@@ -60,10 +60,11 @@ export function createBindingStore({ filePath, fsImpl = fs, lockWaitMs = 2_000 }
 // bound below. Missing still answers the empty state; over-cap and
 // non-regular fail closed as the store's typed invalid-state error (never
 // the empty state, which would silently discard the records this store is
-// the safety layer for). The bounded reader uses real node:fs, not fsImpl;
-// write and lock paths keep fsImpl, as before.
+// the safety layer for). The bounded reader goes through fsImpl like the
+// write and lock paths (the reader's `fs` option, #2015), so a store
+// built on an injected filesystem reads from that filesystem too.
   const readState = async () => {
-    const result = await readBoundedFile(filePath, BINDING_STATE_MAX_BYTES);
+    const result = await readBoundedFile(filePath, BINDING_STATE_MAX_BYTES, { fs: fsImpl });
     if (!result.ok) {
       if (result.reason === 'missing') return { version: 2, repositories: {} };
       throw invalidState(new Error(`binding state read refused: ${result.code}`));

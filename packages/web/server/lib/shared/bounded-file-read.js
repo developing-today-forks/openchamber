@@ -77,11 +77,11 @@ const isMissingError = (error) => error?.code === 'ENOENT';
  *   | { ok: false, reason: 'too-large', code: string, path: string, size: number, limit: number }
  * >}
  */
-export async function readBoundedFile(filePath, maxBytes, { noFollow = false } = {}) {
+export async function readBoundedFile(filePath, maxBytes, { noFollow = false, fs: fileSystem = fs.promises } = {}) {
   assertMaxBytes(maxBytes);
   let handle;
   try {
-    handle = await fs.promises.open(filePath, openFlags(noFollow));
+    handle = await fileSystem.open(filePath, openFlags(noFollow));
   } catch (error) {
     if (isMissingError(error)) return missingResult(filePath);
     throw error;

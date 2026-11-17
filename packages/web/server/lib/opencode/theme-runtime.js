@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as nodeFsConstants } from 'node:fs';
 import { z } from 'zod';
+
+const themeFileOpenFlags =
+  process.platform === 'win32' || nodeFsConstants.O_NONBLOCK === undefined
+    ? 'r'
+    : nodeFsConstants.O_RDONLY | nodeFsConstants.O_NONBLOCK;
 
 const color = z.string().regex(/^#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i);
 const role = z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*$/).max(64);
@@ -116,7 +122,7 @@ export const createThemeRuntime = (dependencies) => {
   // file, and at most cap + 1 bytes are ever buffered. Returns { text }, or
   // { tooLarge: true, size } / { notFile: true }.
   const readThemeFileBounded = async (filePath) => {
-    const handle = await fsPromises.open(filePath, 'r');
+    const handle = await fsPromises.open(filePath, themeFileOpenFlags);
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) return { notFile: true };

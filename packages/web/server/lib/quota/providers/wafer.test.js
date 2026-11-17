@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureOpenCodeCredentials } from '../../opencode/auth.js';
-import { fetchQuota } from './wafer.js';
+import { fetchQuota, isConfigured } from './wafer.js';
 
 beforeEach(() => {
   configureOpenCodeCredentials({
@@ -163,4 +163,45 @@ describe('Wafer quota provider', () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe('Request timed out');
   }, 25_000);
+});
+
+describe('Wafer credential selection (#1755)', () => {
+  it('falls through an empty or whitespace key to the token in isConfigured', () => {
+    expect(isConfigured({ wafer: { key: '', token: 'valid-token' } })).toBe(true);
+    expect(isConfigured({ wafer: { key: '   ', token: 'valid-token' } })).toBe(true);
+    expect(isConfigured({ wafer: { key: 'real-key', token: 'valid-token' } })).toBe(true);
+  });
+
+  it('reports not configured in isConfigured when both fields are empty or whitespace', () => {
+    expect(isConfigured({ wafer: { key: ' ', token: '' } })).toBe(false);
+    expect(isConfigured({ wafer: { key: '', token: '  ' } })).toBe(false);
+  });
+
+  it('does not send a whitespace key as a bearer in fetchQuota', async () => {
+    configureOpenCodeCredentials({
+      list: async () => [{ active: true, integrationID: 'wafer', value: { type: 'key', key: '   ' } }],
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota();
+
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an empty key as configured in fetchQuota', async () => {
+    configureOpenCodeCredentials({
+      list: async () => [{ active: true, integrationID: 'wafer', value: { type: 'key', key: '' } }],
+    });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchQuota();
+
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

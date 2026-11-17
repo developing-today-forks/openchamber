@@ -9,6 +9,17 @@ const storedIconOpenFlags = (platform) =>
     ? 'r'
     : nodeFsConstants.O_RDONLY | nodeFsConstants.O_NONBLOCK;
 
+// Discovery reads project-controlled files, so its open must not follow
+// a final-component symlink either (#2294): O_NOFOLLOW binds the read to
+// the file the pathname validation judged — a symlink swapped in after
+// validation fails the open with ELOOP instead of being followed. (A
+// directory-component swap mid-request has no portable Node primitive;
+// the lstat + realpath containment check above remains the guard there.)
+const discoveredIconOpenFlags = (platform) =>
+  platform === 'win32' || nodeFsConstants.O_NOFOLLOW === undefined
+    ? storedIconOpenFlags(platform)
+    : storedIconOpenFlags(platform) | nodeFsConstants.O_NOFOLLOW;
+
 export const registerProjectIconRoutes = (app, dependencies) => {
   const {
     fsPromises,
@@ -43,10 +54,52 @@ export const registerProjectIconRoutes = (app, dependencies) => {
   };
   const projectIconHexColorPattern = /^#(?:[\da-fA-F]{3}|[\da-fA-F]{4}|[\da-fA-F]{6}|[\da-fA-F]{8})$/;
 
+  // Open with the stored-icon flags (#1788): a project-controlled
+  // favicon can be a FIFO, and a plain 'r' open blocks on it forever
+  // before the handle stat can judge it non-regular - the same
+  // open-before-guard shape #1537 fixed for the stored-icon reader.
+  // A discovered favicon is project-controlled input (#2294): a symlink
+  // named like a favicon would make readDiscoveredIcon read its target,
+  // which can live anywhere the server process can reach. A candidate is
+  // discoverable only when it is not a symlink itself and its resolved
+  // path stays inside the resolved project directory.
+  const resolveDiscoverableIconPath = async (candidatePath, projectPath) => {
+    try {
+      const linkStats = await fsPromises.lstat(candidatePath);
+      if (linkStats.isSymbolicLink()) {
+        return null;
+      }
+      const [realProjectPath, realCandidatePath] = await Promise.all([
+        fsPromises.realpath(projectPath),
+        fsPromises.realpath(candidatePath),
+      ]);
+      const normalize = (value) => value.replace(/\\/g, '/');
+      const root = normalize(realProjectPath);
+      const resolved = normalize(realCandidatePath);
+      if (resolved !== root && !resolved.startsWith(`${root}/`)) {
+        return null;
+      }
+      return candidatePath;
+    } catch {
+      return null;
+    }
+  };
+
   const readDiscoveredIcon = async (filePath) => {
-    const handle = await fsPromises.open(filePath, 'r');
+    let handle;
+    try {
+      handle = await fsPromises.open(filePath, discoveredIconOpenFlags(process.platform));
+    } catch (error) {
+      if (error?.code === 'ELOOP') {
+        return { ok: false, reason: 'symlink' };
+      }
+      throw error;
+    }
     try {
       const stats = await handle.stat();
+      if (stats.isFile?.() === false) {
+        return { ok: false, reason: 'not-regular' };
+      }
       if (stats.size === 0) {
         return { ok: false, reason: 'empty' };
       }
@@ -500,7 +553,13 @@ export const registerProjectIconRoutes = (app, dependencies) => {
         })
         .sort((a, b) => scoreFaviconCandidate(b) - scoreFaviconCandidate(a));
 
-      const selected = filtered[0];
+      let selected = null;
+      for (const candidate of filtered) {
+        if (await resolveDiscoverableIconPath(candidate.path, project.path)) {
+          selected = candidate;
+          break;
+        }
+      }
       if (!selected) {
         return res.status(404).json({ error: 'No favicon found in project' });
       }
@@ -517,6 +576,12 @@ export const registerProjectIconRoutes = (app, dependencies) => {
       }
       if (!discovered.ok && discovered.reason === 'too-large') {
         return res.status(400).json({ error: 'Discovered icon exceeds size limit (5 MB)' });
+      }
+      if (!discovered.ok && discovered.reason === 'not-regular') {
+        return res.status(400).json({ error: 'Discovered icon is not a regular file' });
+      }
+      if (!discovered.ok && discovered.reason === 'symlink') {
+        return res.status(400).json({ error: 'Discovered icon is a symbolic link' });
       }
       const { bytes } = discovered;
 

@@ -34,6 +34,14 @@ describe('content search with ripgrep', () => {
     await writeFile(path.join(repo, '.gitignore'), 'ignored.txt\n');
     await writeFile(path.join(repo, 'node_modules', 'pkg', 'index.js'), 'needle in a dependency\n');
     await writeFile(path.join(repo, 'blob.bin'), Buffer.concat([Buffer.from('needle'), Buffer.from([0, 1, 2])]));
+    // #2152: an emoji straddling the trailing preview edge (line 1: the
+    // pair starts at code unit 199 of a 200-unit window) and one
+    // straddling the leading cut (line 2: the raw cut, match start - 24,
+    // lands exactly on the pair's low surrogate).
+    await writeFile(path.join(repo, 'src', 'emoji.ts'), [
+      `const trail = "quarry${'x'.repeat(193)}😀tail";`,
+      `const lead = "${'y'.repeat(100)}😀${'z'.repeat(23)}quarry${'w'.repeat(80)}";`,
+    ].join('\n') + '\n');
     search = createContentSearchRuntime({ spawn, path, resolveRipgrepBinary }).searchFileContents;
   });
 
@@ -83,6 +91,22 @@ describe('content search with ripgrep', () => {
     expect(minified.text.slice(...minified.ranges[0])).toBe('needle');
     expect(minified.ranges[0][0]).toBe(24);
     expect(minified.column).toBe('const minified = "'.length + 300 + 1);
+  });
+
+  it('never splits a surrogate pair at either preview edge (#2152)', async () => {
+    const result = await find({ query: 'quarry' });
+    expect(result.status).toBe('ok');
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    const trailing = result.matches.find((match) => match.relativePath === 'src/emoji.ts' && match.line === 1);
+    expect(trailing.text.length).toBeLessThanOrEqual(200);
+    expect(trailing.text).not.toMatch(loneSurrogate);
+    expect(trailing.text.slice(...trailing.ranges[0])).toBe('quarry');
+    const leading = result.matches.find((match) => match.relativePath === 'src/emoji.ts' && match.line === 2);
+    expect(leading.cutStart).toBe(true);
+    expect(leading.text).not.toMatch(loneSurrogate);
+    expect(leading.text.startsWith('z')).toBe(true);
+    expect(leading.text.slice(...leading.ranges[0])).toBe('quarry');
+    expect(leading.column).toBe('const lead = "'.length + 100 + 2 + 23 + 1);
   });
 
   it('skips gitignored, hidden, binary and node_modules files unless told otherwise', async () => {
@@ -142,7 +166,7 @@ describe('content search with ripgrep', () => {
 
 // A ripgrep that keeps running until killed, for the paths real searches
 // finish too fast to exercise.
-const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', exitCode = null } = {}) => {
+const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', stderrChunks = [], exitCode = null } = {}) => {
   const children = [];
   const spawnFake = vi.fn(() => {
     const child = new EventEmitter();
@@ -159,6 +183,7 @@ const createHangingSpawn = ({ stdoutLines = [], stdoutChunks = [], stderr = '', 
       for (const line of stdoutLines) child.stdout.emit('data', Buffer.from(`${line}\n`));
       for (const chunk of stdoutChunks) child.stdout.emit('data', Buffer.from(chunk));
       if (stderr) child.stderr.emit('data', Buffer.from(stderr));
+      for (const chunk of stderrChunks) child.stderr.emit('data', Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       if (exitCode !== null) child.emit('close', exitCode, null);
     });
     return child;
@@ -261,6 +286,30 @@ describe('content search process control', () => {
       status: 'failed',
       message: './root: No such file or directory (os error 2)',
     });
+  });
+
+  it('keeps a multi-byte character split across stderr chunks intact in the failure message', async () => {
+    const stderrBytes = Buffer.from('rg: regex parse error:\nerror: unclosed \u20AC group\n', 'utf8');
+    const euroStart = stderrBytes.indexOf(0xE2);
+    const stderrChunks = [stderrBytes.subarray(0, euroStart + 1), stderrBytes.subarray(euroStart + 1)];
+    const { spawn: spawnFake } = createHangingSpawn({ stderrChunks, exitCode: 2 });
+    const runtime = createContentSearchRuntime({ spawn: spawnFake, path, resolveRipgrepBinary });
+    expect(await runtime.searchFileContents('/root', { query: '(', regex: true })).toEqual({
+      status: 'invalid-pattern',
+      message: 'unclosed \u20AC group',
+    });
+  });
+
+  it('caps accumulated stderr at STDERR_MAX_BYTES counted in bytes, on a character boundary', async () => {
+    const stderrBytes = Buffer.from('\u20AC'.repeat(40_000) + '\n', 'utf8');
+    const stderrChunks = [];
+    for (let offset = 0; offset < stderrBytes.length; offset += 8192) stderrChunks.push(stderrBytes.subarray(offset, offset + 8192));
+    const { spawn: spawnFake } = createHangingSpawn({ stderrChunks, exitCode: 2 });
+    const runtime = createContentSearchRuntime({ spawn: spawnFake, path, resolveRipgrepBinary });
+    const result = await runtime.searchFileContents('/root', { query: 'x', regex: false });
+    expect(result.status).toBe('failed');
+    expect(Buffer.byteLength(result.message, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(result.message).not.toContain('\uFFFD');
   });
 
   it('reports a process that could not start', async () => {

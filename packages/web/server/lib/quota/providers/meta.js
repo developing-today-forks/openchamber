@@ -45,9 +45,9 @@
  */
 
 import { readQuotaJson } from '../utils/response-body.js';
-import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { readBoundedFileSync } from '../../shared/bounded-file-read.js';
 import { readOpenCodeCredentials } from '../../opencode/auth.js';
 import {
   getAuthEntry,
@@ -68,6 +68,7 @@ export const aliases = ['meta'];
 const META_KEY_URL = 'https://api.meta.ai/muse-code/key';
 const WEEKLY_SECONDS = 7 * 24 * 60 * 60;
 // The Muse CLI's own login store. Read-only; the token is never written back.
+const MUSE_AUTH_MAX_BYTES = 64 * 1024;
 const MUSE_AUTH_PATH = path.join(os.homedir(), '.config', 'muse', 'auth.json');
 
 /** Epoch ms of the last successful (ok: true) usage read in this process, or null. */
@@ -81,7 +82,10 @@ export const resetMetaQuotaCache = () => {
 /** The Meta account OAuth token from the Muse CLI's login store, or null. */
 export const readMuseAccountToken = ({ filePath = MUSE_AUTH_PATH } = {}) => {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const result = readBoundedFileSync(filePath, MUSE_AUTH_MAX_BYTES);
+    if (!result.ok) return null;
+
+    const parsed = JSON.parse(result.buffer.toString('utf8'));
     return asNonEmptyString(parsed?.providers?.meta?.access_token);
   } catch {
     return null;

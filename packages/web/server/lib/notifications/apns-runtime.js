@@ -18,6 +18,7 @@ import {
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
 import { parsePushKey, sealPushContent } from './push-seal.js';
 import { readBoundedResponseText } from '../shared/response-body.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import {
   getOrCreateRelaySigningKeypair,
   signRelayMessage as signRelayMessageShared,
@@ -31,6 +32,10 @@ const JWT_TTL_MS = 50 * 60 * 1000;
 const DEFAULT_BUNDLE_ID = 'today.developing.openchamber';
 const DEFAULT_RELAY_URL = 'https://api.openchamber.dev/v1/push/send';
 const MAX_TOKENS_PER_SESSION = 10;
+// A real APNs .p8 signing key is a few hundred bytes; the cap carries
+// generous headroom while keeping the key-file read bounded like every
+// other read in this module (#1777).
+const APNS_P8_MAX_BYTES = 64 * 1024;
 // APNs reasons that mean the token is permanently invalid → drop it.
 const DEAD_TOKEN_REASONS = new Set(['BadDeviceToken', 'Unregistered', 'DeviceTokenNotForTopic']);
 
@@ -397,7 +402,16 @@ export const createApnsRuntime = (deps) => {
     const p8Path = trimmedEnv('OPENCHAMBER_APNS_P8_PATH');
     if (!p8 && p8Path) {
       try {
-        p8 = (await fsPromises.readFile(p8Path, 'utf8')).trim();
+        // Bounded, handle-judged read (the house standard): an oversized
+        // or non-regular file at the path must land in the warn-and-
+        // continue path below, never be buffered whole or block the read
+        // - this runs on every direct-mode send, with no other deadline.
+        const keyFile = await readBoundedFile(p8Path, APNS_P8_MAX_BYTES);
+        if (keyFile.ok) {
+          p8 = keyFile.buffer.toString('utf8').trim();
+        } else {
+          console.warn('[APNs] Failed to read OPENCHAMBER_APNS_P8_PATH:', keyFile.code);
+        }
       } catch (error) {
         console.warn('[APNs] Failed to read OPENCHAMBER_APNS_P8_PATH:', error?.message ?? error);
       }

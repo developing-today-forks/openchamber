@@ -42,12 +42,25 @@ const decodeUserId = (value) => {
   }
 };
 
+// A plain slice at the cap can land between the halves of a surrogate pair,
+// leaving a lone high surrogate that persists to the passkey store and shows
+// up as U+FFFD in the device list; move a cut inside a pair back to the pair
+// boundary. Mirrors clipPairSafe in client-auth/pairing.js.
+const clipPairSafe = (text, limit) => {
+  if (text.length <= limit) {
+    return text;
+  }
+  const clipped = text.slice(0, limit);
+  const last = clipped.charCodeAt(clipped.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped;
+};
+
 const normalizeLabel = (value, fallback) => {
   if (typeof value !== 'string') {
     return fallback;
   }
   const normalized = value.trim().replace(/\s+/g, ' ');
-  return normalized ? normalized.slice(0, 120) : fallback;
+  return normalized ? clipPairSafe(normalized, 120) : fallback;
 };
 
 const normalizeOptionalLabel = (value) => normalizeLabel(value, '') || null;
