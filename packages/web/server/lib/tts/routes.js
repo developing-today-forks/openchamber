@@ -44,9 +44,11 @@ export function isSafeSayVoice(voice) {
 }
 
 // Argv for `say`, in order. Passed to execFile, so every field stays a
-// single argument and no shell ever interprets it.
+// single argument and no shell ever interprets it. The `--` terminator
+// keeps `say` itself from parsing dash-prefixed text as an option
+// (argument injection, e.g. text "--input-file=/etc/hosts").
 export function buildSayArgs({ voice, rate, tempFile, text }) {
-  return ['-v', voice, '-r', String(rate), '-o', tempFile, '--data-format=aac', text];
+  return ['-v', voice, '-r', String(rate), '-o', tempFile, '--data-format=aac', '--', text];
 }
 
 export function registerTtsRoutes(app, { sayTTSCapability }) {

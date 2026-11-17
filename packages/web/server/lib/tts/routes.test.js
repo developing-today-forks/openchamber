@@ -167,7 +167,12 @@ describe('say speak input validation (#2293)', () => {
 
   it('builds the say invocation as argv, never a shell string', () => {
     const args = buildSayArgs({ voice: 'Samantha" -o /tmp/x #', rate: 200, tempFile: '/tmp/say-1.m4a', text: "it's; $(id)" });
-    expect(args).toEqual(['-v', 'Samantha" -o /tmp/x #', '-r', '200', '-o', '/tmp/say-1.m4a', '--data-format=aac', "it's; $(id)"]);
+    expect(args).toEqual(['-v', 'Samantha" -o /tmp/x #', '-r', '200', '-o', '/tmp/say-1.m4a', '--data-format=aac', '--', "it's; $(id)"]);
+    // Dash-prefixed text stays speech content behind the `--` terminator,
+    // never a `say` option such as --input-file.
+    const injected = buildSayArgs({ voice: 'Samantha', rate: 200, tempFile: '/tmp/say-1.m4a', text: '--input-file=/etc/hosts' });
+    expect(injected.at(-2)).toBe('--');
+    expect(injected.at(-1)).toBe('--input-file=/etc/hosts');
   });
 });
 
