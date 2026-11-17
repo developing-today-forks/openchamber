@@ -120,6 +120,22 @@ describe('saving the chats of a space', () => {
     expect(Array.from(lenient.host.keys())).toEqual([PARENT]);
   });
 
+  it('stops exporting further chats once a strict save is refused by the budget (#2321)', async () => {
+    // Oracle: in strict mode the save is refused the moment one chat exceeds
+    // the budget, so no later chat is exported at all; in lenient mode the
+    // later chat is still tried and saved.
+    const chats = [{ info: infoOf(PARENT) }, { info: infoOf(OTHER, { title: 'padded '.repeat(300) }) }, { info: infoOf(CHILD, { parentID: PARENT }) }];
+    const strict = archiveWith({ chats, maxStagedBytes: 1000 });
+    const strictExports = [];
+    const strictExport = strict.source.exportChat;
+    strict.source.exportChat = async (id) => { strictExports.push(id); return strictExport(id); };
+    await expect(strict.save()).rejects.toMatchObject({ code: 'chats_not_saved' });
+    expect(strictExports).toEqual([PARENT, OTHER]);
+
+    const lenient = archiveWith({ chats, maxStagedBytes: 1000 });
+    await expect(lenient.save(true)).resolves.toMatchObject({ saved: 2, failed: 1, listed: true });
+  });
+
   it('defaults the staging budget to ARCHIVE_MAX_TOTAL_BYTES', () => {
     expect(ARCHIVE_MAX_TOTAL_BYTES).toBe(4 * 256 * 1024 * 1024);
   });

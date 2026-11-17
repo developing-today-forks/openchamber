@@ -253,6 +253,13 @@ export function createSpaceArchive({ dataDir, hostOpenCode, logger = console, no
           const bytes = Buffer.byteLength(serialized);
           if (stagedBytes + bytes > maxStagedBytes) {
             failed += 1;
+            // A strict save is refused as soon as any chat fails, so taking
+            // out the remaining chats would only waste the exports: stop.
+            // A lenient save keeps going - a later, smaller chat may fit.
+            if (!allowUnsaved) {
+              logger.warn?.(`[spaces] chat ${chat.id} of space ${spaceId} was not taken out: the archive staging budget of ${maxStagedBytes} bytes is exhausted (${stagedBytes} already staged)`);
+              break;
+            }
             logger.warn?.(`[spaces] chat ${chat.id} of space ${spaceId} was not taken out: the archive staging budget of ${maxStagedBytes} bytes is exhausted (${stagedBytes} already staged)`);
             continue;
           }
