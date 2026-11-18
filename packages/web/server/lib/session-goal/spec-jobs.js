@@ -1147,9 +1147,16 @@ export function createGoalSpecJobRuntime({
     await load();
     prune();
     const existing = jobForSession(parsed.sessionId);
+    let replaced = null;
     // A new job replaces the session's last one, unless that one is going out right now.
     if (existing) {
       requireNotSending(existing);
+      replaced = {
+        job: existing,
+        status: existing.status,
+        waiting: existing.waiting,
+        open: OPEN_STATUSES.has(existing.status),
+      };
       end(existing);
     }
     if (jobs.size >= MAX_JOBS) makeRoom();
@@ -1194,6 +1201,12 @@ export function createGoalSpecJobRuntime({
       await written;
     } catch (error) {
       if (jobs.get(job.id) === job) remove(job);
+      if (replaced?.open) {
+        reopen(replaced.job, replaced);
+      } else if (replaced) {
+        jobs.set(replaced.job.id, replaced.job);
+        publish(replaced.job.sessionId, replaced.job);
+      }
       throw httpError(`the goal writer job could not be saved: ${describeError(error, 'write failed')}`, 500);
     }
     // A job replaced while it was saved needs no writer, nor one whose message

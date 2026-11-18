@@ -1455,7 +1455,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             : { armed: false, objectiveOverride: null, settled: false, briefAgent: false, ignoreLimit: false };
         const goalSettings = useUIStore.getState();
         const goal: QueuedMessageGoal | undefined = goalArm.armed ? {
-            tokenBudget: goalSettings.sessionGoalDefaultBudgetEnabled ? goalSettings.sessionGoalDefaultBudget : null,
+            tokenBudget: goalArm.tokenBudget !== undefined
+                ? goalArm.tokenBudget
+                : (goalSettings.sessionGoalDefaultBudgetEnabled ? goalSettings.sessionGoalDefaultBudget : null),
         } : undefined;
         if (goal && goalArm.objectiveOverride?.trim()) goal.objective = goalArm.objectiveOverride;
         if (goal && goalArm.settled) goal.settled = true;

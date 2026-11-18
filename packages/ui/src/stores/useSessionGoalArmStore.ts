@@ -22,13 +22,15 @@ export interface SessionGoalArm {
   briefAgent: boolean;
   /** The user switched the goal length limit off for this goal. */
   ignoreLimit: boolean;
+  /** A captured budget; undefined means use the current composer default. */
+  tokenBudget?: number | null;
 }
 
 interface SessionGoalArmStore extends SessionGoalArm {
   setArmed: (
     armed: boolean,
     objectiveOverride?: string | null,
-    options?: { settled?: boolean; briefAgent?: boolean; ignoreLimit?: boolean },
+    options?: { settled?: boolean; briefAgent?: boolean; ignoreLimit?: boolean; tokenBudget?: number | null },
   ) => void;
   /** Read-and-clear in one step at send time. */
   consume: () => SessionGoalArm;
@@ -43,7 +45,7 @@ const DISARMED: SessionGoalArm = { armed: false, objectiveOverride: null, settle
 export const createGoalArm = (
   armed: boolean,
   objectiveOverride: string | null = null,
-  options: { settled?: boolean; briefAgent?: boolean; ignoreLimit?: boolean } = {},
+  options: { settled?: boolean; briefAgent?: boolean; ignoreLimit?: boolean; tokenBudget?: number | null } = {},
 ): SessionGoalArm => (armed
   ? {
       armed,
@@ -51,6 +53,7 @@ export const createGoalArm = (
       settled: options.settled === true,
       briefAgent: options.briefAgent === true && Boolean(objectiveOverride),
       ignoreLimit: options.ignoreLimit === true,
+      ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
     }
   : DISARMED);
 
@@ -75,11 +78,13 @@ export const rearmQueuedGoal = (goal: {
   settled?: boolean;
   briefAgent?: boolean;
   ignoreLimit?: boolean;
+  tokenBudget?: number | null;
 }): void => {
   useSessionGoalArmStore.getState().setArmed(true, goal.objective ?? null, {
     settled: goal.settled === true,
     briefAgent: goal.briefAgent === true,
     ignoreLimit: goal.ignoreLimit === true,
+    ...(goal.tokenBudget !== undefined ? { tokenBudget: goal.tokenBudget } : {}),
   });
 };
 

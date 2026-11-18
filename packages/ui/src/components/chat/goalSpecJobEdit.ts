@@ -63,6 +63,7 @@ async function replaceEmptySessionWithDraft(job: GoalSpecJob, runtimeKey: string
     }
     if (!empty || runtimeKey !== getRuntimeKey() || !emptyOnScreen()) return null;
     if (!(await useSessionUIStore.getState().deleteSession(job.sessionId, { expectedRuntimeKey: runtimeKey }))) return null;
+    if (runtimeKey !== getRuntimeKey() || useSessionUIStore.getState().currentSessionId !== null) return null;
     // A chat's directory names no project, so it opens another chat.
     useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: job.directory });
     return useSessionUIStore.getState().newSessionDraft.draftId;

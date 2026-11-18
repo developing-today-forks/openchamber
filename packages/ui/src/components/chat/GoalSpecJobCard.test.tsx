@@ -273,6 +273,9 @@ describe('GoalSpecJobCard', () => {
         currentSessionId: 'ses_card',
         deleteSession: async (id) => {
           deleted.push(id);
+          if (useSessionUIStore.getState().currentSessionId === id) {
+            useSessionUIStore.setState({ currentSessionId: null });
+          }
           return true;
         },
         openNewSessionDraft: (options) => {
@@ -420,6 +423,7 @@ describe('GoalSpecJobCard', () => {
       status: 'ready',
       spec: 'Spec',
       composerOnly: true,
+      tokenBudget: 4096,
       message: { content: 'See the mock', text: 'See the mock', attachments: [{ id: 'a1', filename: 'mock.png', mimeType: 'image/png', size: 2 }], contextCount: 1 },
     });
     show(waiting);
@@ -468,7 +472,7 @@ describe('GoalSpecJobCard', () => {
       agent: 'build',
       files: ['mock.png'],
       parts: ['Resolve the conflict'],
-      goalArm: { armed: true, objectiveOverride: 'Spec', settled: true, briefAgent: true, ignoreLimit: false },
+      goalArm: { armed: true, objectiveOverride: 'Spec', settled: true, briefAgent: true, ignoreLimit: false, tokenBudget: 4096 },
       composerArmed: true,
     }]);
     // The settle names the user message the send created, and the claim it was sent under.
@@ -585,7 +589,7 @@ describe('GoalSpecJobCard', () => {
     });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    expect(sent).toEqual([{ text: 'See the mock', files: ['mock.png'], goalArm: { armed: true, objectiveOverride: 'Spec', settled: true, briefAgent: true, ignoreLimit: false } }]);
+    expect(sent).toEqual([{ text: 'See the mock', files: ['mock.png'], goalArm: { armed: true, objectiveOverride: 'Spec', settled: true, briefAgent: true, ignoreLimit: false, tokenBudget: null } }]);
     expect(calls.map((call) => call.path)).toEqual(['/api/goals/spec-jobs/job-1/claim', '/api/goals/spec-jobs/job-1/settle']);
     expect(calls[1]?.body).toEqual({ outcome: { kind: 'spec', sendMode: 'with-message' }, spec: 'Spec', claimId: 'claim-1' });
     expect(text()).toContain('Sent your message as typed. The spec is its goal.');

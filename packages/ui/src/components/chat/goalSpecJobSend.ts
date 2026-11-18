@@ -130,8 +130,8 @@ async function sendClaimed(job: GoalSpecJob, choice: GoalSpecJobChoice, message:
     // length limit switch goes with it.
     const ignoreLimit = choice.ignoreLimit === true;
     const goalArm = choice.kind === 'spec'
-        ? createGoalArm(true, choice.spec, { settled: true, briefAgent: choice.sendMode === 'with-message', ignoreLimit })
-        : createGoalArm(job.trigger === 'armed', null, { settled: true, ignoreLimit });
+        ? createGoalArm(true, choice.spec, { settled: true, briefAgent: choice.sendMode === 'with-message', ignoreLimit, tokenBudget: job.tokenBudget })
+        : createGoalArm(job.trigger === 'armed', null, { settled: true, ignoreLimit, tokenBudget: job.tokenBudget });
     // The user message this send creates: a sent card hides once a user message follows it.
     let messageId: string | undefined;
     try {

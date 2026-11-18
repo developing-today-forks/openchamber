@@ -856,6 +856,57 @@ describe('goal writer jobs', () => {
     expect(broadcasts.at(-1).properties).toMatchObject({ sessionId: SESSION, job: null });
   });
 
+  it('a replacement job that cannot be put on file leaves the previous open job intact', async () => {
+    const dataDir = makeDataDir();
+    const { runtime, writer } = createRuntime({ dataDir });
+    const first = await runtime.create(job());
+    await runtime.flush();
+
+    const rename = fs.renameSync;
+    const failing = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.basename(String(to)) === JOBS_FILE) throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
+      return rename(from, to);
+    });
+    try {
+      await expect(runtime.create(job())).rejects.toMatchObject({ status: 500 });
+    } finally {
+      failing.mockRestore();
+    }
+
+    await runtime.flush();
+    expect(runtime.snapshot().jobs).toEqual([expect.objectContaining({ id: first.job.id, status: 'writing' })]);
+    expect(readJobsFile(dataDir).jobs.map((stored) => [stored.id, stored.status])).toEqual([[first.job.id, 'writing']]);
+    expect(writer.calls[0].input.signal.aborted).toBe(true);
+    expect(writer.calls).toHaveLength(2);
+    for (const call of writer.calls) call.resolve({ spec: SPEC, providerID: 'p', modelID: 'm' });
+    await runtime.whenIdle();
+  });
+
+  it('a replacement write failure also restores the previous sent card', async () => {
+    const dataDir = makeDataDir();
+    const { runtime, writer } = createRuntime({ dataDir });
+    const first = await runtime.create(job());
+    writeAnswer(writer);
+    await runtime.whenIdle();
+    await runtime.send(first.job.id, { kind: 'original' });
+    await runtime.flush();
+
+    const rename = fs.renameSync;
+    const failing = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (path.basename(String(to)) === JOBS_FILE) throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
+      return rename(from, to);
+    });
+    try {
+      await expect(runtime.create(job())).rejects.toMatchObject({ status: 500 });
+    } finally {
+      failing.mockRestore();
+    }
+
+    await runtime.flush();
+    expect(runtime.snapshot().jobs).toEqual([expect.objectContaining({ id: first.job.id, status: 'sent' })]);
+    expect(readJobsFile(dataDir).jobs.map((stored) => [stored.id, stored.status])).toEqual([[first.job.id, 'sent']]);
+  });
+
   it('a job a window claims while it is being put on file gets no writer', async () => {
     const { runtime, writer, broadcasts } = createRuntime();
     let claiming = null;

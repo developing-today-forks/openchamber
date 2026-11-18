@@ -2147,7 +2147,9 @@ export async function sendMessage(
     const goalUiState = useUIStore.getState()
     const goalTokenBudget = queuedGoal
       ? queuedGoal.tokenBudget
-      : (goalUiState.sessionGoalDefaultBudgetEnabled ? goalUiState.sessionGoalDefaultBudget : null)
+      : (goalArm.tokenBudget !== undefined
+        ? goalArm.tokenBudget
+        : (goalUiState.sessionGoalDefaultBudgetEnabled ? goalUiState.sessionGoalDefaultBudget : null))
     // Creates the armed goal and returns its goal-mode reminder, which
     // teaches the agent the goal protocol from turn one (without it the agent
     // only learns about goal mode from the first server continuation). It is
@@ -2183,6 +2185,7 @@ export async function sendMessage(
             settled: goalArm.settled,
             briefAgent: goalArm.briefAgent,
             ignoreLimit: goalArm.ignoreLimit,
+            ...(goalArm.tokenBudget !== undefined ? { tokenBudget: goalArm.tokenBudget } : {}),
           })
         }
         throw error
