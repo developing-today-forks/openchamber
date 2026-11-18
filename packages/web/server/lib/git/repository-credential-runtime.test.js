@@ -143,6 +143,32 @@ describe('createGitRepositoryCredentialRuntime', () => {
     expect(await askFor('someone/else.git')).toEqual({ mode: 'system' });
   });
 
+  it('judges the query cap in bytes, so a multi-byte query past 64 KiB is refused before the binding read', async () => {
+    let bindingCalls = 0;
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-repo-credential-'));
+    roots.push(dataDir);
+    const runtime = createGitRepositoryCredentialRuntime({
+      readBinding: async () => { bindingCalls += 1; return read(null); },
+      credentialResolver: { resolve: async () => null },
+      dataDir, fsPromises: fs,
+      getActivePort: () => 4399,
+      helperPath: '/opt/openchamber/repository-credential-helper.js',
+    });
+    await runtime.publish();
+    const { secret } = await readEndpoint(dataDir);
+    const askQuery = async (query) => (await ask(runtime, { secret, body: { cwd: '/repo', query } })).answer;
+    const base = 'protocol=https\nhost=github.com\npath=';
+    // ASCII over the cap: refused, binding never read (existing behaviour, pinned).
+    expect(await askQuery(`${base}${'a'.repeat(70_000)}\n`)).toEqual({ mode: 'none' });
+    expect(bindingCalls).toBe(0);
+    // Multi-byte over the cap in bytes (67,037) but under it in characters (22,037): refused the same way.
+    expect(await askQuery(`${base}${'\u20ac'.repeat(22_000)}\n`)).toEqual({ mode: 'none' });
+    expect(bindingCalls).toBe(0);
+    // Multi-byte within the byte cap is still answered exactly as before.
+    expect(await askQuery(`${base}${'\u20ac'.repeat(100)}\n`)).toEqual({ mode: 'system' });
+    expect(bindingCalls).toBe(1);
+  });
+
   it('refuses a wrong secret, a request before publishing, and another machine', async () => {
     const { runtime, dataDir } = await setup();
     const body = { cwd: '/repo', query: 'protocol=https\nhost=github.com\n' };

@@ -433,6 +433,72 @@ describe('Cursor request deadline', () => {
   });
 });
 
+describe('Cursor token files (bounded read, #1645)', () => {
+  let root = null;
+  const originalDataDir = process.env.OPENCHAMBER_DATA_DIR;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'oc-cursor-token-file-'));
+    process.env.OPENCHAMBER_DATA_DIR = join(root, 'data');
+    delete process.env.CURSOR_TOKEN;
+    delete process.env.CURSOR_ACCESS_TOKEN;
+    delete process.env.CURSOR_REFRESH_TOKEN;
+    delete process.env.CURSOR_REFRESH_TOKEN_FILE;
+  });
+
+  afterEach(() => {
+    delete process.env.CURSOR_TOKEN_FILE;
+    if (originalDataDir === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
+    else process.env.OPENCHAMBER_DATA_DIR = originalDataDir;
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = null;
+  });
+
+  it('uses a small token file as before', async () => {
+    const tokenPath = join(root, 'token.txt');
+    writeFileSync(tokenPath, `${futureToken()}\n`);
+    process.env.CURSOR_TOKEN_FILE = tokenPath;
+    mockResponses({
+      GetCurrentPeriodUsage: ok({
+        enabled: true,
+        planUsage: { totalPercentUsed: 42, totalSpend: 2300 },
+        spendLimitUsage: { individualLimit: 2000, individualRemaining: 1500 }
+      }),
+      GetPlanInfo: ok({ planInfo: { planName: 'Pro' } }),
+      GetCreditGrantsBalance: ok({})
+    });
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(true);
+    expect(result.configured).toBe(true);
+  });
+
+  it('answers not configured for an over-cap token file instead of buffering it whole', async () => {
+    const tokenPath = join(root, 'big-token.txt');
+    writeFileSync(tokenPath, 'x'.repeat(128 * 1024));
+    process.env.CURSOR_TOKEN_FILE = tokenPath;
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
+    expect(result.error).toBe('Not configured');
+  });
+
+  it.runIf(process.platform !== 'win32')('answers not configured promptly for a FIFO token file instead of blocking', async () => {
+    const { execFileSync } = await import('child_process');
+    const fifoPath = join(root, 'fifo-token.txt');
+    execFileSync('mkfifo', [fifoPath]);
+    process.env.CURSOR_TOKEN_FILE = fifoPath;
+
+    const result = await fetchQuota();
+
+    expect(result.ok).toBe(false);
+    expect(result.configured).toBe(false);
+  });
+});
+
 describe('Cursor credential import sqlite deadline', () => {
   const originalHome = process.env.HOME;
   const originalPath = process.env.PATH;

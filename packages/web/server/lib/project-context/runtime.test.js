@@ -775,6 +775,14 @@ describe('plans', () => {
     expect(await runtime.readPlan(PROJECT_ID, 'nope')).toBeNull();
   });
 
+  test.skipIf(process.platform === 'win32')('reading a plan whose file is a FIFO fails promptly instead of hanging', async () => {
+    const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Piped', body: 'x' });
+    const file = path.join(plansDir(), plan.file);
+    await fsPromises.rm(file);
+    execFileSync('mkfifo', [file]);
+    await expect(runtime.readPlan(PROJECT_ID, plan.id)).rejects.toThrow('not a regular file');
+  });
+
   test('reading a plan whose markdown was deleted returns null', async () => {
     const { plan } = await runtime.createPlan(PROJECT_ID, { title: 'Doomed', body: 'x' });
     await fsPromises.rm(path.join(plansDir(), plan.file));

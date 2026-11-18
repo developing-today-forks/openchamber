@@ -52,7 +52,11 @@ export const fetchQuota = async (
       credentialLabel: z.string().optional(),
       credentialActive: z.boolean().optional(),
       accountLabel: z.string().optional(),
-      usage: z.object({ windows: windowsSchema, models: z.record(z.string(), z.object({ windows: windowsSchema })).optional() }).nullable(),
+      usage: z.object({
+        windows: windowsSchema,
+        models: z.record(z.string(), z.object({ windows: windowsSchema })).optional(),
+        usageAvailability: z.literal('console-only').optional(),
+      }).nullable(),
       fetchedAt: z.number(),
     });
     // The route answers a single object for a one-credential provider and an

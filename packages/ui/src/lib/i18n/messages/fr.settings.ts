@@ -1380,6 +1380,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'Quotas de modèles',
   'settings.usage.page.section.otherModels': 'Autres modèles',
   'settings.usage.page.state.noQuotaWindowsTitle': 'Aucune fenêtre de quota signalée',
+  'settings.usage.page.state.consoleOnlyTitle': 'Suivi disponible dans la console uniquement',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral confirme que cette clé API est valide, mais les données d’utilisation sont uniquement disponibles dans sa console.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'Ce fournisseur ne signale actuellement aucune limite de débit ni aucun quota d\'utilisation.',
   'settings.usage.page.window.giftResetAria': 'Réinitialisation de limite cadeau',
   'settings.usage.page.window.giftResetExpires': 'Réinitialisation de limite cadeau disponible jusqu\'à {time}',

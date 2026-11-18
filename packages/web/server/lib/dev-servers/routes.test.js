@@ -69,6 +69,32 @@ describe('dev-server scanner output cap (#1081)', () => {
     expect(result.servers.map((entry) => entry.port)).toEqual([5173]);
   });
 
+  test('keeps a multi-byte character split across chunks intact (#1691)', async () => {
+    const output = Buffer.from('p1234\ncdev€server\nn*:5173\n', 'utf8');
+    const split = output.indexOf(Buffer.from('€', 'utf8')) + 1;
+    const child = makeChild((c) => emitChunks(c, [output.subarray(0, split), output.subarray(split)]));
+    const scanner = createDevServerScanner({ spawn: spawnReturning(child), platform: 'linux', readFile: noProcTables });
+
+    const result = await scanner.discover();
+
+    expect(result.ok).toBe(true);
+    expect(result.servers.map((entry) => entry.command)).toEqual(['dev€server']);
+  });
+
+  test('judges the cap in bytes, not characters (#1691)', async () => {
+    const command = '€'.repeat(1_500_000);
+    const output = Buffer.from(`p1234\nc${command}\nn*:5173\n`, 'utf8');
+    expect(output.toString('utf8').length).toBeLessThan(MAX_SCAN_OUTPUT_BYTES);
+    expect(output.length).toBeGreaterThan(MAX_SCAN_OUTPUT_BYTES);
+    const child = makeChild((c) => emitChunks(c, [output]));
+    const scanner = createDevServerScanner({ spawn: spawnReturning(child), platform: 'win32', readFile: noProcTables });
+
+    const result = await scanner.discover();
+
+    expect(result).toEqual({ ok: false, reason: 'netstat-unavailable' });
+    expect(child.killed).toBe(true);
+  });
+
   test('resolves a hung scan as failure after the timeout', async () => {
     const child = makeChild(() => {});
     const scanner = createDevServerScanner({ spawn: spawnReturning(child), platform: 'linux', readFile: noProcTables });

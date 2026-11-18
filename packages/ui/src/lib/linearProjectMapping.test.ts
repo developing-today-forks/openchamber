@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { resolveLinearMappedProjectPath } from './linearProjectMapping';
+import { linearMappingTeamsTruncated, resolveLinearMappedProjectPath } from './linearProjectMapping';
 import type { LinearMappingResult } from './api/types';
 
 const mapping = (): LinearMappingResult => ({
@@ -35,5 +35,20 @@ describe('resolveLinearMappedProjectPath', () => {
       defaultProjectPath: null,
       teams: [{ id: 'team-des', key: 'DES', name: 'Design', projectPath: null }],
     }, { id: 'team-des', key: 'DES', name: 'Design' })).toBeNull();
+  });
+});
+
+describe('linearMappingTeamsTruncated', () => {
+  test('a mappingGet result carrying teamsMore: true flows to the consumer unchanged', () => {
+    const result: LinearMappingResult = { ...mapping(), teamsMore: true };
+    expect(result.teamsMore).toBe(true);
+    expect(linearMappingTeamsTruncated(result)).toBe(true);
+  });
+
+  test('is false when teamsMore is false or absent', () => {
+    expect(linearMappingTeamsTruncated({ ...mapping(), teamsMore: false })).toBe(false);
+    expect(linearMappingTeamsTruncated(mapping())).toBe(false);
+    expect(linearMappingTeamsTruncated(null)).toBe(false);
+    expect(linearMappingTeamsTruncated(undefined)).toBe(false);
   });
 });

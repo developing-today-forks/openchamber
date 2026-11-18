@@ -1507,6 +1507,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'モデル割り当て',
   'settings.usage.page.section.otherModels': 'その他のモデル',
   'settings.usage.page.state.noQuotaWindowsTitle': '報告された割り当てウィンドウはありません',
+  'settings.usage.page.state.consoleOnlyTitle': '追跡済み、コンソールでのみ確認できます',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral はこの API キーが有効であることを確認しますが、使用量は Mistral のコンソールでのみ確認できます。',
   'settings.usage.page.state.noQuotaWindowsDescription': 'この Provider は現在レート制限や使用量割り当てを報告していません。',
   'settings.usage.page.window.giftResetAria': 'ギフト制限のリセット',
   'settings.usage.page.window.giftResetExpires': 'ギフト制限のリセットは {time} まで利用できます',

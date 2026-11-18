@@ -1475,6 +1475,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'מכסות מודלים',
   'settings.usage.page.section.otherModels': 'מודלים אחרים',
   'settings.usage.page.state.noQuotaWindowsTitle': 'לא דווחו חלונות מכסה',
+  'settings.usage.page.state.consoleOnlyTitle': 'המעקב זמין במסוף בלבד',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral מאשרת שמפתח ה-API הזה תקין, אך נתוני השימוש זמינים רק במסוף שלה.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'הספק הזה לא מדווח כרגע על מגבלות קצב או מכסות שימוש.',
   'settings.usage.page.window.giftResetAria': 'איפוס מגבלה במתנה',
   'settings.usage.page.window.giftResetExpires': 'איפוס המגבלה במתנה זמין עד {time}',

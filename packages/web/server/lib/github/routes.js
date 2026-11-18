@@ -1,4 +1,5 @@
 import { asNonEmptyString } from '../shared/guards.js';
+import { readBoundedResponseText } from '../shared/response-body.js';
 import { digestMutationInput, mutationReceipt } from '../source-control/mutation-executor.js';
 import { dedupeCheckRuns, summarizeCheckRuns, summarizeCombinedStatuses } from './checks-summary.js';
 import {
@@ -3411,19 +3412,28 @@ export function registerGitHubRoutes(app, options = {}) {
 
       let diff = undefined;
       if (includeDiff) {
+        // parseSuccessResponseBody: false hands back the raw body stream, so
+        // the cap is judged while the body arrives: an over-cap Content-Length
+        // is refused up front and the stream is cancelled as soon as the
+        // accumulated bytes cross the cap. An over-cap diff is never held whole.
         const diffResp = await octokit.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
           owner: repo.owner,
           repo: repo.repo,
           pull_number: number,
           headers: { accept: 'application/vnd.github.v3.diff' },
+          request: { parseSuccessResponseBody: false },
         });
-        if (!isProviderString(diffResp?.data)) {
+        if (typeof diffResp?.data?.getReader !== 'function') {
           throw invalidProviderPayload('GitHub returned an invalid pull request diff');
         }
-        if (Buffer.byteLength(diffResp.data, 'utf8') > PR_CONTEXT_DIFF_MAX_BYTES) {
+        const diffRead = await readBoundedResponseText({
+          headers: { get: (name) => diffResp.headers?.[name] ?? null },
+          body: diffResp.data,
+        }, PR_CONTEXT_DIFF_MAX_BYTES);
+        if (diffRead.tooLarge) {
           return res.status(413).json({ error: 'Pull request diff is too large to serve' });
         }
-        diff = diffResp.data;
+        diff = diffRead.text;
       }
 
       return res.json({

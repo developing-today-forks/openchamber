@@ -1,9 +1,13 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createOverrideStore, resolveOpenCodeDataDir } from './route-overrides-store.js';
+
+const isWindows = process.platform === 'win32';
+const FEEDBACK_MAX_BYTES = 4 * 1024 * 1024;
 
 const override = (overrides) => ({
   id: 'interpreter:1:0:avoid',
@@ -62,6 +66,71 @@ describe('override store', () => {
       { time: 5_000, key: 'claude', option: 'A', accepted: 'corrected' },
       { time: 5_000, key: 'claude', option: 'A', accepted: false },
     ]);
+  });
+
+  it('keeps missing feedback empty without warning', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      expect(store.readFeedback()).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns and returns no learned feedback for an over-cap log', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      fs.writeFileSync(store.feedbackFile, Buffer.alloc(FEEDBACK_MAX_BYTES + 1, 0x20));
+
+      expect(store.readFeedback()).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeds the 4194304-byte limit'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.skipIf(isWindows)('warns and refuses a FIFO feedback log without blocking', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      execFileSync('mkfifo', [store.feedbackFile]);
+
+      expect(store.readFeedback()).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('is not a regular file'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the newest complete feedback lines when the log reaches its cap', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-overrides-'));
+      const store = createOverrideStore({ dataDir: dir, now: () => 5_000 });
+      const oldest = `${JSON.stringify({ time: 1, key: 'oldest', note: 'x'.repeat(1024) })}\n`;
+      const prior = `${JSON.stringify({ time: 2, key: 'prior', note: 'y'.repeat(1024) })}\n`;
+      const copies = Math.ceil((FEEDBACK_MAX_BYTES + 1 - Buffer.byteLength(oldest)) / Buffer.byteLength(prior));
+      fs.writeFileSync(store.feedbackFile, oldest + prior.repeat(copies));
+      if (!isWindows) fs.chmodSync(store.feedbackFile, 0o640);
+
+      store.recordFeedback({ key: 'newest', option: 'A', accepted: false });
+
+      expect(fs.statSync(store.feedbackFile).size).toBeLessThanOrEqual(FEEDBACK_MAX_BYTES);
+      if (!isWindows) expect(fs.statSync(store.feedbackFile).mode & 0o777).toBe(0o640);
+      const feedback = store.readFeedback();
+      expect(feedback.at(-1)).toMatchObject({ key: 'newest', accepted: false });
+      expect(feedback.some((entry) => entry.key === 'oldest')).toBe(false);
+      expect(feedback.some((entry) => entry.key === 'prior')).toBe(true);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('preserves a corrupt overrides file instead of silently discarding every rule', () => {

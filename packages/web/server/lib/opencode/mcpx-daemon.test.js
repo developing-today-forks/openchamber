@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -5,7 +6,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'bun:test';
 
-import { callDaemon, MCPX_DAEMON_MAX_RESPONSE_BYTES, MCPX_DAEMON_TIMEOUT_MS } from './mcpx-daemon.js';
+import { callDaemon, MCPX_DAEMON_DISCOVERY_MAX_BYTES, MCPX_DAEMON_MAX_RESPONSE_BYTES, MCPX_DAEMON_TIMEOUT_MS } from './mcpx-daemon.js';
 
 const OPTS = { timeoutMs: 150, maxResponseBytes: 1024 };
 const ENV_KEYS = ['MCPX_DAEMON_ENDPOINT', 'MCPX_ENDPOINT', 'MCPX_SOCKET', 'MCPX_STATE_DIR'];
@@ -141,6 +142,48 @@ describe('mcpx daemon client', () => {
     // OPTS.timeoutMs is 150; chunks arrive every 30 ms, so the idle
     // timer never fires — rejection well under 1s proves the deadline.
     expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('discovery: a FIFO daemon-*.json is skipped and a valid record still discovers its socket', async () => {
+    delete process.env.MCPX_DAEMON_ENDPOINT;
+    delete process.env.MCPX_ENDPOINT;
+    delete process.env.MCPX_SOCKET;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpx-discovery-fifo-'));
+    tmpDirs.push(dir);
+    process.env.MCPX_STATE_DIR = dir;
+    execFileSync('mkfifo', [path.join(dir, 'daemon-a.json')]);
+    const socketPath = await startSocketDaemon();
+    fs.writeFileSync(path.join(dir, 'daemon-b.json'), JSON.stringify({ socket: socketPath }));
+    const started = Date.now();
+    await expect(callDaemon('/ok', 'GET', null, {}, OPTS)).resolves.toEqual({ ok: true });
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  it('discovery: a FIFO alone answers No mcpx daemon reachable instead of blocking', async () => {
+    delete process.env.MCPX_DAEMON_ENDPOINT;
+    delete process.env.MCPX_ENDPOINT;
+    delete process.env.MCPX_SOCKET;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpx-discovery-fifo-only-'));
+    tmpDirs.push(dir);
+    process.env.MCPX_STATE_DIR = dir;
+    execFileSync('mkfifo', [path.join(dir, 'daemon-a.json')]);
+    await expect(callDaemon('/ok', 'GET', null, {}, OPTS)).rejects.toThrow('No mcpx daemon reachable');
+  });
+
+  it('discovery: an over-cap daemon-*.json is skipped without being parsed whole', async () => {
+    delete process.env.MCPX_DAEMON_ENDPOINT;
+    delete process.env.MCPX_ENDPOINT;
+    delete process.env.MCPX_SOCKET;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcpx-discovery-big-'));
+    tmpDirs.push(dir);
+    process.env.MCPX_STATE_DIR = dir;
+    const socketPath = await startSocketDaemon();
+    const big = JSON.stringify({ socket: socketPath, pad: 'x'.repeat(MCPX_DAEMON_DISCOVERY_MAX_BYTES) });
+    expect(big.length).toBeGreaterThan(MCPX_DAEMON_DISCOVERY_MAX_BYTES);
+    fs.writeFileSync(path.join(dir, 'daemon-a.json'), big);
+    await expect(callDaemon('/ok', 'GET', null, {}, OPTS)).rejects.toThrow('No mcpx daemon reachable');
+    fs.writeFileSync(path.join(dir, 'daemon-b.json'), JSON.stringify({ socket: socketPath }));
+    await expect(callDaemon('/ok', 'GET', null, {}, OPTS)).resolves.toEqual({ ok: true });
   });
 
   it('socket: over-cap body rejects during the read', async () => {

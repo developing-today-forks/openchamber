@@ -72,10 +72,28 @@ file through `readBoundedFileSync` with an 8 MiB cap. A missing file remains an
 empty result; an over-cap file returns 413 `PLAN_NOTES_TOO_LARGE`, and a
 non-regular file returns 409 `PLAN_NOTES_NOT_REGULAR`.
 
+`readPlanStore` reads `plans.json` through the same handle-judged reader with
+an 8 MiB cap. A missing file remains an empty store; an over-cap or
+non-regular file returns the existing 409 `PLAN_STORE_MALFORMED` error, as do
+invalid JSON and an invalid store shape. The cap leaves room for OpenCode's
+`plan_info` writer while keeping one read bounded.
+
 Filters run before the newest-`limit` slice, and `skipped` counts damaged lines
 across the full file. A tail read would return incomplete filter results and
 counts, so the reader refuses an over-cap file rather than returning partial
 history. `addNote` stays append-only; the read cap is the visible growth bound.
+
+## Learned route choices
+
+`route-overrides-store.js` stores interpreter feedback in
+`route-feedback.jsonl`. `readFeedback` reads at most 4 MiB through
+`readBoundedFileSync`; a missing file remains `[]`, and damaged lines are
+skipped. An over-cap or non-regular file logs a warning and returns no learned
+choices for that request. After an append takes the log past 4 MiB, the store
+atomically keeps the newest complete lines within 3 MiB. This also trims an
+older over-cap log on the next recorded correction or undo. If compaction
+fails, the store logs the failure and leaves the log intact; a later append can
+retry it.
 
 ## Invariants
 
@@ -477,13 +495,15 @@ history state, and the Settings switch are the following stages.
   which reuses the route schedule window checks; see "Model pool config".
 - `pool-plan-links.js` keeps `pool-plan-links.json` in the OpenChamber data
   directory: a map from a target reference (`provider/model`, or a `*`
-  pattern) to a plan id from the plan store. Two targets linked to one plan
+  pattern) to a plan id from the plan store, read with a 1 MiB cap through
+  `readBoundedFileSync`. Two targets linked to one plan
   are siblings sharing one quota. `plans.json` already has
   `models["provider/model"].coveredBy`, but that entry needs a cost tier
   before it can exist and lists every plan whose price covers a model; a pool
   link names the one quota a target draws on and needs no tier, so it lives
-  in OpenChamber's own file. A missing file reads as empty, a malformed one
-  answers 409. Only `PUT /api/model-routes/plan-links` (`{ target, planID }`,
+  in OpenChamber's own file. A missing file reads as empty; an over-cap,
+  non-regular, malformed or schema-invalid file answers 409
+  `POOL_LINKS_MALFORMED`. Only `PUT /api/model-routes/plan-links` (`{ target, planID }`,
   `planID: null` clears) exists; it refuses a plan id the plan store does not
   have, and clearing always works. Reads go through the health route.
 - `pool-health.js` answers `GET /api/model-routes/health` (`hours`, default 24,

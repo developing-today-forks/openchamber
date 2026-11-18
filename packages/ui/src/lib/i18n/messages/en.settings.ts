@@ -1506,6 +1506,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'Model quotas',
   'settings.usage.page.section.otherModels': 'Other models',
   'settings.usage.page.state.noQuotaWindowsTitle': 'No quota windows reported',
+  'settings.usage.page.state.consoleOnlyTitle': 'Tracked, console-only',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral confirms this API key is valid, but usage figures are available only in its console.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'This provider does not currently report any rate limits or usage quotas.',
   'settings.usage.page.window.giftResetAria': 'Gift limit reset',
   'settings.usage.page.window.giftResetExpires': 'Gift limit reset available until {time}',

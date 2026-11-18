@@ -1474,6 +1474,8 @@ export const settingsDict = {
   "settings.usage.page.section.modelQuotas": "Модельні квоти",
   "settings.usage.page.section.otherModels": "Інші моделі",
   "settings.usage.page.state.noQuotaWindowsTitle": "Вікна квот не надходять",
+  "settings.usage.page.state.consoleOnlyTitle": "Відстежується, дані доступні лише в консолі",
+  "settings.usage.page.state.consoleOnlyDescription": "Mistral підтверджує, що цей ключ API дійсний, але дані про використання доступні лише в консолі Mistral.",
   "settings.usage.page.state.noQuotaWindowsDescription": "Цей провайдер зараз не повідомляє про ліміти запитів або квоти використання.",
   "settings.usage.page.window.giftResetAria": "Скидання ліміту-подарунка",
   "settings.usage.page.window.giftResetExpires": "Скидання ліміту-подарунка доступне до {time}",

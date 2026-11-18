@@ -53,6 +53,26 @@ const APNS_DIRECT_REQUEST_TIMEOUT_MS = 30_000;
 
 // AbortController + explicit timer (the template-runtime.js pattern in this
 // folder): the timer is clearable on settle and drivable by test fake timers.
+const APNS_COLLAPSE_ID_MAX_BYTES = 64;
+
+// APNs caps apns-collapse-id at 64 BYTES, not characters: truncate by UTF-8
+// bytes, stopping on a code-point boundary, so a multi-byte tag never
+// produces an over-cap header value and never ends in a lone surrogate.
+// ASCII tags are byte-identical to a plain slice.
+const truncateToUtf8Bytes = (value, maxBytes) => {
+  let bytes = 0;
+  let end = 0;
+  for (const char of value) {
+    const size = Buffer.byteLength(char, 'utf8');
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    end += char.length;
+  }
+  return value.slice(0, end);
+};
+
+const collapseIdForTag = (tag) => (typeof tag === 'string' ? truncateToUtf8Bytes(tag, APNS_COLLAPSE_ID_MAX_BYTES) : undefined);
+
 const createTimeoutSignal = (timeoutMs) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -448,6 +468,10 @@ export const createApnsRuntime = (deps) => {
         },
         badge: Number.isFinite(payload?.badge) && payload.badge >= 0 ? Math.trunc(payload.badge) : undefined,
         sound: 'default',
+        // thread-id keeps the FULL tag on purpose: it is a JSON payload
+        // string, not a header, so the 64-byte apns-collapse-id cap does not
+        // apply to it — truncating it would change banner grouping for long
+        // caller tags for no protocol reason.
         'thread-id': typeof payload?.tag === 'string' ? payload.tag : undefined,
         // Wakes the Notification Service Extension so it can refresh the home/lock-screen
         // widgets (attention count + unread dot) from the push, even when the app is closed.
@@ -469,7 +493,7 @@ export const createApnsRuntime = (deps) => {
         'apns-priority': '10',
       };
       // collapse-id dedups like web-push tags; APNs caps it at 64 bytes.
-      const collapseId = typeof config.tag === 'string' ? config.tag.slice(0, 64) : undefined;
+      const collapseId = collapseIdForTag(config.tag);
       if (collapseId) headers['apns-collapse-id'] = collapseId;
 
       let req;
@@ -596,7 +620,7 @@ export const createApnsRuntime = (deps) => {
       title,
       body: typeof payload?.body === 'string' ? payload.body : '',
       badge: Number.isFinite(payload?.badge) && payload.badge >= 0 ? Math.trunc(payload.badge) : undefined,
-      collapseId: typeof payload?.tag === 'string' ? payload.tag.slice(0, 64) : undefined,
+      collapseId: collapseIdForTag(payload?.tag),
       env: environment,
       data: payload?.data && typeof payload.data === 'object' ? payload.data : undefined,
       publicKeyJwk: relayPublicJwk(publicJwk),

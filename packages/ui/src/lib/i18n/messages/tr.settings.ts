@@ -1438,6 +1438,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'Model Kotaları',
   'settings.usage.page.section.otherModels': 'Diğer Modeller',
   'settings.usage.page.state.noQuotaWindowsTitle': 'Bildirilen kota penceresi yok',
+  'settings.usage.page.state.consoleOnlyTitle': 'Takip ediliyor, yalnızca konsolda görüntülenebilir',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral bu API anahtarının geçerli olduğunu doğruluyor, ancak kullanım verileri yalnızca Mistral konsolunda görüntülenebiliyor.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'Bu provider şu anda herhangi bir hız limiti veya kullanım kotası bildirmiyor.',
   'settings.usage.page.window.giftResetAria': 'Hediye limiti sıfırlama',
   'settings.usage.page.window.giftResetExpires': 'Hediye limiti sıfırlama {time} tarihine kadar geçerli',

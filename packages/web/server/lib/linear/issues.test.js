@@ -257,6 +257,7 @@ describe('Linear issue list/get', () => {
         team: { id: 'team-eng', key: 'ENG', name: 'Engineering' },
         priority: 1,
         labels: [{ id: 'label-bug', name: 'Bug', color: '#eb5757' }],
+        labelsMore: false,
         updatedAt: '2026-09-30T10:00:00.000Z',
         parent: null,
         subIssueProgress: null,
@@ -280,6 +281,7 @@ describe('Linear issue list/get', () => {
                 { id: 'label-bad-color', name: 'Nope', color: 'red' },
                 { id: '', name: 'Missing id' },
               ],
+              pageInfo: { hasNextPage: false },
             },
           }],
           pageInfo: { hasNextPage: false, endCursor: null },
@@ -293,6 +295,7 @@ describe('Linear issue list/get', () => {
       { id: 'label-ok', name: 'Bug', color: '#eb5757' },
       { id: 'label-bad-color', name: 'Nope', color: null },
     ]);
+    expect(result.issues?.[0]?.labelsMore).toBe(false);
   });
 
   it('searches by text and looks up an identifier directly', async () => {
@@ -516,6 +519,30 @@ describe('Linear issue list/get', () => {
     expect(seen[0]).toContain('pageInfo { hasNextPage }');
     expect(result.issue?.comments).toHaveLength(1);
     expect(result.issue?.commentsMore).toBe(true);
+  });
+
+  it('asks for one labels page and reports labelsMore past that page', async () => {
+    const seen = [];
+    const labels = [{ id: 'label-1', name: 'Bug', color: 'EB5757' }];
+    vi.stubGlobal('fetch', vi.fn(async (_url, options) => {
+      const body = JSON.parse(options.body);
+      seen.push(body.query);
+      return jsonResponse({
+        data: {
+          issue: {
+            ...issueNode,
+            labels: { nodes: labels, pageInfo: { hasNextPage: true } },
+          },
+        },
+      });
+    }));
+
+    const result = await getLinearIssue('ENG-12');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain('labels(first: 50)');
+    expect(seen[0]).toContain('pageInfo { hasNextPage }');
+    expect(result.issue?.labels).toEqual([{ id: 'label-1', name: 'Bug', color: '#eb5757' }]);
+    expect(result.issue?.labelsMore).toBe(true);
   });
 
   it('reads the parent and how many sub-issues a listed issue has finished', async () => {

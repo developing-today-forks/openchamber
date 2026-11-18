@@ -304,6 +304,59 @@ describe('scheduled task items', () => {
   });
 });
 
+describe('per-session cap overflow', () => {
+  const scheduled = (projectId = 'project-1', overrides = {}) => item({
+    scheduledTask: { projectId, taskId: 'task-1' }, sendConfig: {}, ...overrides,
+  });
+
+  const fill = async (runtime, first) => {
+    const ids = [];
+    if (first) ids.push((await runtime.enqueue(SESSION, DIRECTORY, first)).itemId);
+    while (ids.length < 20) {
+      ids.push((await runtime.enqueue(SESSION, DIRECTORY, item({ text: `queued-${ids.length}`, content: `queued-${ids.length}` }))).itemId);
+    }
+    return ids;
+  };
+
+  it('rejects an ordinary enqueue into a full session queue and leaves all 20 items in order', async () => {
+    const { runtime, openCode } = createRuntime();
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    const ids = await fill(runtime);
+    await expect(runtime.enqueue(SESSION, DIRECTORY, item({ text: 'one too many' }))).rejects.toMatchObject({ status: 409 });
+    expect(runtime.sessionSnapshot(SESSION).items.map((entry) => entry.id)).toEqual(ids);
+    runtime.stop();
+    await runtime.flush();
+  });
+
+  it('rejects an ordinary enqueue when the full queue starts with a scheduled item, without reporting it cancelled', async () => {
+    const results = [];
+    const { runtime, openCode } = createRuntime({ onScheduledTaskResult: (_task, status) => results.push(status) });
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    const ids = await fill(runtime, scheduled());
+    await expect(runtime.enqueue(SESSION, DIRECTORY, item({ text: 'one too many' }))).rejects.toMatchObject({ status: 409 });
+    await settle();
+    expect(results).toEqual([]);
+    expect(runtime.sessionSnapshot(SESSION).items.map((entry) => entry.id)).toEqual(ids);
+    runtime.stop();
+    await runtime.flush();
+  });
+
+  it('still rejects a scheduled enqueue into a full queue, and enqueues below the cap still work', async () => {
+    const { runtime, openCode } = createRuntime();
+    openCode.state.active = { [SESSION]: { type: 'running' } };
+    await runtime.enqueue(SESSION, DIRECTORY, item({ text: 'below cap ordinary' }));
+    await runtime.enqueue(SESSION, DIRECTORY, scheduled());
+    expect(runtime.sessionSnapshot(SESSION).items).toHaveLength(2);
+    while (runtime.sessionSnapshot(SESSION).items.length < 20) {
+      await runtime.enqueue(SESSION, DIRECTORY, item({ text: 'filler' }));
+    }
+    await expect(runtime.enqueue(SESSION, DIRECTORY, scheduled('project-2'))).rejects.toMatchObject({ status: 409 });
+    expect(runtime.sessionSnapshot(SESSION).items).toHaveLength(20);
+    runtime.stop();
+    await runtime.flush();
+  });
+});
+
 describe('auto routing', () => {
   it('switches a queued prompt and a queued command onto the routed model and agent', async () => {
     const resolveAutoSelection = vi.fn(async ({ model }) => (model?.id === 'auto'

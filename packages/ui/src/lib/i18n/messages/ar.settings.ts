@@ -1475,6 +1475,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': 'حصص النماذج',
   'settings.usage.page.section.otherModels': 'نماذج أخرى',
   'settings.usage.page.state.noQuotaWindowsTitle': 'لم يتم الإبلاغ عن فترات حصص',
+  'settings.usage.page.state.consoleOnlyTitle': 'التتبع متاح عبر وحدة التحكم فقط',
+  'settings.usage.page.state.consoleOnlyDescription': 'تؤكد Mistral صلاحية مفتاح API هذا، لكن أرقام الاستخدام متاحة في وحدة التحكم الخاصة بها فقط.',
   'settings.usage.page.state.noQuotaWindowsDescription': 'لا يُبلغ هذا الموفر حاليًا عن أي حدود معدل أو حصص استخدام.',
   'settings.usage.page.window.giftResetAria': 'إعادة تعيين الحد كهدية',
   'settings.usage.page.window.giftResetExpires': 'إعادة تعيين الحد كهدية متاحة حتى {time}',

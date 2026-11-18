@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { claimManagedProcess, createManagedProcessRegistry } from './managed-process-registry.js';
+import { claimManagedProcess, createManagedProcessRegistry, readManagedProcessOwner } from './managed-process-registry.js';
 
 // A holder pid only counts as holding while it is alive, so the race tests
 // use a real live process as the holder instead of an arbitrary number.
@@ -89,5 +89,75 @@ describe('claim file end of life (#942)', () => {
     } finally {
       live.kill();
     }
+  });
+});
+
+describe('bounded registry reads (#1736)', () => {
+  let dir;
+  let previous;
+  beforeEach(() => {
+    previous = process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY;
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-bounded-'));
+    process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY = dir;
+  });
+  afterEach(() => {
+    process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const mkfifo = (name) => {
+    const filePath = path.join(dir, name);
+    execFileSync('mkfifo', [filePath]);
+    return filePath;
+  };
+
+  it('sync: a FIFO entry answers no owner promptly instead of freezing', () => {
+    mkfifo('424251.json');
+    expect(readManagedProcessOwner(424251)).toBeNull();
+  });
+
+  it('sync: a FIFO claim answers no holder promptly instead of freezing', () => {
+    mkfifo('500.claim-from-100');
+    expect(claimManagedProcess(500, 100, 202)).toBeNull();
+  });
+
+  it('sync: an over-cap entry is never parsed whole', () => {
+    const entry = JSON.stringify({ pid: 424252, ownerPid: 111, binary: 'x'.repeat(70 * 1024) });
+    fs.writeFileSync(path.join(dir, '424252.json'), entry);
+    expect(readManagedProcessOwner(424252)).toBeNull();
+  });
+
+  it('sync: an over-cap claim is never read whole', () => {
+    fs.writeFileSync(path.join(dir, '500.claim-from-100'), `201${' '.repeat(2048)}`);
+    expect(claimManagedProcess(500, 100, 202)).toBeNull();
+  });
+
+  it('async: a FIFO entry settles as unreadable and is not deleted by the read-only reader', async () => {
+    const fifo = mkfifo('424253.json');
+    const registry = createManagedProcessRegistry();
+    await expect(registry.readAllEntries()).resolves.toEqual([]);
+    expect(fs.existsSync(fifo)).toBe(true);
+  });
+
+  it('async: a FIFO claim settles the sweep and is left in place', async () => {
+    const fifo = mkfifo('500.claim-from-100');
+    const registry = createManagedProcessRegistry();
+    await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
+    expect(fs.existsSync(fifo)).toBe(true);
+  });
+
+  it('async: an over-cap entry settles as unreadable', async () => {
+    const entry = JSON.stringify({ pid: 424254, ownerPid: 111, binary: 'x'.repeat(70 * 1024) });
+    fs.writeFileSync(path.join(dir, '424254.json'), entry);
+    const registry = createManagedProcessRegistry();
+    await expect(registry.readAllEntries()).resolves.toEqual([]);
+  });
+
+  it('async: an over-cap claim is left for a later sweep, not swept as a dead holder', async () => {
+    const claimPath = path.join(dir, '500.claim-from-100');
+    fs.writeFileSync(claimPath, `999999${' '.repeat(2048)}`);
+    const registry = createManagedProcessRegistry();
+    await expect(registry.reapOrphanedProcesses({})).resolves.toEqual({ inspected: 0, reaped: 0 });
+    expect(fs.existsSync(claimPath)).toBe(true);
   });
 });

@@ -90,6 +90,50 @@ describe('findBranchPrCandidates', () => {
     expect(historical).toBeNull();
   });
 
+  test('finds an open PR past the first per-head page (#1596)', async () => {
+    // More than one page of PRs was opened from this head: the matching open
+    // PR sits on page 2, behind a full page of closed ones. The per-head
+    // read must paginate instead of treating page 1 as the whole set.
+    const fillerPage = new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 1000 + index }));
+    listMock.mockImplementation(async ({ head, page }) => {
+      if (!head) return { data: [] };
+      return page === 2 ? { data: [openPr] } : { data: fillerPage };
+    });
+
+    const { open, historical } = await call();
+
+    expect(open?.number).toBe(15);
+    expect(historical).toBeNull();
+    expect(listMock.mock.calls.some((entry) => entry[0]?.head && entry[0]?.page === 2)).toBe(true);
+  });
+
+  test('finds the newest historical PR past the first per-head page (#1596)', async () => {
+    const fillerPage = new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 100 + index }));
+    const newestMergedPr = { ...mergedPr, number: 4242 };
+    listMock.mockImplementation(async ({ head, page }) => {
+      if (!head) return { data: [] };
+      return page === 2 ? { data: [newestMergedPr] } : { data: fillerPage };
+    });
+
+    const { open, historical } = await call();
+
+    expect(open).toBeNull();
+    expect(historical?.number).toBe(4242);
+  });
+
+  test('errors instead of answering from a prefix past the per-head cap (#1596)', async () => {
+    // Every page is full and the probe past the cap is non-empty: the set
+    // may be incomplete, so the verdict disposition is an explicit error,
+    // never a "no PR" answer read off a prefix.
+    listMock.mockImplementation(async ({ head }) => (
+      head
+        ? { data: new Array(100).fill(null).map((_, index) => ({ ...mergedPr, number: 2000 + index })) }
+        : { data: [] }
+    ));
+
+    await expect(call()).rejects.toThrow('may be incomplete');
+  });
+
   test('returns the branch history when no open PR exists', async () => {
     listMock.mockImplementation(async ({ head }) => (
       head ? { data: [olderMergedPr, mergedPr] } : { data: [] }
@@ -911,5 +955,74 @@ describe('pr-status search fallback scoping (#1496)', () => {
     expect(result.pr?.number).toBe(42);
     expect(result.repo?.owner).toBe('acme');
     expect(getMock.mock.calls.every((entry) => entry[0]?.owner === 'acme')).toBe(true);
+  });
+});
+
+describe('resolveGitHubPrStatus fallback search with an inaccessible network repo', () => {
+  let directory;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pr-status-422-'));
+    const gitLocal = (...args) => execFileSync('git', args, { cwd: directory, stdio: 'ignore' });
+    gitLocal('init', '-q', '-b', 'feature');
+    gitLocal('remote', 'add', 'origin', 'https://github.com/contrib/app.git');
+    invalidateRepoPullsCache('contrib', 'app');
+    invalidateRepoPullsCache('acme', 'app');
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const httpError = (status, message) => Object.assign(new Error(message), {
+    status,
+    response: { status, data: { message } },
+  });
+
+  test('a 422 from one network repo keeps the PR found in an accessible repo', async () => {
+    const foundPr = {
+      number: 7,
+      state: 'open',
+      head: { ref: 'feature', label: 'contrib:feature', user: { login: 'contrib' }, repo: { owner: { login: 'contrib' }, name: 'app' } },
+    };
+    const client = {
+      openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit('search-422-token', 'search-422-account')),
+      rest: {
+        repos: {
+          get: async ({ owner }) => ({
+            data: owner === 'contrib'
+              ? { default_branch: 'main', parent: { owner: { login: 'acme' }, name: 'app', html_url: 'https://github.com/acme/app' } }
+              : { default_branch: 'main' },
+          }),
+        },
+        pulls: {
+          // A full page of unrelated open PRs makes the per-repo list
+          // incomplete, so resolveGitHubPrStatus spends the search fallback.
+          list: async ({ head }) => (head
+            ? { data: [] }
+            : { data: Array.from({ length: 100 }, (_, index) => ({ number: index, state: 'open', head: { ref: 'other' } })) }),
+          get: async ({ owner, pull_number }) => {
+            if (owner === 'contrib' && pull_number === 7) return { data: foundPr };
+            throw httpError(404, 'Not Found');
+          },
+        },
+        search: {
+          issuesAndPullRequests: async ({ q }) => {
+            const qualifiers = q.split(' ').filter((part) => part.startsWith('repo:'));
+            // The combined query and the inaccessible parent's own query
+            // both answer 422; only the accessible repo's query succeeds.
+            if (qualifiers.length !== 1 || qualifiers[0] !== 'repo:contrib/app') {
+              throw httpError(422, 'Validation Failed: repo:acme/app is not accessible');
+            }
+            return { data: { items: [{ number: 7, repository_url: 'https://api.github.com/repos/contrib/app' }] } };
+          },
+        },
+      },
+    };
+
+    const status = await resolveGitHubPrStatus({ octokit: client, directory, branch: 'feature', remoteName: 'origin', force: true });
+
+    expect(status.pr?.number).toBe(7);
+    expect(status.repo).toMatchObject({ owner: 'contrib', repo: 'app' });
   });
 });

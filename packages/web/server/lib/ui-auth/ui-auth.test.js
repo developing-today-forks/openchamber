@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -548,6 +549,61 @@ describe('ui auth login rate limit', () => {
       expect(statuses.slice(10)).toEqual([429, 429]);
     } finally {
       auth.dispose();
+    }
+  });
+});
+
+// issue #1778: the jwt-secret read is bounded and regular-file-checked.
+// The secret file lives in the shared dataDir above; these cases manage
+// its contents explicitly and run last in the file.
+describe('ui auth jwt-secret bounded read (issue #1778)', () => {
+  const secretPath = path.join(dataDir, 'jwt-secret');
+
+  const login = async (auth) => {
+    const res = createResponse();
+    await auth.handleSessionCreate(
+      { method: 'POST', headers: { host: '127.0.0.1' }, body: { password: 'secret' } },
+      res,
+    );
+    return res;
+  };
+
+  it('honours a valid stored secret exactly (no regeneration)', async () => {
+    const known = 'b'.repeat(64);
+    fs.writeFileSync(secretPath, known + '\n', { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    const res = await login(auth);
+    expect(res.getHeader('set-cookie')).toBeTruthy();
+    expect(fs.readFileSync(secretPath, 'utf8')).toBe(known + '\n');
+  });
+
+  it('refuses an over-cap secret file and regenerates instead of using it as the key', async () => {
+    fs.writeFileSync(secretPath, 'A'.repeat(1024 * 1024), { mode: 0o600 });
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({ password: 'secret' });
+    const res = await login(auth);
+    expect(res.getHeader('set-cookie')).toBeTruthy();
+    const persisted = fs.readFileSync(secretPath, 'utf8');
+    expect(persisted).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('settles promptly with a FIFO at the secret path instead of freezing', async () => {
+    fs.rmSync(secretPath, { force: true });
+    execFileSync('mkfifo', [secretPath]);
+    try {
+      const createUiAuth = await loadCreateUiAuth();
+      const auth = createUiAuth({ password: 'secret' });
+      const res = await login(auth);
+      expect(res.getHeader('set-cookie')).toBeTruthy();
+      // The FIFO is left in place (never opened for write), and a later
+      // call still settles.
+      expect(fs.statSync(secretPath).isFIFO()).toBe(true);
+      const again = createUiAuth({ password: 'secret' });
+      expect(again).toBeTruthy();
+    } finally {
+      fs.rmSync(secretPath, { force: true });
+      fs.writeFileSync(secretPath, 'c'.repeat(64), { mode: 0o600 });
     }
   });
 });

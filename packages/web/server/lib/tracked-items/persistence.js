@@ -2,9 +2,11 @@ import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { isPlainRecord, parseTrackedItem } from './items.js';
 import { renameWithRetry } from '../shared/atomic-rename.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 
 const FILE_NAME = 'tracked-items.json';
 const VERSION = 1;
+const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8 MiB cap
 
 /**
  * The last known state of followed items, so a restart starts from it. Only
@@ -15,14 +17,20 @@ export function createTrackedItemsPersistence({ dataDir, fs = fsPromises }) {
   const filePath = path.join(dataDir, FILE_NAME);
   return {
     async load() {
-      let raw;
-      try {
-        raw = await fs.readFile(filePath, 'utf8');
-      } catch (error) {
-        if (error?.code === 'ENOENT') return [];
-        throw error;
+      const result = await readBoundedFile(filePath, MAX_FILE_BYTES);
+      if (!result.ok) {
+        if (result.reason === 'missing' || result.reason === 'not-regular' || result.reason === 'too-large') {
+          return [];
+        }
+        throw result;
       }
-      const parsed = JSON.parse(raw);
+      const raw = result.buffer.toString('utf8');
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return [];
+      }
       if (parsed?.version !== VERSION || !Array.isArray(parsed.items)) return [];
       return parsed.items.flatMap((record) => {
         const item = parseTrackedItem(record?.item);

@@ -8,6 +8,8 @@
  * (test lists, acceptance criteria) are detail, not progress.
  */
 
+import fs from 'node:fs';
+
 const STEPS_HEADING = /^##\s+steps\s*$/i;
 const SECTION_END = /^#{1,2}\s/;
 const CHECKLIST_ITEM = /^\s*[-*+]\s+\[([ xX])\]\s/;
@@ -30,14 +32,33 @@ export const PLAN_FILE_READ_MAX_BYTES = 1024 * 1024;
  * `maxBytes` bytes at read time. Falls back to a plain read when the
  * injected fs has no `open` (test doubles); the fallback still refuses an
  * over-cap result, it just cannot bound the transient buffer.
+ *
+ * The open carries O_NONBLOCK on POSIX and the entry is judged a regular
+ * file from the opened handle — the bound-and-judge contract of
+ * lib/shared/bounded-file-read.js — so a FIFO at a plan path is refused
+ * promptly (error code BOUNDED_FILE_NOT_REGULAR) instead of blocking at
+ * open forever. A handle with no `stat` (a test double) cannot be judged
+ * and is read as before.
  */
+
+// O_NONBLOCK keeps open() itself from blocking on a FIFO with no writer
+// before the handle stat can reject it as non-regular.
+const PLAN_READ_OPEN_FLAGS = process.platform === 'win32'
+  ? 'r'
+  : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK;
 export const readBoundedUtf8 = async (fsPromises, filePath, maxBytes) => {
   if (typeof fsPromises.open !== 'function') {
     const raw = await fsPromises.readFile(filePath, 'utf8');
     return Buffer.byteLength(raw, 'utf8') > maxBytes ? null : raw;
   }
-  const handle = await fsPromises.open(filePath, 'r');
+  const handle = await fsPromises.open(filePath, PLAN_READ_OPEN_FLAGS);
   try {
+    const stat = await handle.stat?.();
+    if (stat && !stat.isFile()) {
+      const error = new Error(`plan file is not a regular file: ${filePath}`);
+      error.code = 'BOUNDED_FILE_NOT_REGULAR';
+      throw error;
+    }
     const buffer = Buffer.alloc(maxBytes + 1);
     let offset = 0;
     while (offset < buffer.length) {

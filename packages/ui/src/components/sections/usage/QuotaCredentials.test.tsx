@@ -76,3 +76,6 @@ test('google quota provider carries the Code Assist per-model label (#1042)', ()
   expect(QUOTA_PROVIDERS.some((provider) => provider.id === 'google' && provider.name === 'Google (Code Assist, per-model)')).toBe(true);
 });
 
+test('mistral quota provider is listed for the Usage page', () => {
+  expect(QUOTA_PROVIDERS.some((provider) => provider.id === 'mistral' && provider.name === 'Mistral AI')).toBe(true);
+});

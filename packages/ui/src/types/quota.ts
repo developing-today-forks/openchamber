@@ -24,6 +24,7 @@ export type QuotaProviderId =
   | 'exe-dev'
   | 'hyper'
   | 'meta'
+  | 'mistral'
   | 'neuralwatt'
   | 'kilo'
   | 'zenmux'
@@ -54,6 +55,7 @@ export interface UsageWindows {
 
 interface ProviderUsage extends UsageWindows {
   models?: Record<string, UsageWindows>;
+  usageAvailability?: 'console-only';
 }
 
 export interface ProviderResult {

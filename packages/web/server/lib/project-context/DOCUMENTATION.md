@@ -84,7 +84,11 @@ section with a `warning`, so the agent adds it in the same turn.
 Agents tick steps with their own file tools, which announce nothing, so the
 Plans tab re-reads the list while it is on screen. Listing therefore costs one
 `stat` per plan: a file is read and parsed again only when its modification
-time or size changed. Clients receive the counts, never the text.
+time or size changed. Clients receive the counts, never the text. The read
+itself follows the server's bound-and-judge contract: the file is opened
+with `O_NONBLOCK` on POSIX and judged a regular file from the opened
+handle, so a FIFO or other non-regular entry at a plan path reads as an
+unreadable plan instead of blocking the list at open.
 
 The summary cache is one server-lifetime instance shared by every project, so
 it is bounded: at most 500 entries (`PLAN_SUMMARY_CACHE_MAX_ENTRIES`), with a

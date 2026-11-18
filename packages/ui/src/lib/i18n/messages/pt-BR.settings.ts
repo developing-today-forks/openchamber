@@ -1474,6 +1474,8 @@ export const settingsDict = {
   "settings.usage.page.section.modelQuotas": "Cotas de modelo",
   "settings.usage.page.section.otherModels": "Outros modelos",
   "settings.usage.page.state.noQuotaWindowsTitle": "Não se reportaron janelas de cota",
+  "settings.usage.page.state.consoleOnlyTitle": "Acompanhamento somente no console",
+  "settings.usage.page.state.consoleOnlyDescription": "A Mistral confirma que esta chave de API é válida, mas os dados de uso estão disponíveis somente no console da Mistral.",
   "settings.usage.page.state.noQuotaWindowsDescription": "Este provedor atualmente não informa limites de taxa nem cotas de uso.",
   "settings.usage.page.window.giftResetAria": "Redefinição de limite de presente",
   "settings.usage.page.window.giftResetExpires": "Redefinição de limite de presente disponível até {time}",

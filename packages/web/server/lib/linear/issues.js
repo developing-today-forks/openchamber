@@ -89,9 +89,14 @@ const RELATED_ISSUE_FIELDS = `
 // page asks this many sub-issue states per issue; more reads as "N+".
 const SUB_ISSUE_COUNT_LIMIT = 20;
 const SUB_ISSUE_PAGE = 100;
+// One page covers a real issue's handful of labels; labelsMore signals when it does not.
+const LABELS_PAGE = 50;
 const ISSUE_SUMMARY_FIELDS = `
   ${RELATED_ISSUE_FIELDS}
-  labels { nodes { id name color } }
+  labels(first: ${LABELS_PAGE}) {
+    nodes { id name color }
+    pageInfo { hasNextPage }
+  }
   parent { ${RELATED_ISSUE_FIELDS} }
   children(first: ${SUB_ISSUE_COUNT_LIMIT}) {
     nodes { state { type } }
@@ -333,6 +338,7 @@ function readIssueSummary(node) {
   return {
     ...summary,
     labels: readLabels(node.labels),
+    labelsMore: readPageInfo(node.labels).hasMore,
     parent: readRelatedIssue(node.parent),
     subIssueProgress: readSubIssueProgress(node.children),
   };

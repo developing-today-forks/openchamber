@@ -11,6 +11,7 @@
  * broke" and would render the wrong empty state.
  */
 import fsPromises from 'node:fs/promises';
+import { StringDecoder } from 'node:string_decoder';
 
 import {
   parseLsofListeners,
@@ -34,7 +35,12 @@ const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) =>
     return;
   }
 
+  // Decoded through a StringDecoder so a multi-byte character split across
+  // pipe chunks survives intact, and counted in bytes so the cap is the byte
+  // bound it is named as (#1691).
+  const decoder = new StringDecoder('utf8');
   let stdout = '';
+  let receivedBytes = 0;
   let settled = false;
   const finish = (value) => {
     if (settled) return;
@@ -46,14 +52,21 @@ const runCommand = (spawn, command, args, timeoutMs) => new Promise((resolve) =>
 
   const timer = setTimeout(() => finish(null), timeoutMs);
   child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
+    receivedBytes += Buffer.byteLength(chunk);
     // An oversize stream is a failed scan, never a result: finishing with
     // null kills the child and routes the caller to its fallback, instead
     // of parsing a truncated stream into an authoritative answer (#1081).
-    if (stdout.length > MAX_SCAN_OUTPUT_BYTES) finish(null);
+    if (receivedBytes > MAX_SCAN_OUTPUT_BYTES) {
+      finish(null);
+      return;
+    }
+    stdout += decoder.write(chunk);
   });
   child.on('error', () => finish(null));
-  child.on('close', (code) => finish(code === 0 || stdout ? stdout : null));
+  child.on('close', (code) => {
+    stdout += decoder.end();
+    finish(code === 0 || stdout ? stdout : null);
+  });
 });
 
 /**

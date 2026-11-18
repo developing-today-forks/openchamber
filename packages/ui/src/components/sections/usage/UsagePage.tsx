@@ -385,8 +385,17 @@ export const UsagePage: React.FC = () => {
       {selectedResult?.configured && usage && Object.keys(usage.windows ?? {}).length === 0 &&
         providerModels.length === 0 && (
         <div className="pb-8">
-          <p className="typography-ui-label text-foreground">{t('settings.usage.page.state.noQuotaWindowsTitle')}</p>
-          <p className="typography-meta text-muted-foreground mt-1">{t('settings.usage.page.state.noQuotaWindowsDescription')}</p>
+          {usage.usageAvailability === 'console-only' ? (
+            <>
+              <p className="typography-ui-label text-foreground">{t('settings.usage.page.state.consoleOnlyTitle')}</p>
+              <p className="typography-meta text-muted-foreground mt-1">{t('settings.usage.page.state.consoleOnlyDescription')}</p>
+            </>
+          ) : (
+            <>
+              <p className="typography-ui-label text-foreground">{t('settings.usage.page.state.noQuotaWindowsTitle')}</p>
+              <p className="typography-meta text-muted-foreground mt-1">{t('settings.usage.page.state.noQuotaWindowsDescription')}</p>
+            </>
+          )}
         </div>
       )}
     </SettingsPageLayout>

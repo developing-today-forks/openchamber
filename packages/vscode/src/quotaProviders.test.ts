@@ -55,7 +55,7 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClinePassQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchOllamaCloudQuota, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+import { activateQuotaGiftReset, fetchClinePassQuota, fetchDeepinfraQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchOllamaCloudQuota, listConfiguredQuotaProviders, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
@@ -3497,5 +3497,84 @@ describe('Wafer quota provider (VS Code parity) - #616', () => {
 
     const withoutOverage = await run({ current_period_used_percent: -5 });
     assert.equal(withoutOverage.usage?.windows['5h'].usedPercent, 0);
+  });
+});
+
+describe('VS Code quota key selection (#1759)', () => {
+  afterEach(() => {
+    configureOpenCodeCredentials({ list: async () => baseCredentialList() });
+  });
+
+  const blankKey = (integrationID: string, keyValue: string): CredentialEntry => ({
+    id: `cred_${integrationID}`, integrationID, label: 'default', active: true,
+    value: { type: 'key', key: keyValue },
+  });
+  const blankOauth = (integrationID: string, accessValue: string): CredentialEntry => ({
+    id: `cred_${integrationID}`, integrationID, label: 'default', active: true,
+    value: { type: 'oauth', methodID: 'test', access: accessValue, refresh: 'test-refresh', expires: 0 },
+  });
+
+  // Oracle: the shared asNonEmptyString selection — a credential whose
+  // first field is empty or whitespace-only is no credential at all, so
+  // the configured list and the fetch must agree it is not configured
+  // and no request (in particular no blank `Bearer `/`token `) may leave.
+  const cases: Array<{ provider: string; listedAs: string; credential: (blank: string) => CredentialEntry }> = [
+    { provider: 'claude', listedAs: 'claude', credential: (b) => blankOauth('anthropic', b) },
+    { provider: 'codex', listedAs: 'codex', credential: (b) => blankOauth('openai', b) },
+    { provider: 'github-copilot', listedAs: 'github-copilot', credential: (b) => blankOauth('github-copilot', b) },
+    { provider: 'github-copilot-addon', listedAs: 'github-copilot-addon', credential: (b) => blankOauth('github-copilot', b) },
+    { provider: 'zai-coding-plan', listedAs: 'zai-coding-plan', credential: (b) => blankKey('zai-coding-plan', b) },
+    { provider: 'zhipuai-coding-plan', listedAs: 'zhipuai-coding-plan', credential: (b) => blankKey('zhipuai-coding-plan', b) },
+    { provider: 'openrouter', listedAs: 'openrouter', credential: (b) => blankKey('openrouter', b) },
+    { provider: 'nano-gpt', listedAs: 'nano-gpt', credential: (b) => blankKey('nano-gpt', b) },
+    { provider: 'neuralwatt', listedAs: 'neuralwatt', credential: (b) => blankKey('neuralwatt', b) },
+    { provider: 'deepseek', listedAs: 'deepseek', credential: (b) => blankKey('deepseek', b) },
+    { provider: 'deepinfra', listedAs: 'deepinfra', credential: (b) => blankKey('deepinfra', b) },
+  ];
+
+  for (const { provider, listedAs, credential } of cases) {
+    for (const blank of [' ', '']) {
+      test(`${provider} with a ${blank === '' ? 'empty' : 'whitespace-only'} first field is not configured and sends nothing`, async () => {
+        configureOpenCodeCredentials({ list: async () => [credential(blank)] });
+        let fetchCalls = 0;
+        stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
+
+        const result = await fetchQuotaForProvider(provider);
+        assert.equal(result.configured, false, `${provider} fetch must read as not configured`);
+        assert.equal(fetchCalls, 0, `${provider} must not send a blank bearer`);
+
+        const configured = await listConfiguredQuotaProviders();
+        assert.equal(configured.includes(listedAs), false, `${provider} must not list as configured`);
+      });
+    }
+  }
+
+  // The second field is the fallback the shared selector exists for:
+  // exercised through DeepInfra's readAuth seam, whose AuthFile entries
+  // carry both fields (the kimi/cline-pass pattern in this file).
+  for (const entry of [
+    { key: '  ', token: 'real-token' },
+    { key: '', token: 'real-token' },
+  ]) {
+    test(`deepinfra skips a blank key and uses the token next to it: ${JSON.stringify(entry)}`, async () => {
+      let authorization: string | null = null;
+      stubFetchReturning((_url, init) => {
+        authorization = new Headers(init?.headers).get('Authorization');
+        return Promise.resolve(mockResponse({ checklist: { stripe_balance: -1 } }));
+      });
+
+      const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: entry }) });
+      assert.equal(result.ok, true);
+      assert.equal(authorization, 'Bearer ' + entry.token);
+    });
+  }
+
+  test('deepinfra with both fields blank is not configured and sends nothing', async () => {
+    let fetchCalls = 0;
+    stubFetchReturning(() => { fetchCalls += 1; return Promise.resolve(mockResponse({})); });
+
+    const result = await fetchDeepinfraQuota({ readAuth: () => ({ deepinfra: { key: ' ', token: ' ' } }) });
+    assert.equal(result.configured, false);
+    assert.equal(fetchCalls, 0);
   });
 });

@@ -1,9 +1,10 @@
 import { readQuotaJson } from '../utils/response-body.js';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
 import { readManagedCredential, writeManagedCredential } from '../credentials/providers.js';
+import { readBoundedFileSync } from '../../shared/bounded-file-read.js';
 import {
   buildResult,
   formatMoney,
@@ -68,10 +69,19 @@ const readStateValue = (key, { timeoutMs = SQLITE_READ_TIMEOUT_MS } = {}) => {
   }
 };
 
+// A token file holds one Cursor token - a short string. 64 KiB is generous
+// headroom for that shape, the quota credential store precedent (#1613);
+// the bounded reader refuses an over-cap or non-regular file (e.g. a FIFO)
+// promptly instead of buffering it whole, and a refusal degrades exactly
+// like an unreadable token file does today: null (#1645).
+const TOKEN_FILE_MAX_BYTES = 64 * 1024;
+
 const readFileToken = (path) => {
   try {
-    if (!path || !existsSync(path)) return null;
-    const content = readFileSync(path, 'utf8').trim();
+    if (!path) return null;
+    const result = readBoundedFileSync(path, TOKEN_FILE_MAX_BYTES);
+    if (!result.ok) return null;
+    const content = result.buffer.toString('utf8').trim();
     return content || null;
   } catch {
     return null;

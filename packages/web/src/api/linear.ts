@@ -247,6 +247,7 @@ function parseIssueSummary(payload: LinearIssueSummary | null | undefined): Line
   return {
     ...related,
     labels: parseLabels(payload.labels),
+    labelsMore: payload.labelsMore === true,
     parent: parseRelatedIssue(payload.parent),
     subIssueProgress: parseSubIssueProgress(payload.subIssueProgress),
   };

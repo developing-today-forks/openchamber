@@ -16,6 +16,20 @@ const renameMock = vi.fn();
 // `execFileAsync` adapts it to the `{ stdout, stderr }` promise the module awaits.
 const execFileImpl = vi.fn();
 
+// The async registry reads go through the shared bounded reader (#1736);
+// tests keep driving them through readFileMock by adapting it to the
+// bounded reader's result shape (contents here are always small regular
+// files, so the adaptation only needs the ok path; a readFileMock
+// rejection propagates exactly as a bounded-read I/O error would).
+const boundedReadMock = async (filePath, maxBytes) => {
+  const content = await readFileMock(filePath, 'utf8');
+  const buffer = Buffer.from(String(content), 'utf8');
+  if (buffer.length > maxBytes) {
+    return { ok: false, reason: 'too-large', code: 'BOUNDED_FILE_TOO_LARGE', path: filePath, size: buffer.length, limit: maxBytes };
+  }
+  return { ok: true, buffer, size: buffer.length };
+};
+
 const { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses } = createManagedProcessRegistry({
   fs: {
     readdir: readdirMock,
@@ -30,7 +44,10 @@ const { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses 
       execFileImpl(cmd, args, opts, (err, stdout, stderr) =>
         err ? reject(err) : resolve({ stdout: stdout ?? '', stderr: stderr ?? '' }));
     }),
+  boundedRead: boundedReadMock,
 });
+
+
 
 const ORIGINAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
 const ORIGINAL_KILL = process.kill;
@@ -297,6 +314,7 @@ describe('readAllEntries (read-only consumer reader)', () => {
         rename: renameMock,
       },
       execFileAsync: async () => ({ stdout: '', stderr: '' }),
+      boundedRead: boundedReadMock,
     });
 
   it('returns entries without ever deleting a corrupt or invalid file', async () => {

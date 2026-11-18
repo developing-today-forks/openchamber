@@ -1474,6 +1474,8 @@ export const settingsDict = {
   'settings.usage.page.section.modelQuotas': '模型配额',
   'settings.usage.page.section.otherModels': '其他模型',
   'settings.usage.page.state.noQuotaWindowsTitle': '未报告配额窗口',
+  'settings.usage.page.state.consoleOnlyTitle': '已跟踪，仅控制台可查看',
+  'settings.usage.page.state.consoleOnlyDescription': 'Mistral 已确认此 API 密钥有效，但用量数据只能在 Mistral 控制台中查看。',
   'settings.usage.page.state.noQuotaWindowsDescription': '该提供商当前未报告任何速率限制或用量配额。',
   'settings.usage.page.window.giftResetAria': '赠送额度重置',
   'settings.usage.page.window.giftResetExpires': '赠送额度重置有效期至 {time}',

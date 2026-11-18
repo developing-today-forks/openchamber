@@ -8,6 +8,7 @@
 
 import { buildResult } from '../../utils/index.js';
 import { credentialSourceUsesLocalStore, readLocalOpenCodeCredentials, readOpenCodeCredentials } from '../../../opencode/auth.js';
+import { isOpenCodeUpstreamAuthRejection } from '../../../opencode/credential-auth-error.js';
 import { resolveAntigravityAuth, resolveAntigravityStoreAuth, isConfigured, DEFAULT_PROJECT_ID } from './auth.js';
 import {
   refreshAntigravityTokenResult,
@@ -72,12 +73,6 @@ const resolveAuthCandidates = async () => {
   return { candidates, storeReadFailed, storeReadError };
 };
 
-// The running OpenCode rejects a credential read it will not serve with
-// the bare body `Authentication required` — the same text the quota
-// dispatcher matches in providers/index.js (UPSTREAM_AUTH_ERROR_PATTERN).
-const isUpstreamAuthReadError = (error) =>
-  String(error instanceof Error ? error.message : error ?? '').trim().toLowerCase() === 'authentication required';
-
 export const fetchQuota = async () => {
   const { candidates, storeReadFailed, storeReadError } = await resolveAuthCandidates();
   if (!candidates.length) {
@@ -91,11 +86,9 @@ export const fetchQuota = async () => {
       });
       // The read failed because the running OpenCode rejected the shared
       // credential path, not because of anything Antigravity-specific:
-      // mark the result for the dispatcher's shared upstream-auth
-      // classification, the marker xAI uses (#1131). The generic error
-      // text stays — only a read the upstream itself rejected is marked,
-      // so an unwired or unreachable store keeps its own meaning.
-      return isUpstreamAuthReadError(storeReadError) ? { ...result, credentialReadFailure: true } : result;
+      // Classify from the credential source's origin marker, independent
+      // of the message preserved from OpenCode.
+      return isOpenCodeUpstreamAuthRejection(storeReadError) ? { ...result, credentialReadFailure: true } : result;
     }
     return buildResult({
       providerId,

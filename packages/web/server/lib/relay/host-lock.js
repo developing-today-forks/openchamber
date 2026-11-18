@@ -31,9 +31,19 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { z } from 'zod';
+import { readBoundedFileSync } from '../shared/bounded-file-read.js';
 
 // Three missed 30 s refreshes.
 const CLAIM_STALE_MS = 90_000;
+
+// The writer's own claim is ~120 bytes (pid, instance UUID, host,
+// refreshedAt). 64 KiB leaves over 500x headroom while keeping the
+// claim-watch read bounded (#1739): the claim file lives in a data dir
+// that may be a synced or network folder, so its size and type are not
+// under this process's control, and a FIFO or a grown file at the claim
+// path must answer "no valid claim" promptly instead of freezing the
+// server's event loop on the 30 s claim watch.
+export const RELAY_HOST_CLAIM_MAX_BYTES = 64 * 1024;
 
 // Claims written before instance ids carry only `pid`.
 const claimSchema = z.object({
@@ -53,7 +63,7 @@ const claimSchema = z.object({
  *   logger?: Pick<Console, 'warn'>,
  * }} deps
  */
-export const createRelayHostLock = ({ lockFilePath, fs, process: proc, hostname = os.hostname(), now = Date.now, logger = console }) => {
+export const createRelayHostLock = ({ lockFilePath, fs, process: proc, hostname = os.hostname(), now = Date.now, logger = console, boundedReadSync = readBoundedFileSync }) => {
   const fsImpl = fs;
   const selfPid = proc.pid;
   const selfInstance = randomUUID();
@@ -71,15 +81,33 @@ export const createRelayHostLock = ({ lockFilePath, fs, process: proc, hostname 
 
   const readClaim = () => {
     try {
-      const parsed = claimSchema.safeParse(JSON.parse(fsImpl.readFileSync(lockFilePath, 'utf8')));
+      // Bounded, handle-judged read (#1739): missing, non-regular (a FIFO
+      // at the claim path), and over-cap files all answer no valid claim,
+      // exactly as missing and unparsable files always have; the reader
+      // opens with O_NONBLOCK and enforces the cap during the read, so
+      // none of them can block or buffer whole.
+      const result = boundedReadSync(lockFilePath, RELAY_HOST_CLAIM_MAX_BYTES);
+      if (!result.ok) return null;
+      const parsed = claimSchema.safeParse(JSON.parse(result.buffer.toString('utf8')));
       return parsed.success ? parsed.data : null;
     } catch {
-      // Missing file or unparsable content: no valid claim.
+      // Unparsable content or an unexpected I/O error: no valid claim.
       return null;
     }
   };
 
   const writeClaim = () => {
+    try {
+      // A non-regular file (e.g. a FIFO) at the claim path must never be
+      // opened for write either: opening a FIFO for write blocks until a
+      // reader appears. Answer with the same pre-lock fallback as an
+      // unwritable data dir below (start the host, let the relay worker
+      // arbitrate) instead of freezing on the claim watch (#1739).
+      const existing = boundedReadSync(lockFilePath, RELAY_HOST_CLAIM_MAX_BYTES);
+      if (!existing.ok && existing.reason === 'not-regular') return true;
+    } catch {
+      // A failed probe must not stop the write attempt below.
+    }
     try {
       fsImpl.writeFileSync(lockFilePath, JSON.stringify({ pid: selfPid, instance: selfInstance, host: hostname, refreshedAt: now() }));
       return true;
