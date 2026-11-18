@@ -176,7 +176,7 @@ function GoalSpecJobCardBody({ job }: { job: GoalSpecJob }) {
         <span className="min-w-0 truncate typography-meta text-muted-foreground" title={writerText}>{writerText}</span>
       </div>
       {preview ? (
-        <p className="mt-0.5 truncate typography-meta text-muted-foreground" title={job.message.content}>{preview}</p>
+        <p dir="auto" className="oc-ui-start-align mt-0.5 truncate typography-meta text-muted-foreground" title={job.message.content}>{preview}</p>
       ) : null}
 
       {/* The same row in every state of an open job, so the card keeps its shape as the job moves on. */}

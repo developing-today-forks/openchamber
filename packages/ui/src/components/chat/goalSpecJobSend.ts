@@ -1,5 +1,5 @@
-import { getRuntimeKey } from '@/lib/runtime-switch';
-import { useGoalSpecJobStore, type GoalSpecJob, type GoalSpecJobChoice, type GoalSpecJobMessage } from '@/stores/goalSpecJobStore';
+import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { useGoalSpecJobStore, type GoalSpecJob, type GoalSpecJobChoice, type GoalSpecJobMessage, type GoalSpecJobSettlement } from '@/stores/goalSpecJobStore';
 import { createMessageQueueTarget } from '@/stores/messageQueueStore';
 import { createGoalArm } from '@/stores/useSessionGoalArmStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -34,7 +34,7 @@ export async function sendGoalSpecJob(job: GoalSpecJob, choice: GoalSpecJobChoic
     }
 
     const runtimeKey = getRuntimeKey();
-    const claimed = await jobs.claimJob(job, choice.kind);
+    const claimed = await jobs.claimJob(job, choice.kind, runtimeKey);
     if (getRuntimeKey() !== runtimeKey) throw new Error('The message was not sent because the runtime changed.');
     if (!claimed.waiting) {
         // The job as the claim found it, since its session may have moved to
@@ -59,6 +59,38 @@ interface HeldClaim {
 /** Claims this window holds, by claim id. */
 const heldClaims = new Map<string, HeldClaim>();
 let stopWatchingJobs: (() => void) | null = null;
+
+interface PendingSettlement {
+    claimId: string;
+    jobId: string;
+    sessionId: string;
+    settlement: GoalSpecJobSettlement;
+    runtimeKey: string;
+}
+/** Settlements deferred because the runtime that holds the claim was not active. */
+const pendingSettlements = new Map<string, PendingSettlement>();
+
+const deferSettlement = (job: GoalSpecJob, claimId: string, settlement: GoalSpecJobSettlement, runtimeKey: string): void => {
+    pendingSettlements.set(claimId, { claimId, jobId: job.id, sessionId: job.sessionId, settlement, runtimeKey });
+};
+
+export const flushGoalSpecJobSettlements = async (): Promise<void> => {
+    const jobs = useGoalSpecJobStore.getState();
+    for (const pending of Array.from(pendingSettlements.values())) {
+        if (pending.runtimeKey !== getRuntimeKey()) continue;
+        const job = jobs.jobs[pending.sessionId];
+        if (!job || job.id !== pending.jobId) {
+            pendingSettlements.delete(pending.claimId);
+            continue;
+        }
+        try {
+            await jobs.settleJob(job, pending.settlement, pending.runtimeKey);
+            pendingSettlements.delete(pending.claimId);
+        } catch (error) {
+            console.warn('[goal-spec-jobs] deferred settlement failed:', error);
+        }
+    }
+};
 
 /**
  * Sends each held claim the server has handed over, once. A claim the job no
@@ -150,11 +182,38 @@ async function sendClaimed(job: GoalSpecJob, choice: GoalSpecJobChoice, message:
         );
     } catch (error) {
         const reason = error instanceof Error && error.message ? error.message : 'The message could not be sent';
-        if (getRuntimeKey() === runtimeKey) await jobs.settleJob(job, { outcome: null, error: reason, ...claim }).catch(() => undefined);
+        const settlement = { outcome: null, error: reason, ...claim } as const;
+        if (getRuntimeKey() === runtimeKey) {
+            await jobs.settleJob(job, settlement as GoalSpecJobSettlement, runtimeKey).catch(() => undefined);
+        } else if (claimId) {
+            // The report cannot reach the runtime that holds the claim now;
+            // keep it for when that runtime becomes active again.
+            deferSettlement(job, claimId, settlement as GoalSpecJobSettlement, runtimeKey);
+        }
         throw error;
     }
-    if (getRuntimeKey() !== runtimeKey) return;
-    await jobs.settleJob(job, choice.kind === 'spec'
+    const settlement = (choice.kind === 'spec'
         ? { outcome: { kind: 'spec', sendMode: choice.sendMode }, spec: choice.spec, messageId, ...claim }
-        : { outcome: { kind: 'original', withGoal: job.trigger === 'armed' }, messageId, ...claim });
+        : { outcome: { kind: 'original', withGoal: job.trigger === 'armed' }, messageId, ...claim }) as GoalSpecJobSettlement;
+    if (getRuntimeKey() !== runtimeKey) {
+        if (claimId) deferSettlement(job, claimId, settlement, runtimeKey);
+        return;
+    }
+    await jobs.settleJob(job, settlement, runtimeKey).catch((error) => {
+        console.warn('[goal-spec-jobs] the sent message was reported after the runtime changed:', error);
+    });
+}
+
+export const resetGoalSpecJobSendForRuntimeSwitch = (): void => {
+    heldClaims.clear();
+    if (stopWatchingJobs) {
+        stopWatchingJobs();
+        stopWatchingJobs = null;
+    }
+};
+
+if (typeof window !== 'undefined') {
+    subscribeRuntimeEndpointChanged(() => {
+        void flushGoalSpecJobSettlements();
+    });
 }

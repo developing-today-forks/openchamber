@@ -805,6 +805,7 @@ export function createGoalSpecJobRuntime({
    */
   const deliver = async (job, choice) => {
     const { sessionId, sendConfig } = job;
+    if (jobs.get(job.id) !== job) throw new Error('the goal writer job was cancelled');
     const withGoal = choice.kind === 'spec' || job.trigger === 'armed';
     const text = choice.kind === 'spec' && choice.sendMode === 'goal-as-message' ? choice.spec : job.message.text;
 
@@ -825,6 +826,7 @@ export function createGoalSpecJobRuntime({
     // As every other send does it: never throws, a session without its
     // background beats a message that does not go out.
     if (sessionKnowledgeRuntime) await sessionKnowledgeRuntime.sync(sessionId, job.directory);
+    if (jobs.get(job.id) !== job) throw new Error('the goal writer job was cancelled');
 
     if (withGoal) {
       await createGoal({
@@ -844,6 +846,7 @@ export function createGoalSpecJobRuntime({
         // the limit the writer wrote within.
         goalWriterSettings: { rewriteAll: false, charLimit: readSettings().charLimit },
       });
+      if (jobs.get(job.id) !== job) throw new Error('the goal writer job was cancelled');
     }
 
     const preamble = job.message.context
@@ -904,8 +907,18 @@ export function createGoalSpecJobRuntime({
     clearTurnTimer(job.id);
     turnFailures.delete(job.id);
     touch(job);
+    // Persist the delivery record before announcing that the composer may
+    // send, so a failed write never releases the job while its message is
+    // already going out.
+    const written = persist();
+    try {
+      await written;
+    } catch (error) {
+      // Leave the in-memory state untouched by the caller's release path.
+      throw error;
+    }
+    if (jobs.get(job.id) !== job) throw new Error('the goal writer job was cancelled');
     publish(job.sessionId, job);
-    await latestWrite;
   };
 
   /** A send that did not go out, or may not have: the job waits for the user with the reason. */
@@ -1027,7 +1040,14 @@ export function createGoalSpecJobRuntime({
     if (isStreamingReply(records[0])) return 'running';
     const subagents = await activityProbe.hasWorkingDescendants(job.sessionId, statuses);
     if (subagents === null) return null;
-    return subagents ? 'subagents' : 'over';
+    if (subagents) return 'subagents';
+    // Revalidate: a turn may have started while the idle observation was pending,
+    // including during fetchNewestRecords. If so, keep the job waiting.
+    const recheckStatuses = await activityProbe.fetchActiveSessionStatuses();
+    if (recheckStatuses && recheckStatuses[job.sessionId]) return 'running';
+    const recheckRecords = await fetchNewestRecords(job);
+    if (recheckRecords && isStreamingReply(recheckRecords[0])) return 'running';
+    return 'over';
   };
 
   /** Still waiting with this choice: not taken back, replaced, ended or already going out. */
@@ -1105,6 +1125,17 @@ export function createGoalSpecJobRuntime({
     if (turn === 'over') return sendJob(job, choice);
     touch(job);
     const result = publish(job.sessionId, job);
+    const written = latestWrite;
+    try {
+      await written;
+    } catch (error) {
+      if (jobs.get(job.id) === job && job.waiting === waiting) {
+        job.waiting = null;
+        touch(job);
+        publish(job.sessionId, job);
+      }
+      throw httpError(`the goal writer job could not be saved: ${describeError(error, 'write failed')}`, 500);
+    }
     waitOn(job, turn);
     return result;
   };
@@ -1302,6 +1333,17 @@ export function createGoalSpecJobRuntime({
       if (turn !== 'over') {
         touch(job);
         const result = publish(job.sessionId, job);
+        const written = latestWrite;
+        try {
+          await written;
+        } catch (error) {
+          if (jobs.get(job.id) === job && job.waiting === waiting) {
+            job.waiting = null;
+            touch(job);
+            publish(job.sessionId, job);
+          }
+          throw httpError(`the goal writer job could not be saved: ${describeError(error, 'write failed')}`, 500);
+        }
         waitOn(job, turn);
         return { ...result, message: job.message };
       }

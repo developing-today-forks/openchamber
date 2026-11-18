@@ -15,6 +15,7 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useMessageQueueStore } from '@/stores/messageQueueStore';
 import { useGoalSpecJobStore } from '@/stores/goalSpecJobStore';
+import { resetGoalSpecJobSendForRuntimeSwitch } from '@/components/chat/goalSpecJobSend';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { useGitStore } from '@/stores/useGitStore';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
@@ -102,6 +103,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   resetSessionActivityTiming();
   usePermissionStore.getState().reset();
   useGoalSpecJobStore.getState().resetForRuntimeSwitch();
+  resetGoalSpecJobSendForRuntimeSwitch();
   useMessageQueueStore.getState().resetForRuntimeSwitch(detail.previousRuntimeKey);
   useFileSearchStore.getState().resetForRuntimeSwitch();
   useGitStore.getState().resetForRuntimeSwitch(detail.runtimeKey);

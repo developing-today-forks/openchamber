@@ -131,7 +131,7 @@ type GoalSpecJobOutcome = NonNullable<GoalSpecJob['outcome']>;
  * How a claimed send went: its outcome (with the spec as sent and the id of the
  * user message it created), or null with the reason it failed.
  */
-type GoalSpecJobSettlement = { outcome: GoalSpecJobOutcome | null; spec?: string; messageId?: string; error?: string; claimId?: string };
+export type GoalSpecJobSettlement = { outcome: GoalSpecJobOutcome | null; spec?: string; messageId?: string; error?: string; claimId?: string };
 
 /** The captured message in full, as `claim` and `edit` hand it back. */
 export interface GoalSpecJobMessage {
@@ -283,8 +283,8 @@ interface GoalSpecJobActions {
     /** Back to edit: the job ends and its full message comes back. */
     editJob: (job: GoalSpecJob) => Promise<GoalSpecJobMessage>;
     /** A window takes the full message to send it itself, now or once the agent's turn is over. */
-    claimJob: (job: GoalSpecJob, kind: GoalSpecJobChoice['kind']) => Promise<GoalSpecJobClaim>;
-    settleJob: (job: GoalSpecJob, settlement: GoalSpecJobSettlement) => Promise<void>;
+    claimJob: (job: GoalSpecJob, kind: GoalSpecJobChoice['kind'], expectedRuntimeKey?: string) => Promise<GoalSpecJobClaim>;
+    settleJob: (job: GoalSpecJob, settlement: GoalSpecJobSettlement, expectedRuntimeKey?: string) => Promise<void>;
     /** Removes the card of a sent job. */
     dismissJob: (job: GoalSpecJob) => Promise<void>;
     setSpecEdit: (job: GoalSpecJob, spec: string) => void;
@@ -324,8 +324,10 @@ export const useGoalSpecJobStore = create<GoalSpecJobStore>()((set, get) => {
         schema: z.ZodType<T>,
         path: string,
         init: RequestInit,
+        expectedRuntimeKey: string = getRuntimeKey(),
     ): Promise<T> => {
-        const runtimeKey = getRuntimeKey();
+        if (getRuntimeKey() !== expectedRuntimeKey) throw new Error('The message was not sent because the runtime changed.');
+        const runtimeKey = expectedRuntimeKey;
         try {
             const result = await requestJson(schema, path, init);
             applyServerJob(job.sessionId, result.job, result.revision, runtimeKey);
@@ -466,8 +468,8 @@ export const useGoalSpecJobStore = create<GoalSpecJobStore>()((set, get) => {
             return toJobMessage(result.message);
         },
 
-        claimJob: async (job, kind) => {
-            const result = await mutate(job, handBackResponseSchema, jobPath(job.id, 'claim'), jsonInit('POST', { kind }));
+        claimJob: async (job, kind, expectedRuntimeKey = getRuntimeKey()) => {
+            const result = await mutate(job, handBackResponseSchema, jobPath(job.id, 'claim'), jsonInit('POST', { kind }), expectedRuntimeKey);
             return {
                 message: toJobMessage(result.message),
                 job: result.job,
@@ -476,8 +478,8 @@ export const useGoalSpecJobStore = create<GoalSpecJobStore>()((set, get) => {
             };
         },
 
-        settleJob: async (job, settlement) => {
-            await mutate(job, mutationResponseSchema, jobPath(job.id, 'settle'), jsonInit('POST', settlement));
+        settleJob: async (job, settlement, expectedRuntimeKey = getRuntimeKey()) => {
+            await mutate(job, mutationResponseSchema, jobPath(job.id, 'settle'), jsonInit('POST', settlement), expectedRuntimeKey);
         },
 
         dismissJob: async (job) => {

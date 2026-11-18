@@ -2127,6 +2127,9 @@ export async function sendMessage(
   // of session creation, commands and shell, all of which need OpenCode.
   // Held sends go out one after another, in the order they were made.
   return runAfterOpenCodeStartup(async () => {
+    if (capturedTarget && capturedTarget.runtimeKey !== getRuntimeKey()) {
+      throw new Error("Message was not sent because the runtime changed.")
+    }
     const draft = options?.draftSnapshot ?? useSessionUIStore.getState().newSessionDraft
     const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
 

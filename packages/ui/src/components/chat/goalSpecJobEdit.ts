@@ -20,9 +20,13 @@ export async function takeGoalSpecJobBack(job: GoalSpecJob): Promise<void> {
     const runtimeKey = getRuntimeKey();
     const message = await useGoalSpecJobStore.getState().editJob(job);
     const draftId = job.newSession ? await replaceEmptySessionWithDraft(job, runtimeKey) : null;
+    const sessionState = useSessionUIStore.getState();
+    const directory = sessionState.currentSessionId === job.sessionId
+        ? sessionState.currentSessionDirectory ?? job.directory
+        : job.directory;
     const target = createChatDraftIdentity(
         runtimeKey,
-        draftId === null ? job.directory : CHAT_DRAFT_PROJECT_ID,
+        draftId === null ? directory : CHAT_DRAFT_PROJECT_ID,
         draftId === null ? job.sessionId : null,
     );
     if (target) {
