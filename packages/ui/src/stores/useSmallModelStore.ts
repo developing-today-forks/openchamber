@@ -78,7 +78,7 @@ export const useSmallModelStore = create<SmallModelStore>()((set, get) => ({
       } catch {
         // Transport failure: keep whatever we knew.
       } finally {
-        if (inFlight.get(key) === request) inFlight.delete(key);
+        if (requestGeneration === generation) inFlight.delete(key);
       }
     })();
     inFlight.set(key, request);
