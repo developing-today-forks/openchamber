@@ -81,6 +81,17 @@ describe('GitLab resource service', () => {
     await expect(service.changeRequestStatus('/repo', 'feature')).rejects.toBe(failure);
   });
 
+  it('does not report branch status from an incomplete merge-request list', async () => {
+    const mergeRequests = { ...setup().client.MergeRequests, all: list([openMR], 2) };
+    const { service, client } = setup({ MergeRequests: mergeRequests });
+
+    await expect(service.changeRequestStatus('/repo', 'feature'))
+      .rejects.toThrow('merge request status is not authoritative');
+    expect(client.MergeRequests.all).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'opened', sourceBranch: 'feature', maxPages: 20, perPage: 100, showExpanded: true,
+    }));
+  });
+
   it.each([
     ['status top-level list', 'status', { items: [] }],
     ['status list item', 'status', [{ ...openMR, title: '' }]],
@@ -604,9 +615,26 @@ describe('GitLab resource service', () => {
 
     await expect(service.reconcileCreateMutation(providerTarget, target))
       .resolves.toEqual({ state: 'succeeded', result: {} });
-    mergeRequests.all.mockResolvedValue([exact, { ...exact, iid: 6, web_url: `${origin}/team/repo/-/merge_requests/6` }]);
+    mergeRequests.all.mockResolvedValue({
+      data: [exact, { ...exact, iid: 6, web_url: `${origin}/team/repo/-/merge_requests/6` }],
+      paginationInfo: { next: null },
+    });
     await expect(service.reconcileCreateMutation(providerTarget, target))
       .resolves.toEqual({ state: 'outcome-unknown' });
+  });
+
+  it('keeps create reconciliation unknown when the merge-request list is incomplete', async () => {
+    const exact = { ...openMR, target_branch: 'main' };
+    const mergeRequests = { ...setup().client.MergeRequests, all: list([exact], 2) };
+    const { service, client } = setup({ MergeRequests: mergeRequests }, { canonicalReads: true });
+    const providerTarget = { sourceProjectId: '1', targetProjectId: '2' };
+    const target = { project: { id: '2', owner: 'team', name: 'repo' }, head: 'feature', base: 'main' };
+
+    await expect(service.reconcileCreateMutation(providerTarget, target))
+      .resolves.toEqual({ state: 'outcome-unknown' });
+    expect(client.MergeRequests.all).toHaveBeenCalledWith(expect.objectContaining({
+      state: 'all', sourceBranch: 'feature', maxPages: 20, perPage: 100, showExpanded: true,
+    }));
   });
 
   it('reconciles existing mutations by reading authoritative provider state', async () => {

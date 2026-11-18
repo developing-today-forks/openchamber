@@ -61,6 +61,7 @@ This module owns GitLab instance validation, authentication, remote resolution, 
 - `client.js`: GitBeaker client factory with OpenChamber's own requester: redirects are refused so the credential header never leaves the instance, and only reads retry after 429/502. Mutations are sent once so an ambiguous proxy failure reaches the durable executor. Every requester attempt and every downloader fetch carries the 10s `GITLAB_REQUEST_TIMEOUT_MS` deadline, combined with the caller signal.
 - `changeRequestContext` with `includeTimeline` (`/pulls/context?timeline=1`, only the board and picker preview ask) also returns the newest 50 `commits`, oldest first, `commitsComplete: false` when there are more, and `verdicts`: approvals and change requests GitLab records as system notes. Without it the context carries neither and makes no commit request, so attaching a merge request costs what it did.
 - Resource lists page by GitLab's `x-next-page` header. Notes, diffs, issue comments, branches, and CI jobs are read to completion within 20 pages of 100; past that the read fails rather than returning a capped list as complete. Merges send the preflighted head as `sha`, and GitLab's 409 maps to `SOURCE_CONTROL_MUTATION_TARGET_MISMATCH`. Fork merge requests expose their source project as `headProject`, and CI jobs are read from the pipeline's own project.
+- Branch-status and create-mutation reconciliation reads exhaust merge-request pages under the 20-page, 100-items-per-page cap. Branch status fails when GitLab reports another page after the cap; create reconciliation stays `outcome-unknown` because a prefix cannot prove a unique match.
 - `repo.js`: instance-bound remote parsing, ranking, and directory resolution.
 - `mappers.js`: GitLab payload validation and provider-neutral DTO conversion.
 - `resources.js`: project, issue, merge-request, and CI orchestration.
@@ -70,6 +71,10 @@ This module owns GitLab instance validation, authentication, remote resolution, 
 `GET /api/source-control/gitlab/auth/accounts?instance=...` returns persisted account metadata without tokens. The existing auth status route carries the same inventory for connected and disconnected states.
 
 ## Decisions
+
+### Why branch status and create reconciliation handle incomplete lists differently
+
+A branch-status miss from a capped prefix cannot establish that no merge request exists, so the read fails and the status route can preserve its last known answer. Create reconciliation returns `outcome-unknown` when pages remain because the prefix cannot prove that exactly one matching request exists.
 
 ### Why the SSH clone URL may name another host and the web URLs may not
 

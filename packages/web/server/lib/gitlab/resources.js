@@ -247,6 +247,29 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     sort: 'desc',
   });
 
+  // Verdict reads must not mistake a capped prefix for the complete set.
+  // GitBeaker follows pages under maxPages and, with showExpanded, exposes
+  // whether another page remained after the cap.
+  const listProjectMRsForVerdict = async (projectId, options) => {
+    const payload = await client.MergeRequests.all({
+      projectId,
+      ...options,
+      maxPages: COLLECTION_MAX_PAGES,
+      perPage: COLLECTION_PER_PAGE,
+      page: 1,
+      showExpanded: true,
+      withLabelsDetails: true,
+      orderBy: 'updated_at',
+      sort: 'desc',
+    });
+    const page = readPage(payload);
+    if (!page.items) {
+      if (canonicalReads) throw new Error('GitLab returned an invalid merge request list');
+      return { items: [], hasMore: false };
+    }
+    return page;
+  };
+
   const requireMergeRequest = (value, project, requireProjectIds = false) => {
     const mapped = requireMapped(mapGitLabMergeRequest(value, identity, project), 'GitLab returned an invalid merge request');
     if (value.author != null && (!isPlainObject(value.author)
@@ -793,9 +816,12 @@ export function createGitLabResourceService({ origin, client, download, resolveP
     },
 
     async reconcileCreateMutation(providerTarget, target) {
-      const payload = readMergeRequestList(await listProjectMRs(providerTarget.targetProjectId, {
-        state: 'all', sourceBranch: target.head, perPage: 100,
-      }), target.project);
+      const page = await listProjectMRsForVerdict(providerTarget.targetProjectId, {
+        state: 'all', sourceBranch: target.head,
+      });
+      // A prefix cannot establish that exactly one matching request exists.
+      if (page.hasMore) return { state: 'outcome-unknown' };
+      const payload = readMergeRequestList(page.items, target.project);
       const matches = payload.filter((raw) => raw?.source_project_id === Number(providerTarget.sourceProjectId)
         && raw?.target_project_id === Number(providerTarget.targetProjectId)
         && raw?.target_branch === target.base)
@@ -827,8 +853,10 @@ export function createGitLabResourceService({ origin, client, download, resolveP
       const sourceIds = new Set(resolved.projects.map((item) => item.raw.id));
       let selected = null;
       for (const target of targets) {
+        const page = await listProjectMRsForVerdict(target.project.id, { state: 'opened', sourceBranch: branch });
+        if (page.hasMore) throw new Error('GitLab merge request status is not authoritative: list may be incomplete');
         const requests = readMergeRequestList(
-          await listProjectMRs(target.project.id, { state: 'opened', sourceBranch: branch }),
+          page.items,
           target.project,
         );
         const raw = requests.find((request) => sourceIds.has(request?.source_project_id)
@@ -842,8 +870,10 @@ export function createGitLabResourceService({ origin, client, download, resolveP
         const firstSource = resolved.projects[0];
         const historyTargetId = firstSource.raw?.forked_from_project?.id ?? firstSource.raw.id;
         const historyTarget = targets.find((item) => item.raw.id === historyTargetId) ?? firstSource;
+        const page = await listProjectMRsForVerdict(historyTarget.project.id, { state: 'all', sourceBranch: branch });
+        if (page.hasMore) throw new Error('GitLab merge request status is not authoritative: history may be incomplete');
         const history = readMergeRequestList(
-          await listProjectMRs(historyTarget.project.id, { state: 'all', sourceBranch: branch }),
+          page.items,
           historyTarget.project,
         );
         const raw = history.find((request) => request?.state === 'merged' || request?.state === 'closed');
