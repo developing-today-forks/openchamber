@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fsReal from 'node:fs/promises';
 import os from 'node:os';
@@ -968,5 +969,79 @@ describe('apns runtime store durability', () => {
     await expect(failing.addOrUpdateApnsToken('session-2', 'tokenB')).rejects.toThrow('rename failed');
     expect(await fsReal.readFile(filePath, 'utf8')).toBe(before);
     expect(await fsReal.readdir(dir)).toEqual(['apns-tokens.json']);
+  });
+});
+
+describe('apns runtime p8 key file (#1777)', () => {
+  const temporaryDirectories = [];
+
+  const makeTempDir = async () => {
+    const dir = await fsReal.mkdtemp(pathReal.join(os.tmpdir(), 'openchamber-apns-p8-'));
+    temporaryDirectories.push(dir);
+    return dir;
+  };
+
+  afterEach(async () => {
+    delete process.env.OPENCHAMBER_APNS_KEY_ID;
+    delete process.env.OPENCHAMBER_APNS_TEAM_ID;
+    delete process.env.OPENCHAMBER_APNS_P8_PATH;
+    await Promise.all(temporaryDirectories.splice(0).map((dir) => fsReal.rm(dir, { recursive: true, force: true })));
+  });
+
+  const setP8PathEnv = (p8Path) => {
+    process.env.OPENCHAMBER_APNS_KEY_ID = 'KEY123';
+    process.env.OPENCHAMBER_APNS_TEAM_ID = 'TEAM123';
+    process.env.OPENCHAMBER_APNS_P8_PATH = p8Path;
+  };
+
+  it('resolves the identical config from a valid small key file (incl. trim)', async () => {
+    const dir = await makeTempDir();
+    const p8Path = pathReal.join(dir, 'AuthKey.p8');
+    await fsReal.writeFile(p8Path, `\n  ${P8}  \n`, 'utf8');
+    setP8PathEnv(p8Path);
+    const runtime = createApnsRuntime(makeDeps({ fsPromises: { ...fsReal }, path: pathReal }));
+
+    await expect(runtime.resolveApnsConfig()).resolves.toMatchObject({ keyId: 'KEY123', teamId: 'TEAM123', p8: P8.trim() });
+  });
+
+  it('degrades to unconfigured for an over-cap key file without buffering it whole', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const dir = await makeTempDir();
+      const p8Path = pathReal.join(dir, 'AuthKey.p8');
+      await fsReal.writeFile(p8Path, `${P8}${'x'.repeat(64 * 1024)}`, 'utf8');
+      setP8PathEnv(p8Path);
+      const runtime = createApnsRuntime(makeDeps({ fsPromises: { ...fsReal }, path: pathReal }));
+
+      await expect(runtime.resolveApnsConfig()).resolves.toBeNull();
+      expect(warnSpy.mock.calls.flat().join(' ')).toContain('Failed to read OPENCHAMBER_APNS_P8_PATH');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('settles promptly and degrades to unconfigured for a FIFO at the key path', async () => {
+    const dir = await makeTempDir();
+    const p8Path = pathReal.join(dir, 'AuthKey.p8');
+    execFileSync('mkfifo', [p8Path]);
+    setP8PathEnv(p8Path);
+    const runtime = createApnsRuntime(makeDeps({ fsPromises: { ...fsReal }, path: pathReal }));
+
+    await expect(runtime.resolveApnsConfig()).resolves.toBeNull();
+  }, 10_000);
+
+  it('degrades to unconfigured when the injected bounded reader refuses a non-regular file', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      setP8PathEnv('/tmp/AuthKey.p8');
+      const boundedReadFile = vi.fn(async (target) => ({ ok: false, reason: 'not-regular', code: 'BOUNDED_FILE_NOT_REGULAR', path: target }));
+      const runtime = createApnsRuntime(makeDeps({ boundedReadFile }));
+
+      await expect(runtime.resolveApnsConfig()).resolves.toBeNull();
+      expect(boundedReadFile).toHaveBeenCalledWith('/tmp/AuthKey.p8', 64 * 1024);
+      expect(warnSpy.mock.calls.flat().join(' ')).toContain('BOUNDED_FILE_NOT_REGULAR');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

@@ -18,6 +18,7 @@ import {
 import { sessionKeyFor, withHashedSessionKeys } from './session-key.js';
 import { parsePushKey, sealPushContent } from './push-seal.js';
 import { readBoundedResponseText } from '../shared/response-body.js';
+import { readBoundedFile } from '../shared/bounded-file-read.js';
 import {
   getOrCreateRelaySigningKeypair,
   signRelayMessage as signRelayMessageShared,
@@ -50,6 +51,13 @@ const APNS_RELAY_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
 // time, not bytes.
 const APNS_DIRECT_RESPONSE_MAX_BYTES = 1 * 1024 * 1024;
 const APNS_DIRECT_REQUEST_TIMEOUT_MS = 30_000;
+// The .p8 signing key is a small PEM document (an ES256 private key is
+// ~240 bytes); cap the key-file read at 64 KiB (the relay host-lock claim
+// precedent) and judge the file from its handle via the shared bounded
+// reader, so a FIFO or an oversized file at OPENCHAMBER_APNS_P8_PATH
+// degrades to unconfigured instead of wedging every direct-mode send
+// or being buffered whole as the key (#1777).
+const APNS_P8_FILE_MAX_BYTES = 64 * 1024;
 
 // AbortController + explicit timer (the template-runtime.js pattern in this
 // folder): the timer is clearable on settle and drivable by test fake timers.
@@ -90,6 +98,7 @@ const normalizePem = (value) => (typeof value === 'string' ? value.replace(/\\n/
 export const createApnsRuntime = (deps) => {
   const {
     fsPromises,
+    boundedReadFile = readBoundedFile,
     path,
     crypto,
     http2,
@@ -397,7 +406,17 @@ export const createApnsRuntime = (deps) => {
     const p8Path = trimmedEnv('OPENCHAMBER_APNS_P8_PATH');
     if (!p8 && p8Path) {
       try {
-        p8 = (await fsPromises.readFile(p8Path, 'utf8')).trim();
+        // Bounded, handle-judged read (#1777): missing, non-regular (a
+        // FIFO at the path), and over-cap files all degrade exactly as
+        // an unreadable file always has — warn and fall through to the
+        // settings/unconfigured result — and none of them can block
+        // the read or be buffered whole.
+        const result = await boundedReadFile(p8Path, APNS_P8_FILE_MAX_BYTES);
+        if (result.ok) {
+          p8 = result.buffer.toString('utf8').trim();
+        } else {
+          console.warn('[APNs] Failed to read OPENCHAMBER_APNS_P8_PATH:', result.code ?? result.reason);
+        }
       } catch (error) {
         console.warn('[APNs] Failed to read OPENCHAMBER_APNS_P8_PATH:', error?.message ?? error);
       }
