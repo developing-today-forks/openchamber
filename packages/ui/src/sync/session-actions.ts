@@ -49,7 +49,7 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import type { AttachedFile } from "@/stores/types/sessionTypes"
 import type { QueuedMessageGoal } from "@/stores/messageQueueStore"
-import { useSessionGoalArmStore } from "@/stores/useSessionGoalArmStore"
+import { useSessionGoalArmStore, type SessionGoalArm } from "@/stores/useSessionGoalArmStore"
 import { useUIStore } from "@/stores/useUIStore"
 import { selectCommandsForDirectory, useCommandsStore } from "@/stores/useCommandsStore"
 import { setSessionGoal } from "@/lib/sessionGoalActions"
@@ -2088,6 +2088,10 @@ export type SendMessageOptions = {
    * replaces the composer's armed goal, which belongs to the composer text.
    */
   queuedGoal?: QueuedMessageGoal | null
+  /** A send-specific goal that does not consume the composer's armed goal. */
+  goalArm?: SessionGoalArm
+  /** Receives the optimistic user-message ID when the prompt is inserted. */
+  onMessageID?: (messageID: string) => void
 }
 
 function notifyMessageSent(sessionId: string): void {
@@ -2123,13 +2127,16 @@ export async function sendMessage(
   // of session creation, commands and shell, all of which need OpenCode.
   // Held sends go out one after another, in the order they were made.
   return runAfterOpenCodeStartup(async () => {
+    if (capturedTarget && capturedTarget.runtimeKey !== getRuntimeKey()) {
+      throw new Error("Message was not sent because the runtime changed.")
+    }
     const draft = options?.draftSnapshot ?? useSessionUIStore.getState().newSessionDraft
     const trimmedAgent = typeof agent === "string" && agent.trim().length > 0 ? agent.trim() : undefined
 
     const queuedGoal = options?.queuedGoal
     const goalArm = inputMode === "shell" || content.trim().length === 0
       ? { armed: false, objectiveOverride: null, settled: false, briefAgent: false, ignoreLimit: false }
-      : queuedGoal !== undefined
+      : options?.goalArm ?? (queuedGoal !== undefined
         ? {
           armed: queuedGoal !== null,
           objectiveOverride: queuedGoal?.objective ?? null,
@@ -2137,13 +2144,15 @@ export async function sendMessage(
           briefAgent: queuedGoal?.briefAgent === true,
           ignoreLimit: queuedGoal?.ignoreLimit === true,
         }
-        : useSessionGoalArmStore.getState().consume()
+        : useSessionGoalArmStore.getState().consume())
     const goalArmed = goalArm.armed
     // A queued goal keeps the budget it was queued with.
     const goalUiState = useUIStore.getState()
     const goalTokenBudget = queuedGoal
       ? queuedGoal.tokenBudget
-      : (goalUiState.sessionGoalDefaultBudgetEnabled ? goalUiState.sessionGoalDefaultBudget : null)
+      : (goalArm.tokenBudget !== undefined
+        ? goalArm.tokenBudget
+        : (goalUiState.sessionGoalDefaultBudgetEnabled ? goalUiState.sessionGoalDefaultBudget : null))
     // Creates the armed goal and returns its goal-mode reminder, which
     // teaches the agent the goal protocol from turn one (without it the agent
     // only learns about goal mode from the first server continuation). It is
@@ -2174,11 +2183,12 @@ export async function sendMessage(
         rewrittenSpec = saved.outcome === 'saved' ? saved.rewrittenSpec : null
       } catch (error) {
         // A queued message keeps its goal for the retry; only the composer's arm comes back.
-        if (queuedGoal === undefined) {
+        if (queuedGoal === undefined && options?.goalArm === undefined) {
           useSessionGoalArmStore.getState().setArmed(true, goalArm.objectiveOverride, {
             settled: goalArm.settled,
             briefAgent: goalArm.briefAgent,
             ignoreLimit: goalArm.ignoreLimit,
+            ...(goalArm.tokenBudget !== undefined ? { tokenBudget: goalArm.tokenBudget } : {}),
           })
         }
         throw error
@@ -2246,6 +2256,7 @@ export async function sendMessage(
         delivery: options?.delivery,
         skills: options?.skills,
         knowledgeSync: draftKnowledgeSync,
+        onMessageID: options?.onMessageID,
         additionalParts: draftParts.map((p) => ({
           text: p.text,
           synthetic: p.synthetic,
@@ -2361,6 +2372,7 @@ export async function sendMessage(
       delivery: options?.delivery,
       skills: options?.skills,
       knowledgeSync,
+      onMessageID: options?.onMessageID,
       additionalParts: additionalParts?.map((p) => ({
         text: p.text,
         synthetic: p.synthetic,

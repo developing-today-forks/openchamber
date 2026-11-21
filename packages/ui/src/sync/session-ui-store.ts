@@ -180,6 +180,8 @@ export async function routeMessage(params: {
   appendSubmissions?: () => void
   delivery?: 'steer'
   skills?: SkillMentions
+  /** Receives the optimistic user-message ID when a normal prompt is inserted. */
+  onMessageID?: (messageID: string) => void
   /**
    * The session's project knowledge being written into it. A prompt's message
    * appears without waiting for it; only the request does. Never rejects.
@@ -311,6 +313,7 @@ export async function routeMessage(params: {
     context: contextItems,
     ready: params.knowledgeSync,
     appendSubmissions: params.appendSubmissions,
+    onMessageID: params.onMessageID,
     send: (messageID, context) => opencodeClient.sendMessage({
       runtimeKey: params.runtimeKey,
       id: params.sessionId,

@@ -1,8 +1,31 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { installRuntimeEndpointReset } from './runtimeEndpointReset';
 import { opencodeClient } from '@/lib/opencode/client';
-import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useGoalSpecJobStore, type GoalSpecJob } from '@/stores/goalSpecJobStore';
+
+const staleGoalJob: GoalSpecJob = {
+  id: 'job-stale',
+  sessionId: 'ses_stale',
+  directory: '/repo',
+  status: 'ready',
+  trigger: 'armed',
+  review: true,
+  sendMode: 'with-message',
+  tokenBudget: null,
+  message: { content: 'message', text: 'message', attachments: [], contextCount: 0 },
+  composerOnly: false,
+  spec: 'spec',
+  writer: { source: 'settings', providerID: 'p', modelID: 'm', variant: null },
+  sendConfig: { providerID: 'p', modelID: 'm' },
+  error: null,
+  sending: false,
+  outcome: null,
+  attempt: 1,
+  createdAt: 1,
+  updatedAt: 1,
+};
 
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
 const originalFetch = globalThis.fetch;
@@ -45,8 +68,10 @@ describe('installRuntimeEndpointReset', () => {
     stubFetch();
     const uninstall = installRuntimeEndpointReset();
     try {
+      useGoalSpecJobStore.getState().applyServerJob('ses_stale', staleGoalJob, 1, getRuntimeKey());
       switchRuntimeEndpoint({ apiBaseUrl: 'https://remote.example', runtimeKey: 'remote' });
       expect(opencodeClient.getBaseUrl().startsWith('https://remote.example')).toBe(true);
+      expect(useGoalSpecJobStore.getState().jobs).toEqual({});
 
       useConfigStore.setState({ isInitialized: true, isConnected: true });
       switchRuntimeEndpoint({ apiBaseUrl: 'http://127.0.0.1:4100', runtimeKey: 'local' });

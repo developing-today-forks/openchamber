@@ -14,6 +14,8 @@ import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useMessageQueueStore } from '@/stores/messageQueueStore';
+import { useGoalSpecJobStore } from '@/stores/goalSpecJobStore';
+import { resetGoalSpecJobSendForRuntimeSwitch } from '@/components/chat/goalSpecJobSend';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { useGitStore } from '@/stores/useGitStore';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
@@ -100,6 +102,8 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   // restarts the resume window so the switch is treated as a fresh load.
   resetSessionActivityTiming();
   usePermissionStore.getState().reset();
+  useGoalSpecJobStore.getState().resetForRuntimeSwitch();
+  resetGoalSpecJobSendForRuntimeSwitch();
   useMessageQueueStore.getState().resetForRuntimeSwitch(detail.previousRuntimeKey);
   useFileSearchStore.getState().resetForRuntimeSwitch();
   useGitStore.getState().resetForRuntimeSwitch(detail.runtimeKey);

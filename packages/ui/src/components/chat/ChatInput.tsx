@@ -583,6 +583,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const pendingPresetSubmit = useInputStore((s) => s.pendingPresetSubmit);
     const pendingDraftSubmit = useInputStore((s) => s.pendingDraftSubmit);
     const pendingSessionSubmits = useInputStore((s) => s.pendingSessionSubmits);
+    const pendingComposerContextRestore = useInputStore((s) => s.pendingComposerContextRestore);
     const setPendingInputText = useInputStore((s) => s.setPendingInputText);
     const pendingGuestIssue = useInputStore((s) => s.pendingGuestIssue);
     const consumePendingGuestIssue = useInputStore((s) => s.consumePendingGuestIssue);
@@ -1454,7 +1455,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             : { armed: false, objectiveOverride: null, settled: false, briefAgent: false, ignoreLimit: false };
         const goalSettings = useUIStore.getState();
         const goal: QueuedMessageGoal | undefined = goalArm.armed ? {
-            tokenBudget: goalSettings.sessionGoalDefaultBudgetEnabled ? goalSettings.sessionGoalDefaultBudget : null,
+            tokenBudget: goalArm.tokenBudget !== undefined
+                ? goalArm.tokenBudget
+                : (goalSettings.sessionGoalDefaultBudgetEnabled ? goalSettings.sessionGoalDefaultBudget : null),
         } : undefined;
         if (goal && goalArm.objectiveOverride?.trim()) goal.objective = goalArm.objectiveOverride;
         if (goal && goalArm.settled) goal.settled = true;
@@ -1588,6 +1591,13 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             useInputStore.getState().setPendingSyntheticParts([...pending, ...synthetic], mailboxTarget);
         }
     }, [inlineDraftTarget, mailboxTarget]);
+
+    React.useEffect(() => {
+        if (!pendingComposerContextRestore || !chatDraftIdentity) return;
+        const pending = useInputStore.getState().consumePendingComposerContextRestore(chatDraftIdentity);
+        if (!pending) return;
+        restoreQueuedContext(pending.context);
+    }, [chatDraftIdentity, pendingComposerContextRestore, restoreQueuedContext]);
 
     const handleQueuedMessageEdit = React.useCallback((queued: QueuedMessage) => {
         setMessage(queued.content);
