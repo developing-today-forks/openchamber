@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawn, spawnSync } from 'node:child_process';
+import { fork, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -296,6 +296,83 @@ const startClient = (port) => {
     },
   };
 };
+
+const waitForMessage = (child, type, timeoutMs = 3000) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => {
+    child.off('message', onMessage);
+    reject(new Error(`timed out waiting for child message ${type}`));
+  }, timeoutMs);
+  const onMessage = (message) => {
+    if (message?.type !== type) return;
+    clearTimeout(timer);
+    child.off('message', onMessage);
+    resolve(message);
+  };
+  child.on('message', onMessage);
+});
+
+const canConnect = (port) => new Promise((resolve) => {
+  const socket = net.connect({ host: '127.0.0.1', port });
+  socket.once('connect', () => {
+    socket.destroy();
+    resolve(true);
+  });
+  socket.once('error', () => resolve(false));
+});
+
+describe('protocol-2 successor process gate', () => {
+  it.skipIf(process.platform === 'win32')('does not accept connections until the predecessor sends GO', async () => {
+    const sandbox = await createSandbox();
+    const port = await freePort();
+    const probePath = path.join(sandbox.root, 'probe-successor.mjs');
+    const protocolUrl = new URL('./self-handoff-protocol.js', import.meta.url).href;
+    await fsp.writeFile(probePath, `
+      import net from 'node:net';
+      import { runHandoffProbe } from ${JSON.stringify(protocolUrl)};
+      await runHandoffProbe({
+        process,
+        preflight: async () => ({
+          version: '2.5.0',
+          handoffProtocol: 2,
+          stateVersion: 1,
+          opencode: { decision: 'adopt', version: '2.0.26' },
+        }),
+        startServer: () => new Promise((resolve) => {
+          const server = net.createServer((socket) => socket.end('ready'));
+          server.listen(${port}, '127.0.0.1', () => {
+            process.send({ type: 'probe-listening' });
+            resolve();
+          });
+        }),
+      });
+    `);
+    const child = fork(probePath, [], {
+      execPath: cliRuntime,
+      env: sandbox.env,
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+
+    try {
+      const hello = await waitForMessage(child, 'openchamber:handoff-hello');
+      expect(hello).toMatchObject({
+        version: '2.5.0',
+        handoffProtocol: 2,
+        stateVersion: 1,
+        opencode: { decision: 'adopt', version: '2.0.26' },
+      });
+      expect(await canConnect(port)).toBe(false);
+
+      child.send({ type: 'openchamber:handoff-go' });
+      await waitForMessage(child, 'probe-listening');
+      expect(await canConnect(port)).toBe(true);
+    } finally {
+      child.kill('SIGTERM');
+      const exited = await waitForExit(child, 3000);
+      await fsp.rm(sandbox.root, { recursive: true, force: true });
+      expect(exited).toBe(true);
+    }
+  });
+});
 
 // Every fake OpenCode the sandbox started, not only the one state.json names last: when a handoff fails,
 // the OpenCode it should have kept is no longer recorded and was left running after the test (12 orphans

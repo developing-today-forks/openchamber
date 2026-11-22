@@ -11,6 +11,7 @@ import {
   takeHandoffPredecessor,
   waitUntilServing,
 } from './self-handoff.js';
+import { HANDOFF_GO_MESSAGE, HANDOFF_HELLO_MESSAGE } from './self-handoff-protocol.js';
 
 // Unit-level checks of the handoff decisions. The real-process behaviour is in self-handoff-process.test.js.
 
@@ -21,15 +22,23 @@ const fakeServer = () => ({
 });
 
 // A child that is ready when told to be, exits when signalled, and records what the runtime did with it.
-const fakeChild = ({ pid = 424242, readyAfterMs = null, exitAfterMs = null } = {}) => {
+const fakeChild = ({ pid = 424242, readyAfterMs = null, helloAfterMs = null, exitAfterMs = null } = {}) => {
   const child = new EventEmitter();
   child.pid = pid;
   child.connected = true;
   child.exitCode = null;
   child.signalCode = null;
   child.disconnect = vi.fn(() => { child.connected = false; });
+  child.send = vi.fn((message, callback) => callback?.(null));
   child.unref = vi.fn();
   if (readyAfterMs !== null) setTimeout(() => child.emit('message', { type: HANDOFF_READY_MESSAGE, pid }), readyAfterMs);
+  if (helloAfterMs !== null) setTimeout(() => child.emit('message', {
+    type: HANDOFF_HELLO_MESSAGE,
+    version: '2.6.0',
+    handoffProtocol: 2,
+    stateVersion: 1,
+    opencode: { decision: 'adopt', version: '2.5.0' },
+  }), helloAfterMs);
   if (exitAfterMs !== null) setTimeout(() => { child.exitCode = 0; child.emit('exit', 0, null); }, exitAfterMs);
   return child;
 };
@@ -147,6 +156,51 @@ describe('createSelfHandoffRuntime', () => {
     expect(gracefulShutdown).toHaveBeenCalledWith({ exitProcess: false, keepOpenCode: true, handoff: true });
     expect(child.disconnect).toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalled();
+  });
+
+  it('authorizes a compatible protocol-2 successor before accepting its ready signal', async () => {
+    const child = fakeChild({ helloAfterMs: 20, readyAfterMs: 30 });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      setTimeout(() => { child.signalCode = 'SIGTERM'; child.emit('exit', null, 'SIGTERM'); }, 1);
+      return true;
+    });
+    const { runtime, gracefulShutdown } = createRuntime({
+      spawn: vi.fn(() => child),
+      runningVersion: '2.5.0',
+      env: { OPENCHAMBER_HANDOFF_ENTRY: '/next/cli.js' },
+      resolveTarget: () => ({ ok: true, entry: '/next/cli.js', execPath: '/usr/bin/node', version: '2.6.0' }),
+    });
+
+    try {
+      const result = await runtime.requestHandoff({ exitProcess: false });
+      expect(child.send).toHaveBeenCalledWith({ type: HANDOFF_GO_MESSAGE }, expect.any(Function));
+      expect(result).toEqual({ ok: true, successorPid: child.pid });
+      expect(gracefulShutdown).toHaveBeenCalledWith({ exitProcess: false, keepOpenCode: true, handoff: true });
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('keeps serving when a version-changing successor reports ready without protocol-2 preflight', async () => {
+    const child = fakeChild({ readyAfterMs: 20 });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      setTimeout(() => { child.signalCode = 'SIGTERM'; child.emit('exit', null, 'SIGTERM'); }, 1);
+      return true;
+    });
+    const { runtime, gracefulShutdown } = createRuntime({
+      spawn: vi.fn(() => child),
+      runningVersion: '2.5.0',
+      env: { OPENCHAMBER_HANDOFF_ENTRY: '/next/cli.js' },
+      resolveTarget: () => ({ ok: true, entry: '/next/cli.js', execPath: '/usr/bin/node', version: '2.6.0' }),
+    });
+
+    try {
+      const result = await runtime.requestHandoff({ exitProcess: false });
+      expect(result).toEqual(expect.objectContaining({ ok: false, reason: 'protocol-required' }));
+      expect(gracefulShutdown).not.toHaveBeenCalled();
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it('spawns the successor with the listener at fd 3 and an IPC channel, and the predecessor pid in its environment', async () => {

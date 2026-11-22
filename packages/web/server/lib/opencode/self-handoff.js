@@ -16,6 +16,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { asNonEmptyString } from '../shared/guards.js';
 import { consumeHandoffRequest, resolveHandoffTarget } from './handoff-request.js';
+import {
+  HANDOFF_ABORT_MESSAGE,
+  HANDOFF_GO_MESSAGE,
+  HANDOFF_HELLO_MESSAGE,
+  evaluateHandoffHello,
+} from './self-handoff-protocol.js';
 
 // The listener slot the successor sees, matching systemd socket activation (LISTEN_FDS=1 names fd 3).
 export const INHERITED_LISTEN_FD = 3;
@@ -108,6 +114,7 @@ export const createSelfHandoffRuntime = ({
   env = process.env,
   timeoutMs = resolveHandoffTimeoutMs(env),
   log = console,
+  resolveTarget = resolveHandoffTarget,
 }) => {
   let inFlight = null;
 
@@ -115,7 +122,7 @@ export const createSelfHandoffRuntime = ({
     const request = consumeHandoffRequest({ dataDir });
     const hasOverride = request || asNonEmptyString(env.OPENCHAMBER_HANDOFF_ENTRY);
     const target = hasOverride
-      ? resolveHandoffTarget({ request, env, entry, execPath: runtimeProcess.execPath, runningVersion })
+       ? resolveTarget({ request, env, entry, execPath: runtimeProcess.execPath, runningVersion })
       : { ok: true, entry, execPath: runtimeProcess.execPath };
     if (!target.ok) return { failure: target.reason };
     const { command, args } = buildSuccessorCommand({
@@ -130,20 +137,47 @@ export const createSelfHandoffRuntime = ({
     const stdio = ['ignore', 'inherit', 'inherit'];
     stdio[INHERITED_LISTEN_FD] = server._handle.fd;
     stdio.push('ipc');
-    return spawn(command, args, {
+    const child = spawn(command, args, {
       detached: true,
       stdio,
       env: { ...env, [HANDOFF_FROM_ENV]: String(runtimeProcess.pid) },
     });
+    return { child, targetVersion: target.version ?? runningVersion };
   };
 
-  const awaitSuccessorReady = (child) => new Promise((resolve) => {
+  const awaitSuccessorReady = (child, { expectedVersion, requireProtocol }) => new Promise((resolve) => {
+    let protocolAuthorized = false;
     const timer = setTimeout(() => finish({ ok: false, reason: 'timeout' }), timeoutMs);
     const onMessage = (message) => {
-      if (message?.type === HANDOFF_READY_MESSAGE) finish({ ok: true, successorPid: child.pid });
+      if (message?.type === HANDOFF_HELLO_MESSAGE) {
+        const compatibility = evaluateHandoffHello(message, { expectedVersion });
+        if (!compatibility.ok) {
+          sendDecision({ type: HANDOFF_ABORT_MESSAGE, reason: compatibility.reason }, () => finish({ ok: false, reason: compatibility.reason }));
+          return;
+        }
+        sendDecision({ type: HANDOFF_GO_MESSAGE }, (error) => {
+          if (error) finish({ ok: false, reason: 'authorization-failed' });
+          else protocolAuthorized = true;
+        });
+      } else if (message?.type === HANDOFF_READY_MESSAGE) {
+        finish(requireProtocol && !protocolAuthorized
+          ? { ok: false, reason: 'protocol-required' }
+          : { ok: true, successorPid: child.pid });
+      }
     };
     const onExit = (code, signal) => finish({ ok: false, reason: 'exited', code, signal });
     const onError = (error) => finish({ ok: false, reason: 'error', message: error?.message });
+    const sendDecision = (message, callback) => {
+      if (child.connected !== true || typeof child.send !== 'function') {
+        callback(new Error('successor IPC channel is unavailable'));
+        return;
+      }
+      try {
+        child.send(message, callback);
+      } catch (error) {
+        callback(error);
+      }
+    };
     function finish(result) {
       clearTimeout(timer);
       child.off('message', onMessage);
@@ -178,20 +212,26 @@ export const createSelfHandoffRuntime = ({
     }
 
     let child;
+    let targetVersion;
     try {
       const spawned = spawnSuccessor(server, address);
       if (spawned?.failure) {
         log.warn(`[handoff] could not resolve the successor: ${spawned.failure}; still serving`);
         return { ok: false, reason: spawned.failure };
       }
-      child = spawned;
+      child = spawned.child;
+      targetVersion = spawned.targetVersion;
     } catch (error) {
       log.warn(`[handoff] could not start the successor: ${error?.message ?? error}; still serving`);
       return { ok: false, reason: 'spawn-failed' };
     }
     log.log(`[handoff] starting successor ${child.pid} on port ${address.port}`);
 
-    const outcome = await awaitSuccessorReady(child);
+    const expectedVersion = targetVersion;
+    const outcome = await awaitSuccessorReady(child, {
+      expectedVersion,
+      requireProtocol: expectedVersion !== runningVersion,
+    });
     if (!outcome.ok) {
       log.warn(`[handoff] successor did not become ready (${outcome.reason}); still serving`);
       await terminateSuccessor(child);
