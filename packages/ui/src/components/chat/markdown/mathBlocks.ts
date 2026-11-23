@@ -1,4 +1,9 @@
 import { parseMarkdownIntoBlocks } from 'streamdown';
+import { pinMarkedAnchoredRules } from './markedAnchoredRules';
+
+// Streamdown splits messages with marked's Lexer; pin its anchored rules
+// to sticky regexes before anything lexes (see markedAnchoredRules).
+pinMarkedAnchoredRules();
 
 const CONTAINED_BLOCK = /^(?: {0,3}(?:`{3,}|~{3,}|>|[-*+](?:[ \t]|\r?$)|\d{1,9}[.)](?:[ \t]|\r?$))| {4}|\t)/;
 
