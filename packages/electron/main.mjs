@@ -156,6 +156,7 @@ import { parsePairingDeepLink } from './pairing-deep-link.mjs';
 import { attachRendererRecovery, takeSafeStart } from './renderer-recovery.mjs';
 import { createLoadFailureWarningFilter } from './load-failure-warnings.mjs';
 import { startInitialNavigation } from './initial-navigation.mjs';
+import { persistSplashColors } from './splash-colors-persist.mjs';
 import { fetchUpdateNotes } from '@openchamber/web/server/lib/changelog/update-notes.js';
 import { compareVersions } from '@openchamber/web/server/lib/version-order.js';
 import { applyConnectAttemptTimeout } from '@openchamber/web/server/lib/network-defaults.js';
@@ -4627,7 +4628,11 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
           const unchanged = current && typeof current === 'object'
             && ['bgLight', 'fgLight', 'bgDark', 'fgDark'].every((key) => current[key] === colors[key]);
           if (!unchanged) {
-            void mutateSettingsRoot((root) => ({ ...root, desktopSplashColors: colors }));
+            persistSplashColors({
+              mutateSettingsRoot,
+              colors,
+              reportFailure: (error) => log.warn('[electron] failed to persist splash colors:', error),
+            });
           }
         }
       }
