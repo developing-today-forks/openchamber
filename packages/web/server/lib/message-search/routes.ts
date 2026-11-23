@@ -93,6 +93,14 @@ export const registerMessageSearchRoutes = (app: MessageSearchApp, { messageSear
   });
 
   app.get('/api/openchamber/message-search', (req, res) => {
+    // Express delivers a repeated query key as an array. The schema's
+    // `.catch('')` would degrade a repeated `session` to '' and the route
+    // would send `sessionId: null`, silently widening a scoped search to
+    // every indexed conversation (#2421). Reject the ambiguous filter.
+    const rawSession: unknown = req.query.session;
+    if (rawSession !== undefined && typeof rawSession !== 'string') {
+      return res.status(400).json({ error: 'Message search session must be a single value' });
+    }
     const query = querySchema.parse({ role: null, ...req.query });
     const directories = directoriesFrom(query.directory);
     try {

@@ -30,6 +30,35 @@ describe('message search routes', () => {
     await request(app).get('/api/openchamber/message-search').expect(200);
     expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ limit: 20 }));
   });
+
+  it('rejects a repeated session parameter instead of widening to an unscoped search', async () => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    // Express delivers repeated query keys as an array; the schema parse
+    // used to degrade that to '' and the route searched with
+    // sessionId: null — every indexed conversation, not the requested one.
+    const response = await request(app).get('/api/openchamber/message-search?q=secret&session=target-session&session=other-session');
+    expect(response.status).toBe(400);
+    expect(runtime.search).not.toHaveBeenCalled();
+  });
+
+  it('keeps a scalar session scoped and an absent session deliberately unscoped', async () => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    await request(app).get('/api/openchamber/message-search?q=secret&session=target-session').expect(200);
+    expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'target-session' }));
+    runtime.search.mockClear();
+    await request(app).get('/api/openchamber/message-search?q=secret').expect(200);
+    expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ sessionId: null }));
+  });
 });
 
 // ---- upstream tests ----
