@@ -308,6 +308,25 @@ describe('ModelPoolsSection', () => {
     }
   });
 
+  test('warns that a pool id of only digits always sorts first, and only for such an id', async () => {
+    const { dom, cleanup } = await renderSection();
+    try {
+      const input = findInput(dom.container, 'Add pool');
+      const warning = 'always sorts first';
+      expect(dom.container.textContent).not.toContain(warning);
+      await changeValue(input, '42');
+      expect(dom.container.textContent).toContain(warning);
+      expect(input.getAttribute('aria-describedby')).toBe('pool-id-order-warning');
+      await changeValue(input, 'cheap');
+      expect(dom.container.textContent).not.toContain(warning);
+      // A leading-zero id is an ordinary string key and keeps its saved place.
+      await changeValue(input, '007');
+      expect(dom.container.textContent).not.toContain(warning);
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('shows the unavailable message instead of Loading when the server has no model-routes endpoint', async () => {
     serverAvailable = false;
     const { dom, cleanup } = await renderSection();

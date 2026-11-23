@@ -29,7 +29,7 @@ import { RouteScheduleFields } from '@/components/sections/routing/RouteSchedule
 import type { ScheduleList, ScheduleListValue, StoredSchedules } from '@/lib/routing/scheduleSchema';
 import { RouteTuningFields } from '@/components/sections/routing/RouteTuningFields';
 import { PRESET_ROUTE_IDS, presetTargets, type PresetId } from '@/lib/routing/routePresets';
-import { withPoolOrder, withoutAbsentWeights } from '@/lib/routing/poolAdvanced';
+import { isIntegerLikePoolId, sanitizedPoolId, withPoolOrder, withoutAbsentWeights } from '@/lib/routing/poolAdvanced';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useRoutingStore } from '@/stores/useRoutingStore';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
@@ -255,7 +255,7 @@ export const ModelPoolsSection: React.FC<{
 
   // A pool needs a model to be saved, so a new pool stays a local draft until it gets one.
   const addPool = () => {
-    const id = newId.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+    const id = sanitizedPoolId(newId);
     if (!id || !routes || routes[id] || drafts[id]) return;
     setDrafts((current) => ({ ...current, [id]: { targets: [] } }));
     setNewId('');
@@ -318,6 +318,10 @@ export const ModelPoolsSection: React.FC<{
   // OpenCode's own 10-second default; any save writes the wait into them.
   const waitingOnOldDefault = routes !== null && Object.values(routes).some((route) => route.health?.firstTokenTimeoutMs === undefined);
 
+  // An integer-like id enumerates ahead of every other pool id, so the new
+  // pool would always list first; warn while the id is being typed.
+  const pendingIdSortsFirst = isIntegerLikePoolId(sanitizedPoolId(newId));
+
   return (
     <SettingsSection title={t('settings.pools.title')} settingsItem="routing.pools-advanced">
       <div className={SETTINGS_FIELDS_STACK_CLASS}>
@@ -349,19 +353,27 @@ export const ModelPoolsSection: React.FC<{
               onReorder={(orderedIds) => void persist(withPoolOrder(routes, orderedIds))}
             />
             <SettingsFieldRow label={t('settings.pools.addLabel')} settingsItem="pools.add-pool">
-              <div className="flex w-full min-w-0 items-center gap-2">
-                <Input
-                  value={newId}
-                  onChange={(event) => setNewId(event.target.value)}
-                  onKeyDown={(event) => { if (event.key === 'Enter') addPool(); }}
-                  placeholder={t('settings.pools.addPlaceholder')}
-                  aria-label={t('settings.pools.addLabel')}
-                  className="h-8 rounded-md px-3 min-w-0 flex-1"
-                  maxLength={64}
-                />
-                <Button size="sm" variant="outline" onClick={addPool} disabled={newId.trim().length === 0 || saving}>
-                  {t('settings.pools.add')}
-                </Button>
+              <div className="w-full min-w-0 space-y-1">
+                <div className="flex w-full min-w-0 items-center gap-2">
+                  <Input
+                    value={newId}
+                    onChange={(event) => setNewId(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === 'Enter') addPool(); }}
+                    placeholder={t('settings.pools.addPlaceholder')}
+                    aria-label={t('settings.pools.addLabel')}
+                    aria-describedby={pendingIdSortsFirst ? 'pool-id-order-warning' : undefined}
+                    className="h-8 rounded-md px-3 min-w-0 flex-1"
+                    maxLength={64}
+                  />
+                  <Button size="sm" variant="outline" onClick={addPool} disabled={newId.trim().length === 0 || saving}>
+                    {t('settings.pools.add')}
+                  </Button>
+                </div>
+                {pendingIdSortsFirst ? (
+                  <p id="pool-id-order-warning" className="typography-meta text-[var(--status-warning-text)]">
+                    {t('settings.pools.addIdOrderWarning')}
+                  </p>
+                ) : null}
               </div>
             </SettingsFieldRow>
             {otherRoutes.map((file) => (

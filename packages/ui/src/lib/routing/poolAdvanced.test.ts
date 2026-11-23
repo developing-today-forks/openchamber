@@ -15,9 +15,12 @@ import {
   targetReference,
   weightNamesTarget,
   withoutAbsentWeights,
+  isIntegerLikePoolId,
+  sanitizedPoolId,
   targetUntil,
   tuningToSave,
   withOptional,
+  withPoolOrder,
 } from './poolAdvanced';
 import { withMemberField } from './poolMembers';
 
@@ -177,5 +180,36 @@ describe('pickedAutonomy', () => {
     expect(pickedAutonomy('fixed')).toBe('fixed');
     expect(pickedAutonomy('predictive')).toBe('predictive');
     expect(pickedAutonomy('agent')).toBe('agent');
+  });
+});
+
+describe('pool order and integer-like ids', () => {
+  test('the saved order is the listed order for ordinary ids', () => {
+    const routes: Record<string, ModelRoute> = { zebra: { targets: [] }, apple: { targets: [] } };
+    expect(Object.keys(withPoolOrder(routes, ['apple', 'zebra']))).toEqual(['apple', 'zebra']);
+  });
+
+  test('an integer-like id lists first whatever order was saved', () => {
+    const routes: Record<string, ModelRoute> = { zebra: { targets: [] }, apple: { targets: [] }, '42': { targets: [] } };
+    expect(Object.keys(withPoolOrder(routes, ['zebra', 'apple', '42']))).toEqual(['42', 'zebra', 'apple']);
+  });
+
+  test('only canonical array-index ids are integer-like', () => {
+    expect(isIntegerLikePoolId('42')).toBe(true);
+    expect(isIntegerLikePoolId('0')).toBe(true);
+    expect(isIntegerLikePoolId('4294967294')).toBe(true);
+    expect(isIntegerLikePoolId('4294967295')).toBe(false);
+    expect(isIntegerLikePoolId('007')).toBe(false);
+    expect(isIntegerLikePoolId('4.2')).toBe(false);
+    expect(isIntegerLikePoolId('-1')).toBe(false);
+    expect(isIntegerLikePoolId('42a')).toBe(false);
+    expect(isIntegerLikePoolId('pool-42')).toBe(false);
+    expect(isIntegerLikePoolId('')).toBe(false);
+  });
+
+  test('a typed name becomes the id the add-pool form creates', () => {
+    expect(sanitizedPoolId('  Cheap Pool ')).toBe('cheap-pool');
+    expect(sanitizedPoolId('42')).toBe('42');
+    expect(sanitizedPoolId('My_Pool.2')).toBe('my_pool.2');
   });
 });

@@ -117,3 +117,19 @@ export const withPoolOrder = (routes: Record<string, ModelRoute>, orderedIds: re
   const rest = Object.keys(routes).filter((id) => !ordered.includes(id));
   return Object.fromEntries([...ordered, ...rest].map((id) => [id, routes[id]]));
 };
+
+/** The id a typed pool name becomes: trimmed, lowercased, and every run of characters outside `[a-z0-9._-]` folded to one `-`. */
+export const sanitizedPoolId = (raw: string): string => raw.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+
+/**
+ * Whether a pool id is a number written without decoration (`42`, `0`): the
+ * shape JavaScript treats as an array index. Such keys enumerate ahead of
+ * every other key, in numeric order, so a pool with this id always lists
+ * first and the saved order cannot move it. Ids like `007`, `4.2` or `-1`
+ * are ordinary string keys and keep their saved place.
+ */
+export const isIntegerLikePoolId = (id: string): boolean => {
+  if (!/^(0|[1-9]\d*)$/.test(id)) return false;
+  // Array indices stop below 2^32 - 1; a larger number is an ordinary key.
+  return Number(id) < 4_294_967_295;
+};
