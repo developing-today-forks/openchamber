@@ -52,6 +52,13 @@ Details:
   for local builds without that environment the script locates a host-native
   `cl.exe` via `vswhere.exe`, and when none is found the build fails closed
   (warning, or non-zero under `--strict`).
+- The Windows link also needs Node's import library: N-API symbols resolve
+  from the host process at load time on POSIX, but on Windows they live in
+  `node.exe`, so `cl` must link `node.lib`. It is not part of the headers
+  tarball; the script downloads it as the standalone `win-<arch>/node.lib`
+  dist file from nodejs.org and caches it beside the headers. A build that
+  can neither find nor download it fails closed rather than producing an
+  unresolved addon.
 
 ## Loader (`server/lib/shared/no-replace-dir.ts`)
 
