@@ -1,20 +1,30 @@
-import { describe, expect, it, mock, spyOn } from 'bun:test';
+import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
+let saveDialogResult = { fsPath: '/workspace/saved.bin' };
+let saveDialogCalls = 0;
+let writtenFiles = [];
+
 mock.module('vscode', () => ({
   workspace: {
     workspaceFolders: [{ uri: { fsPath: '/workspace' } }],
-    fs: { createDirectory: ({ fsPath }) => fs.mkdir(fsPath, { recursive: true }) },
+    fs: {
+      createDirectory: ({ fsPath }) => fs.mkdir(fsPath, { recursive: true }),
+      writeFile: async (uri, bytes) => { writtenFiles.push({ uri, bytes }); },
+    },
   },
   Uri: {
     file: (fsPath) => ({ fsPath }),
+    joinPath: (base, ...parts) => ({ fsPath: [base.fsPath, ...parts].join('/') }),
   },
   FileType: {
     Directory: 2,
   },
-  window: {},
+  window: {
+    showSaveDialog: async () => { saveDialogCalls += 1; return saveDialogResult; },
+  },
 }));
 
 const { handleFsBridgeMessage } = await import('./bridge-fs-runtime');
@@ -166,5 +176,91 @@ describe('check-ignore deadline from OPENCHAMBER_GIT_CHECK_IGNORE_TIMEOUT_MS', (
   it('falls back to the default above the timer maximum', async () => {
     expect(await deadlineFor('2147483647')).toBe(2_147_483_647);
     expect(await deadlineFor('3000000000')).toBe(2500);
+  });
+});
+
+describe('bridge files save size caps', () => {
+  const CAP = 20 * 1024 * 1024;
+  const imageDataUrl = (byteCount) => `data:image/png;base64,${Buffer.from(new Uint8Array(byteCount)).toString('base64')}`;
+
+  beforeEach(() => {
+    saveDialogResult = { fsPath: '/workspace/saved.bin' };
+    saveDialogCalls = 0;
+    writtenFiles = [];
+  });
+
+  it('refuses an over-cap image before the dialog and writes nothing', async () => {
+    const response = await handleFsBridgeMessage(
+      { id: 's1', type: 'api:files/save-image', payload: { fileName: 'big.png', dataUrl: imageDataUrl(CAP + 1) } },
+      deps,
+    );
+    expect(response.success).toBe(false);
+    expect(response.error).toBe(`File exceeds maximum size of ${CAP} bytes`);
+    expect(saveDialogCalls).toBe(0);
+    expect(writtenFiles).toEqual([]);
+  });
+
+  it('saves an image at the cap exactly', async () => {
+    const response = await handleFsBridgeMessage(
+      { id: 's2', type: 'api:files/save-image', payload: { fileName: 'cap.png', dataUrl: imageDataUrl(CAP) } },
+      deps,
+    );
+    expect(response.success).toBe(true);
+    expect(writtenFiles.length).toBe(1);
+    expect(writtenFiles[0].bytes.byteLength).toBe(CAP);
+  });
+
+  it('saves a small image as before', async () => {
+    const response = await handleFsBridgeMessage(
+      { id: 's3', type: 'api:files/save-image', payload: { fileName: 'tiny.png', dataUrl: imageDataUrl(3) } },
+      deps,
+    );
+    expect(response.success).toBe(true);
+    expect(writtenFiles.length).toBe(1);
+    expect(writtenFiles[0].bytes.byteLength).toBe(3);
+  });
+
+  it('refuses markdown over the cap and writes nothing', async () => {
+    const response = await handleFsBridgeMessage(
+      { id: 's4', type: 'api:files/save-markdown', payload: { fileName: 'big.md', content: 'a'.repeat(CAP + 1) } },
+      deps,
+    );
+    expect(response.success).toBe(false);
+    expect(response.error).toBe(`File exceeds maximum size of ${CAP} bytes`);
+    expect(saveDialogCalls).toBe(0);
+    expect(writtenFiles).toEqual([]);
+  });
+
+  it('judges markdown on UTF-8 bytes, not characters', async () => {
+    // CAP / 2 + 1 two-byte characters: under the cap as a character
+    // count, over it as the UTF-8 bytes that would be written.
+    const response = await handleFsBridgeMessage(
+      { id: 's5', type: 'api:files/save-markdown', payload: { fileName: 'wide.md', content: '\u00e9'.repeat(CAP / 2 + 1) } },
+      deps,
+    );
+    expect(response.success).toBe(false);
+    expect(response.error).toBe(`File exceeds maximum size of ${CAP} bytes`);
+    expect(writtenFiles).toEqual([]);
+  });
+
+  it('saves markdown at the cap exactly', async () => {
+    const response = await handleFsBridgeMessage(
+      { id: 's6', type: 'api:files/save-markdown', payload: { fileName: 'cap.md', content: 'a'.repeat(CAP) } },
+      deps,
+    );
+    expect(response.success).toBe(true);
+    expect(writtenFiles.length).toBe(1);
+    expect(writtenFiles[0].bytes.byteLength).toBe(CAP);
+  });
+
+  it('still reports a canceled save without writing', async () => {
+    saveDialogResult = undefined;
+    const response = await handleFsBridgeMessage(
+      { id: 's7', type: 'api:files/save-markdown', payload: { fileName: 'x.md', content: 'hello' } },
+      deps,
+    );
+    expect(response.success).toBe(true);
+    expect(response.data).toEqual({ saved: false, canceled: true });
+    expect(writtenFiles).toEqual([]);
   });
 });

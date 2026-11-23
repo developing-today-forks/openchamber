@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { BridgeResponse } from './bridge';
+import { MAX_FILE_ATTACH_SIZE_BYTES } from './bridge-fs-helpers-runtime';
 
 type BridgeMessageInput = {
   id: string;
@@ -62,6 +63,19 @@ const createGitCheckIgnoreTimeoutMs = () => {
 // (MAX_READ_BYTES in packages/web/server/lib/fs/routes.js) and the local-fs
 // proxy twin (LOCAL_FS_READ_MAX_BYTES in bridge-localfs-proxy-runtime.ts).
 const FS_READ_MAX_BYTES = 16 * 1024 * 1024;
+
+// Decoded size of a base64 payload, judged without decoding it: every
+// full group of 4 alphabet characters yields 3 bytes, a trailing group
+// of 2 yields 1 and of 3 yields 2; '=' padding and whitespace carry no
+// bytes. Exact for well-formed payloads (what the webview produces);
+// for malformed ones it can only overestimate, because Buffer.from
+// skips characters outside the alphabet — and the decoded bytes are
+// re-judged after decoding regardless, mirroring readUriAsAttachment.
+const base64DecodedSize = (base64: string): number => {
+  const coreLength = base64.replace(/[\s=]/g, '').length;
+  const remainder = coreLength % 4;
+  return Math.floor(coreLength / 4) * 3 + (remainder === 2 ? 1 : remainder === 3 ? 2 : 0);
+};
 
 const GIT_CHECK_IGNORE_TIMEOUT_MS = createGitCheckIgnoreTimeoutMs();
 
@@ -430,6 +444,20 @@ export async function handleFsBridgeMessage(
         return { id, type, success: false, error: 'Invalid image payload' };
       }
 
+      const commaIndex = dataUrl.indexOf(',');
+      if (commaIndex === -1) {
+        return { id, type, success: false, error: 'Invalid image data URL' };
+      }
+
+      // Judge the payload before the dialog and before decoding: the
+      // read side refuses attachments over the cap, and an oversized
+      // export must not be buffered whole in the extension host just
+      // to be written out again. A refused save writes nothing.
+      const base64 = dataUrl.slice(commaIndex + 1);
+      if (base64DecodedSize(base64) > MAX_FILE_ATTACH_SIZE_BYTES) {
+        return { id, type, success: false, error: `File exceeds maximum size of ${MAX_FILE_ATTACH_SIZE_BYTES} bytes` };
+      }
+
       const defaultFileName = typeof rawFileName === 'string' && rawFileName.trim().length > 0
         ? rawFileName.trim()
         : `message-${Date.now()}.png`;
@@ -446,13 +474,10 @@ export async function handleFsBridgeMessage(
         return { id, type, success: true, data: { saved: false, canceled: true } };
       }
 
-      const commaIndex = dataUrl.indexOf(',');
-      if (commaIndex === -1) {
-        return { id, type, success: false, error: 'Invalid image data URL' };
-      }
-
-      const base64 = dataUrl.slice(commaIndex + 1);
       const bytes = Buffer.from(base64, 'base64');
+      if (bytes.byteLength > MAX_FILE_ATTACH_SIZE_BYTES) {
+        return { id, type, success: false, error: `File exceeds maximum size of ${MAX_FILE_ATTACH_SIZE_BYTES} bytes` };
+      }
       await vscode.workspace.fs.writeFile(saveUri, bytes);
 
       return { id, type, success: true, data: { saved: true, path: saveUri.fsPath || saveUri.toString() } };
@@ -464,6 +489,14 @@ export async function handleFsBridgeMessage(
       const content = typeof rawContent === 'string' ? rawContent : '';
       if (!content) {
         return { id, type, success: false, error: 'Invalid markdown payload' };
+      }
+
+      // The same cap as save-image and the attachment read path,
+      // judged on UTF-8 bytes before the dialog and before the
+      // payload is buffered for the write. A refused save writes
+      // nothing.
+      if (Buffer.byteLength(content, 'utf8') > MAX_FILE_ATTACH_SIZE_BYTES) {
+        return { id, type, success: false, error: `File exceeds maximum size of ${MAX_FILE_ATTACH_SIZE_BYTES} bytes` };
       }
 
       const defaultFileName = typeof rawFileName === 'string' && rawFileName.trim().length > 0
