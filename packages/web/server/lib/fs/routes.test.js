@@ -435,9 +435,9 @@ describe('fs clone', () => {
 
   it('returns a retained-checkout setup response rather than a clone error after binding failure', async () => {
     const { handler } = registerClone({ cloneRepository: async () => ({ state: 'partial', operationId: 'clone-one', completedSteps: ['checked-out'] }) });
-    const res = await callClone(handler, { remoteUrl: 'https://example.com/repo.git', destinationPath: '/new/repo' });
+    const res = await callClone(handler, { remoteUrl: 'https://example.com/repo.git', destinationPath: '/repo/new/repo' });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toMatchObject({ success: false, state: 'partial', setupRequired: true, path: '/new/repo', operationId: 'clone-one' });
+    expect(res.body).toMatchObject({ success: false, state: 'partial', setupRequired: true, path: '/repo/new/repo', operationId: 'clone-one' });
   });
   it('delegates the exact resolved destination and selected identity without spawning Git', async () => {
     const cloneRepository = vi.fn(async () => ({ state: 'succeeded', output: 'cloned' }));
@@ -445,17 +445,17 @@ describe('fs clone', () => {
 
     const res = await callClone(registered.handler, {
       remoteUrl: 'https://example.com/team/repository.git',
-      destinationPath: '/workspace/repos/repository',
+      destinationPath: '/repo/repos/repository',
       gitIdentityId: 'identity-one',
     });
 
     expect(cloneRepository).toHaveBeenCalledWith({
       unverifiedConfirmed: true,
       remoteUrl: 'https://example.com/team/repository.git',
-      destinationPath: '/workspace/repos/repository',
+      destinationPath: '/repo/repos/repository',
       gitIdentityId: 'identity-one',
     });
-    expect(res.body).toEqual({ success: true, path: '/workspace/repos/repository', output: 'cloned' });
+    expect(res.body).toEqual({ success: true, path: '/repo/repos/repository', output: 'cloned' });
     expect(registered.spawn).not.toHaveBeenCalled();
   });
 
@@ -465,16 +465,16 @@ describe('fs clone', () => {
 
       const res = await callClone(handler, {
         remoteUrl: 'git@example.com:team/repository.git',
-        destinationPath: '/workspace/clones/',
+        destinationPath: '/repo/clones/',
       });
 
       expect(cloneRepository).toHaveBeenCalledWith({
       unverifiedConfirmed: true,
       remoteUrl: 'git@example.com:team/repository.git',
-      destinationPath: '/workspace/clones/repository',
+      destinationPath: '/repo/clones/repository',
       gitIdentityId: undefined,
       });
-      expect(res.body).toEqual({ success: true, path: '/workspace/clones/repository', output: '' });
+      expect(res.body).toEqual({ success: true, path: '/repo/clones/repository', output: '' });
   });
 
   it('infers the repository name when destinationPath names an existing directory', async () => {
@@ -483,7 +483,7 @@ describe('fs clone', () => {
       cloneRepository,
       fsPromises: {
         stat: vi.fn(async (targetPath) => {
-          if (targetPath === '/workspace/clones') return { isDirectory: () => true };
+          if (targetPath === '/repo/clones') return { isDirectory: () => true };
           throw Object.assign(new Error('not found'), { code: 'ENOENT' });
         }),
       },
@@ -491,11 +491,11 @@ describe('fs clone', () => {
 
     await callClone(handler, {
       remoteUrl: 'https://example.com/team/repository.git',
-      destinationPath: '/workspace/clones',
+      destinationPath: '/repo/clones',
     });
 
     expect(cloneRepository).toHaveBeenCalledWith(expect.objectContaining({
-      destinationPath: '/workspace/clones/repository',
+      destinationPath: '/repo/clones/repository',
     }));
   });
 
@@ -505,7 +505,7 @@ describe('fs clone', () => {
 
     await callClone(handler, {
       remoteUrl: 'https://example.com/team/repository.git',
-      destinationPath: '/workspace/repository',
+      destinationPath: '/repo/repository',
       gitIdentityId: '   ',
     });
 
@@ -524,7 +524,7 @@ describe('fs clone', () => {
 
     const res = await callClone(handler, {
       remoteUrl: 'https://example.com/team/repository.git',
-      destinationPath: '/workspace/repository',
+      destinationPath: '/repo/repository',
     });
 
     expect(res.statusCode).toBe(409);
@@ -536,7 +536,7 @@ describe('fs clone', () => {
   it('redacts clone failures and does not log or spawn from the route', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const remoteUrl = 'https://user:secret@example.com/team/repository.git';
-    const destinationPath = '/private/work/repository';
+    const destinationPath = '/repo/work/repository';
     const cloneRepository = vi.fn(async () => ({
       state: 'failed',
       error: { code: 'TRANSPORT_FAILED', message: `failed ${remoteUrl} at ${destinationPath}` },
@@ -564,11 +564,44 @@ describe('fs clone', () => {
 
     const res = await callClone(handler, {
       remoteUrl: 'ext::run-command',
-      destinationPath: '/workspace/repository',
+      destinationPath: '/repo/repository',
     });
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ error: 'Repository URL is invalid' });
+  });
+
+  it('refuses a clone destination outside the active workspace without delegating', async () => {
+    const cloneRepository = vi.fn(async () => ({ state: 'succeeded' }));
+    const { handler } = registerClone({ cloneRepository });
+
+    const res = await callClone(handler, {
+      remoteUrl: 'https://example.com/team/repository.git',
+      destinationPath: '/outside/evil',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ error: 'Path is outside of active workspace' });
+    expect(cloneRepository).not.toHaveBeenCalled();
+  });
+
+  it('refuses a clone destination whose parent symlink resolves outside the workspace', async () => {
+    const cloneRepository = vi.fn(async () => ({ state: 'succeeded' }));
+    const { handler } = registerClone({
+      cloneRepository,
+      fsPromises: {
+        realpath: vi.fn(async (targetPath) => (targetPath === '/repo/link' ? '/outside' : targetPath)),
+      },
+    });
+
+    const res = await callClone(handler, {
+      remoteUrl: 'https://example.com/team/repository.git',
+      destinationPath: '/repo/link/evil',
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'Access denied' });
+    expect(cloneRepository).not.toHaveBeenCalled();
   });
 });
 
