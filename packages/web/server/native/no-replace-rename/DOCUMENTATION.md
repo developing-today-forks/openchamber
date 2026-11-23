@@ -48,9 +48,10 @@ Details:
   nodejs.org into `$OPENCHAMBER_HEADERS_CACHE` (or `~/.cache`) and reuses it.
 - The build is skipped when the existing prebuild is newer than the C source.
 - On Windows `cl.exe` ships with Visual Studio but is not on `PATH` by
-  default, so the script locates a host-native `cl.exe` via `vswhere.exe`
-  instead of needing a separate CI setup action; when none is found the
-  build fails closed (warning, or non-zero under `--strict`).
+  default. CI sets up the compiler environment with `ilammy/msvc-dev-cmd`;
+  for local builds without that environment the script locates a host-native
+  `cl.exe` via `vswhere.exe`, and when none is found the build fails closed
+  (warning, or non-zero under `--strict`).
 
 ## Loader (`server/lib/shared/no-replace-dir.ts`)
 
