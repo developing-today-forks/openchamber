@@ -112,6 +112,7 @@ const createSandbox = async () => {
     env,
     dataDir,
     statePath: path.join(dataDir, 'managed-opencode', 'state.json'),
+    storePath: path.join(dataDir, 'managed-opencode', 'store.json'),
     pidFilePath: (port) => path.join(dataDir, 'run', `openchamber-${port}.pid`),
     instanceFilePath: (port) => path.join(dataDir, 'run', `openchamber-${port}.json`),
     logPath: (name) => path.join(root, `${name}.log`),
@@ -124,6 +125,25 @@ const readJson = (file) => {
   } catch {
     return null;
   }
+};
+
+// The managed OpenCode record lives in the v2 store (#2423): the current
+// record is the newest starting/active generation, mapped back to the
+// camelCase shape the assertions below read.
+const readCurrentState = (sandbox) => {
+  const store = readJson(sandbox.storePath);
+  if (!store || !Array.isArray(store.generations)) return null;
+  const current = [...store.generations].reverse()
+    .find((generation) => generation.state === 'starting' || generation.state === 'active');
+  if (!current) return null;
+  return {
+    pid: current.pid,
+    port: current.port,
+    binary: current.binary,
+    args: current.args,
+    instanceDir: current.instance_dir ?? null,
+    startedAt: current.started_at,
+  };
 };
 
 // Handoff diagnostics must never print credentials from managed state.
@@ -300,11 +320,11 @@ const startClient = (port) => {
   };
 };
 
-// Every fake OpenCode the sandbox started, not only the one state.json names last: when a handoff fails,
+// Every fake OpenCode the sandbox started, not only the one the store names current: when a handoff fails,
 // the OpenCode it should have kept is no longer recorded and was left running after the test (12 orphans
 // from one failing run, dezren39/nix#667). Only pids still running this sandbox's fake script are signalled.
 const killRecordedOpenCode = (sandbox) => {
-  const state = readJson(sandbox.statePath);
+  const state = readCurrentState(sandbox);
   const listed = (() => {
     try {
       return fs.readFileSync(path.join(sandbox.root, 'opencode-pids'), 'utf8').split('\n').map(Number);
@@ -442,7 +462,7 @@ describeUnlessWindows('self-handoff across real processes', () => {
     track(sandbox, port, children);
     const pidFile = sandbox.pidFilePath(port);
     const oldPid = readPid(pidFile);
-    const openCodeBefore = readJson(sandbox.statePath);
+    const openCodeBefore = readCurrentState(sandbox);
 
     const client = startClient(port);
     await sleep(500);
@@ -453,7 +473,7 @@ describeUnlessWindows('self-handoff across real processes', () => {
     await sleep(500);
     const counts = await client.stop();
     const predecessorExited = await waitForExit(predecessor.child, 15_000);
-    const openCodeAfter = readJson(sandbox.statePath);
+    const openCodeAfter = readCurrentState(sandbox);
     const health = await fetchHealth(port);
     const log = fs.readFileSync(predecessor.logPath, 'utf8');
 
@@ -564,7 +584,7 @@ describeUnlessWindows('self-handoff across real processes', () => {
     track(sandbox, port, children);
     const pidFile = sandbox.pidFilePath(port);
     const oldPid = readPid(pidFile);
-    const openCodeBefore = readJson(sandbox.statePath);
+    const openCodeBefore = readCurrentState(sandbox);
 
     const client = startClient(port);
     await sleep(500);
@@ -583,7 +603,7 @@ describeUnlessWindows('self-handoff across real processes', () => {
     expect(readPid(pidFile)).toBe(oldPid);
     expect(successorPid).toBeGreaterThan(0);
     expect(isAlive(successorPid)).toBe(false);
-    expect(readJson(sandbox.statePath)?.pid).toBe(openCodeBefore.pid);
+    expect(readCurrentState(sandbox)?.pid).toBe(openCodeBefore.pid);
     expect(counts.requests).toBeGreaterThan(20);
     expect(counts.refused).toBe(0);
     expect(counts.failed).toBe(0);
@@ -725,7 +745,7 @@ describe('upgrade handoff across installs', () => {
     const { port } = predecessor;
     const pidFile = sandbox.pidFilePath(port);
     const oldPid = parseInt(await fsp.readFile(pidFile, 'utf8'), 10);
-    const before = JSON.parse(await fsp.readFile(sandbox.statePath, 'utf8'));
+    const before = readCurrentState(sandbox);
     const client = startClient(port);
     try {
       const cli = await runCli(sandbox, ['handoff', '--port', String(port)], {}, installB.cli);
@@ -733,7 +753,7 @@ describe('upgrade handoff across installs', () => {
       await waitForReady(port, { logPath: predecessor.logPath, pidFilePath: pidFile });
       const predecessorExited = await waitForExit(predecessor.child, 15_000);
       const counts = await client.stop();
-      const after = JSON.parse(await fsp.readFile(sandbox.statePath, 'utf8'));
+      const after = readCurrentState(sandbox);
       const instance = await readInstance(sandbox, port);
 
       expect(cli.code).toBe(0);
@@ -949,7 +969,9 @@ describe('upgrade handoff across installs', () => {
         const path = require('node:path');
         const { pathToFileURL } = require('node:url');
         const configHome = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME, '.config');
-        const state = JSON.parse(fs.readFileSync(path.join(configHome, 'openchamber', 'managed-opencode', 'state.json'), 'utf8'));
+        const store = JSON.parse(fs.readFileSync(path.join(configHome, 'openchamber', 'managed-opencode', 'store.json'), 'utf8'));
+        const current = [...store.generations].reverse().find((generation) => generation.state === 'starting' || generation.state === 'active');
+        const state = { pid: current.pid, port: current.port, instanceDir: current.instance_dir };
         // The registry is TypeScript; the source hook lets this plain node stub import it.
         await import(pathToFileURL(${JSON.stringify(sourceHook)}).href);
         const { registerManagedProcess } = await import(pathToFileURL(${JSON.stringify(registryModule)}).href);
@@ -974,7 +996,7 @@ describe('upgrade handoff across installs', () => {
     const { port } = predecessor;
     const pidFile = sandbox.pidFilePath(port);
     const oldPid = parseInt(await fsp.readFile(pidFile, 'utf8'), 10);
-    const state = JSON.parse(await fsp.readFile(sandbox.statePath, 'utf8'));
+    const state = readCurrentState(sandbox);
     process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY = path.join(sandbox.dataDir, 'managed-opencode');
     try {
       expect(readManagedProcessOwner(state.pid)).toBe(oldPid);
@@ -1003,9 +1025,10 @@ describe('upgrade handoff across installs', () => {
     const oldPid = parseInt(await fsp.readFile(pidFile, 'utf8'), 10);
     const client = startClient(port);
     try {
-      const state = JSON.parse(await fsp.readFile(sandbox.statePath, 'utf8'));
-      state.version = 999;
-      await fsp.writeFile(sandbox.statePath, `${JSON.stringify(state, null, 2)}\n`);
+      // The probe's state-version check reads the v1 state file a previous
+      // install left behind (#2423 keeps that cross-version check); a version
+      // it cannot read must refuse the takeover before anything is signalled.
+      await fsp.writeFile(sandbox.statePath, `${JSON.stringify({ version: 999 }, null, 2)}\n`);
 
       const cli = await runCli(sandbox, ['handoff', '--port', String(port)], {}, installB.cli);
       expect(cli.code).not.toBe(0);

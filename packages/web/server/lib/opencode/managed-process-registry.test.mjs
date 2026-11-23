@@ -116,6 +116,34 @@ describe('reapOrphanedProcesses', () => {
     expect(execFileImpl).not.toHaveBeenCalled();
   });
 
+  it('never prunes shared-directory files that are not entries (the managed store, #2423)', async () => {
+    readdirMock.mockResolvedValue(['store.json', 'state.json', '99999.json', '88888.json']);
+    readFileMock.mockImplementation(async (filePath) => {
+      if (filePath.endsWith('store.json')) return JSON.stringify({ schema_version: 2, generations: [], handoffs: [] });
+      if (filePath.endsWith('state.json')) return JSON.stringify({ version: 1, pid: 99999 });
+      if (filePath.endsWith('88888.json')) return 'not json';
+      return JSON.stringify({ pid: 99999, ownerPid: 12345, port: 4096, binary: '/opencode', runtime: 'web' });
+    });
+    killMock.mockImplementation(() => {
+      const error = new Error('ESRCH');
+      error.code = 'ESRCH';
+      throw error;
+    });
+    rmMock.mockResolvedValue();
+
+    const result = await reapOrphanedProcesses();
+
+    // Only the two entry-shaped files were handled: the dead entry dropped,
+    // the corrupt entry pruned. The store and the legacy state file are not
+    // entries and are left exactly as they were.
+    expect(result).toEqual({ inspected: 1, reaped: 0 });
+    const removed = rmMock.mock.calls.map((call) => call[0]);
+    expect(removed.some((filePath) => filePath.endsWith('store.json'))).toBe(false);
+    expect(removed.some((filePath) => filePath.endsWith('state.json'))).toBe(false);
+    expect(removed.some((filePath) => filePath.endsWith('99999.json'))).toBe(true);
+    expect(removed.some((filePath) => filePath.endsWith('88888.json'))).toBe(true);
+  });
+
   it('drops registry entries whose pid is already dead, without spawning anything', async () => {
     readdirMock.mockResolvedValue(['99999.json']);
     readFileMock.mockResolvedValue(

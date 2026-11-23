@@ -347,7 +347,13 @@ export const createManagedProcessRegistry = ({ fs = fsp, execFileAsync = default
       return [];
     }
     const out: Array<{ entry: StoredProcessEntry; filePath: string }> = [];
-    for (const name of names.filter((value) => value.endsWith('.json'))) {
+    // Only `<pid>.json` files are entries. The registry directory is shared:
+    // it also holds the managed OpenCode store (store.json, #2423) and the
+    // managed log, and those files are not this registry's to prune — an
+    // earlier version of this loop deleted store.json at successor
+    // bootstrap because it is not a valid entry, which cost the successor
+    // the adoption record it was started to inherit.
+    for (const name of names.filter((value) => /^\d+\.json$/.test(value))) {
       const filePath = path.join(dir, name);
       try {
         const entry: unknown = JSON.parse(await readBoundedText(filePath, MANAGED_PROCESS_ENTRY_MAX_BYTES));

@@ -228,7 +228,7 @@ import { openCodePluginDelivery } from './lib/guests/opencode-plugin.js';
 import { createLimitFailoverRuntime } from './lib/limit-failover/runtime.js';
 import { prepareInstanceDir } from './lib/opencode/instance-dir.js';
 import { createDeviceSettingsStore } from './lib/device-settings/store.js';
-import { readManagedOpenCodeState, resolveManagedOpenCodePaths } from './lib/opencode/managed-opencode-state.js';
+import { currentRecordFromManagedStore, readManagedOpenCodeStore, resolveManagedOpenCodeStorePaths } from './lib/opencode/managed-opencode-state.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './lib/openchamber-sessions/session-metadata-store.js';
 import { createUnreadBaseline } from './lib/openchamber-sessions/unread-baseline.js';
@@ -2605,7 +2605,7 @@ async function main(options: WebUiServerOptions = {}) {
     fsPromises,
     path,
     dataDir: OPENCHAMBER_DATA_DIR,
-    claimDir: readManagedOpenCodeState(resolveManagedOpenCodePaths(OPENCHAMBER_DATA_DIR).statePath)?.instanceDir ?? null,
+    claimDir: currentRecordFromManagedStore(readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(OPENCHAMBER_DATA_DIR).storePath))?.instanceDir ?? null,
     handoffFrom: handoffPredecessorPid,
   });
   agentToolRuntime = createAgentToolRuntime({

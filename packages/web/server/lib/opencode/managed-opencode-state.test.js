@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  clearManagedOpenCodeState,
   createLaunchFingerprint,
   decideManagedOpenCodeLaunch,
   hashLaunchSecret,
@@ -16,9 +15,20 @@ import {
   readManagedOpenCodeState,
   resolveManagedOpenCodePaths,
   rotateManagedLogIfOversized,
-  writeDrainingOpenCodeRecords,
-  writeManagedOpenCodeState,
 } from './managed-opencode-state.js';
+
+// The v1 pair is migration input only since #2423: nothing in the module
+// writes it any more, so fixtures write the on-disk v1 JSON directly,
+// exactly as a pre-store installation left it.
+const writeV1StateFile = (statePath, state) => {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`, { mode: 0o600 });
+};
+
+const writeV1DrainingFile = (drainingPath, records) => {
+  fs.mkdirSync(path.dirname(drainingPath), { recursive: true });
+  fs.writeFileSync(drainingPath, `${JSON.stringify({ version: 1, draining: records }, null, 2)}\n`, { mode: 0o600 });
+};
 
 const serveArgs = ['serve', '--hostname', '127.0.0.1'];
 const isWindows = process.platform === 'win32';
@@ -92,21 +102,19 @@ describe('decideManagedOpenCodeLaunch', () => {
 describe('managed OpenCode state file', () => {
   let root;
 
-  it('keeps draining records when the current state is cleared', () => {
+  it('reads draining records independently of the current state file', () => {
     const drainingPath = path.join(root, 'draining.json');
     const record = { pid: 7001, port: 45001, binary: '/usr/bin/opencode', drainStartedAt: 1700000000000 };
-    writeDrainingOpenCodeRecords(drainingPath, [record]);
-    writeManagedOpenCodeState(resolveManagedOpenCodePaths(root).statePath, validState);
-    clearManagedOpenCodeState(resolveManagedOpenCodePaths(root).statePath);
+    writeV1DrainingFile(drainingPath, [record]);
+    writeV1StateFile(resolveManagedOpenCodePaths(root).statePath, validState);
+    fs.rmSync(resolveManagedOpenCodePaths(root).statePath);
     expect(readDrainingOpenCodeRecords(drainingPath)).toEqual([record]);
   });
 
-  it('ignores malformed draining records and removes the file once nothing drains', () => {
+  it('ignores malformed draining records', () => {
     const drainingPath = path.join(root, 'draining.json');
     fs.writeFileSync(drainingPath, JSON.stringify({ version: 1, draining: [{ pid: -1 }, { pid: 7002, port: 45002, binary: '/usr/bin/opencode', drainStartedAt: 1 }] }));
     expect(readDrainingOpenCodeRecords(drainingPath).map((record) => record.pid)).toEqual([7002]);
-    writeDrainingOpenCodeRecords(drainingPath, []);
-    expect(fs.existsSync(drainingPath)).toBe(false);
   });
 
   beforeEach(() => {
@@ -117,17 +125,16 @@ describe('managed OpenCode state file', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  it('round-trips the saved state with owner-only permissions', () => {
+  it('reads back a saved v1 state file', () => {
     const { statePath } = resolveManagedOpenCodePaths(root);
-    writeManagedOpenCodeState(statePath, validState);
+    writeV1StateFile(statePath, validState);
 
     expect(readManagedOpenCodeState(statePath)).toEqual({ version: 1, ...validState });
-    expect(fs.statSync(statePath).mode & 0o777).toBe(0o600);
   });
 
   it('accepts a string agent-tool token', () => {
     const { statePath } = resolveManagedOpenCodePaths(root);
-    writeManagedOpenCodeState(statePath, { ...validState, agentToolToken: 'token-value' });
+    writeV1StateFile(statePath, { ...validState, agentToolToken: 'token-value' });
 
     expect(readManagedOpenCodeState(statePath)?.agentToolToken).toBe('token-value');
   });
@@ -199,16 +206,6 @@ describe('managed OpenCode state file', () => {
     fs.writeFileSync(statePath, JSON.stringify({ version: 1, ...validState, ...override }));
 
     expect(readManagedOpenCodeState(statePath)).toBeNull();
-  });
-
-  it('clears the state and tolerates a missing file', () => {
-    const { statePath } = resolveManagedOpenCodePaths(root);
-    writeManagedOpenCodeState(statePath, validState);
-
-    clearManagedOpenCodeState(statePath);
-    clearManagedOpenCodeState(statePath);
-
-    expect(fs.existsSync(statePath)).toBe(false);
   });
 
   it('hashes launch secrets and treats a missing secret as empty', () => {

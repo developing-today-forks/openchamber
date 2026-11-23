@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
@@ -45,6 +45,10 @@ const readBoundedJsonFileSync = (filePath, maxBytes) => {
   }
 };
 
+// v1 pair readers: migration input only (#2423). Nothing writes state.json
+// or draining.json any more; they are read solely by migrateV1StoreToV2 so
+// an installation that predates the v2 store imports its generations once,
+// with nothing lost.
 export const readManagedOpenCodeState = (statePath) => {
   const parsed = readBoundedJsonFileSync(statePath, MANAGED_OPENCODE_STATE_MAX_BYTES);
   const valid = parsed?.version === STATE_VERSION
@@ -71,29 +75,6 @@ export const readDrainingOpenCodeRecords = (drainingPath) => {
   ));
 };
 
-export const writeDrainingOpenCodeRecords = (drainingPath, records) => {
-  if (records.length === 0) {
-    rmSync(drainingPath, { force: true });
-    return;
-  }
-  mkdirSync(path.dirname(drainingPath), { recursive: true, mode: 0o700 });
-  const tmpPath = `${drainingPath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify({ version: STATE_VERSION, draining: records }, null, 2)}\n`, { mode: 0o600 });
-  renameSyncWithRetry((from, to) => renameSync(from, to), tmpPath, drainingPath);
-};
-
-// Holds the managed password and agent-tool token, so the file is 0600 and never logged.
-export const writeManagedOpenCodeState = (statePath, state) => {
-  mkdirSync(path.dirname(statePath), { recursive: true, mode: 0o700 });
-  const tmpPath = `${statePath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify({ version: STATE_VERSION, ...state }, null, 2)}\n`, { mode: 0o600 });
-  renameSyncWithRetry((from, to) => renameSync(from, to), tmpPath, statePath);
-};
-
-export const clearManagedOpenCodeState = (statePath) => {
-  rmSync(statePath, { force: true });
-};
-
 export const sameOpenCodeArgs = (recorded, current) => recorded === undefined
   || (recorded.length === current.length && recorded.every((value, index) => value === current[index]));
 
@@ -115,10 +96,14 @@ export const decideManagedOpenCodeLaunch = ({ state, ownsPid, binary, args, fing
 // One document { schema_version: 2, generations: [...], handoffs: [...] },
 // written atomically on each successful transition; store sync is best
 // effort (syncStore in lifecycle.js logs and skips a failed write, so the
-// store can miss a transition). Wired into lifecycle.js as a
-// dual-write with the v1 state.json + draining.json pair (kept for one
-// release): the store is the ownership record for action paths, and the
-// v1 pair is retired once the dual-write release has passed.
+// store can miss a transition). The store is the sole ownership and drain
+// record: #2423 retired the v1 state.json + draining.json pair after the
+// one-release dual-write, and the v1 readers above survive only as the
+// migration input for installations that predate the store. A generation
+// also carries the launch credentials and instance folder its spawn used
+// (the fields state.json used to carry), so adoption after a restart can
+// reuse them; closing a generation scrubs the credentials, so history
+// never retains a dead process's password or token.
 export const MANAGED_OPENCODE_STORE_VERSION = 2;
 const MANAGED_OPENCODE_STORE_MAX_BYTES = 256 * 1024;
 
@@ -147,7 +132,10 @@ const isValidGeneration = (generation) => isStoreRecord(generation)
   && isText(generation.fingerprint)
   && GENERATION_STATES.includes(generation.state)
   && isText(generation.started_at)
-  && (generation.ended_at === null || isText(generation.ended_at));
+  && (generation.ended_at === null || isText(generation.ended_at))
+  && (generation.password === undefined || generation.password === null || (isText(generation.password) && generation.password.length > 0))
+  && (generation.agent_tool_token === undefined || generation.agent_tool_token === null || isText(generation.agent_tool_token))
+  && (generation.instance_dir === undefined || generation.instance_dir === null || isText(generation.instance_dir));
 
 const isValidHandoff = (handoff) => isStoreRecord(handoff)
   && isText(handoff.handoff_id) && handoff.handoff_id.length > 0
@@ -205,6 +193,12 @@ export const transitionGenerationState = (store, generationId, toState, endedAt 
     state: toState,
     ended_at: toState === 'closed' ? (endedAt ?? new Date().toISOString()) : current.ended_at,
   };
+  if (toState === 'closed') {
+    // A closed generation is history: its launch credentials are not
+    // retained. Only non-closed generations are ever read for adoption.
+    if (updated.password !== undefined) updated.password = null;
+    if (updated.agent_tool_token !== undefined) updated.agent_tool_token = null;
+  }
   const generations = [...store.generations];
   generations[index] = updated;
   return { ...store, generations };
@@ -251,9 +245,12 @@ export const replayHandoffStep = (handoff) => {
 
 // v1 -> v2 migration: every v1 generation is imported with its state
 // preserved (current state.json becomes active, draining.json entries become
-// draining). The v1 files are left untouched in place — they stay read-only
-// for one release once lifecycle.js stops writing them. The oracle is "no
-// lost generations": count and pids before/after must match exactly.
+// draining), including the current record's launch credentials and instance
+// folder, so a migrated installation adopts its still-running OpenCode with
+// the same values the v1 pair would have supplied. The v1 files are left
+// untouched in place; since #2423 nothing writes or re-reads them outside
+// this migration. The oracle is "no lost generations": count and pids
+// before/after must match exactly.
 export const migrateV1StoreToV2 = ({ statePath, drainingPath, now = () => new Date().toISOString() }) => {
   const current = readManagedOpenCodeState(statePath);
   const draining = readDrainingOpenCodeRecords(drainingPath);
@@ -267,6 +264,9 @@ export const migrateV1StoreToV2 = ({ statePath, drainingPath, now = () => new Da
       fingerprint: current.fingerprint,
       state: 'active',
       started_at: current.startedAt ?? now(),
+      password: current.password,
+      agent_tool_token: current.agentToolToken ?? null,
+      instance_dir: current.instanceDir ?? null,
     });
   }
   for (const record of draining) {
@@ -305,6 +305,33 @@ export const reapManagedOpenCodeStore = (store, { isPidAlive = defaultManagedOpe
     reaped.push({ generation_id: generation.generation_id, pid: generation.pid, outcome: 'pid-gone' });
   }
   return { store: next, reaped };
+};
+
+// The record state.json used to carry, derived from the store: the newest
+// starting-or-active generation is the current managed OpenCode
+// (generations are append-only, so a later spawn — a handoff successor —
+// supersedes its predecessor). Draining generations are predecessors
+// being retired, never the current record (state.json never named one),
+// and closed generations are history. Returns the lifecycle record shape,
+// or null when the store names no current generation.
+export const currentRecordFromManagedStore = (store) => {
+  const generations = Array.isArray(store?.generations) ? store.generations : [];
+  for (let index = generations.length - 1; index >= 0; index -= 1) {
+    const generation = generations[index];
+    if (generation.state === 'closed' || generation.state === 'draining') continue;
+    return {
+      pid: generation.pid,
+      port: generation.port,
+      binary: generation.binary,
+      args: generation.args ?? [],
+      fingerprint: generation.fingerprint,
+      password: generation.password ?? null,
+      agentToolToken: generation.agent_tool_token ?? null,
+      instanceDir: generation.instance_dir ?? null,
+      startedAt: generation.started_at,
+    };
+  }
+  return null;
 };
 
 // Length of a trailing incomplete UTF-8 sequence in buffer[0, length), i.e. a
