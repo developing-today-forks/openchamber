@@ -153,6 +153,7 @@ import { createRelayDevTunnelBridge } from './relay-dev-tunnel.mjs';
 import { parsePairingDeepLink } from './pairing-deep-link.mjs';
 import { attachRendererRecovery, takeSafeStart } from './renderer-recovery.mjs';
 import { createLoadFailureWarningFilter } from './load-failure-warnings.mjs';
+import { startInitialNavigation } from './initial-navigation.mjs';
 import { fetchUpdateNotes } from '@openchamber/web/server/lib/changelog/update-notes.js';
 import { compareVersions } from '@openchamber/web/server/lib/version-order.js';
 import { applyConnectAttemptTimeout } from '@openchamber/web/server/lib/network-defaults.js';
@@ -2685,9 +2686,20 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
   }
 
   if (url) {
-    void navigateWindow(browserWindow, url);
+    startInitialNavigation({
+      navigate: navigateWindow,
+      browserWindow,
+      url,
+      reportFailure: (error) => log.warn('[electron] initial window navigation failed:', error),
+    });
   } else if (!adopt) {
-    void navigateWindow(browserWindow, buildStartupSplashUrl(), { allowAbort: true });
+    startInitialNavigation({
+      navigate: navigateWindow,
+      browserWindow,
+      url: buildStartupSplashUrl(),
+      allowAbort: true,
+      reportFailure: (error) => log.warn('[electron] initial window navigation failed:', error),
+    });
   }
 
   return browserWindow;
