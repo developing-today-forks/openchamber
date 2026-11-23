@@ -18,7 +18,7 @@ import {
 import { isString } from '../shared/guards.js';
 import nodeFsPromises from 'node:fs/promises';
 import { constants as nodeFsConstants } from 'node:fs';
-import { renameWithRetry } from '../shared/atomic-rename.js';
+import { renameWithRetry, renameWithoutReplace } from '../shared/atomic-rename.js';
 import nodePath from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -2052,10 +2052,23 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
         return res.status(409).json({ error: 'Destination path already exists', reason: 'already-exists' });
       }
 
-      await fsPromises.rename(renamePaths.sourcePath, renamePaths.destinationPath);
+      // The check above cannot close the race on its own: a destination
+      // created after it would be replaced by a plain rename (#2375).
+      // Commit with a no-replace primitive instead; a destination that
+      // appeared in the window surfaces as the same 409 below. Reaching
+      // here with destinationStats means it names the source itself
+      // (a case-only rename), which the commit keeps as a plain rename.
+      await renameWithoutReplace(fsPromises, renamePaths.sourcePath, renamePaths.destinationPath, {
+        isDirectory: sourceStats.isDirectory(),
+        isSymbolicLink: sourceStats.isSymbolicLink(),
+        destinationIsSource: destinationStats !== null,
+      });
       return res.json({ success: true, path: resolvedNew.resolved });
     } catch (error) {
       const err = error;
+      if (isErrorObject(err) && (err.code === 'EEXIST' || err.code === 'ENOTEMPTY')) {
+        return res.status(409).json({ error: 'Destination path already exists', reason: 'already-exists' });
+      }
       if (isErrorObject(err) && err.code === 'ENOENT') {
         return res.status(404).json({ error: 'Source path not found', reason: 'not-found' });
       }

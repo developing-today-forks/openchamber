@@ -1058,21 +1058,28 @@ describe('fs rename', () => {
   it('renames when the destination is free', async () => {
     const fsPromises = {
       lstat: vi.fn(async (targetPath) => {
-        if (targetPath === '/repo/a.txt') return { dev: 1, ino: 10 };
+        if (targetPath === '/repo/a.txt') return { dev: 1, ino: 10, isDirectory: () => false, isSymbolicLink: () => false };
         throw missing();
       }),
+      link: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
     };
     const res = createMockResponse();
     await registerRename(fsPromises)({ body: { oldPath: '/repo/a.txt', newPath: '/repo/b.txt' } }, res);
 
     expect(res.body).toEqual({ success: true, path: '/repo/b.txt' });
-    expect(fsPromises.rename).toHaveBeenCalledWith('/repo/a.txt', '/repo/b.txt');
+    // The commit is a no-replace link plus a source unlink (#2375): a
+    // plain rename would replace a destination created after the check.
+    expect(fsPromises.link).toHaveBeenCalledWith('/repo/a.txt', '/repo/b.txt');
+    expect(fsPromises.unlink).toHaveBeenCalledWith('/repo/a.txt');
+    expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
   it('returns a conflict instead of replacing an existing destination', async () => {
     const fsPromises = {
       lstat: vi.fn(async (targetPath) => (targetPath === '/repo/a.txt' ? { dev: 1, ino: 10 } : { dev: 1, ino: 20 })),
+      link: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
     };
     const res = createMockResponse();
@@ -1080,19 +1087,24 @@ describe('fs rename', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    expect(fsPromises.link).not.toHaveBeenCalled();
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
   it('allows a case-only rename that resolves to the source itself', async () => {
     const fsPromises = {
-      lstat: vi.fn(async () => ({ dev: 1, ino: 10 })),
+      lstat: vi.fn(async () => ({ dev: 1, ino: 10, isDirectory: () => false, isSymbolicLink: () => false })),
+      link: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
     };
     const res = createMockResponse();
     await registerRename(fsPromises)({ body: { oldPath: '/repo/Readme.md', newPath: '/repo/README.md' } }, res);
 
     expect(res.body).toEqual({ success: true, path: '/repo/README.md' });
+    // The destination is the source itself, so the commit stays a plain
+    // rename: replacing a file with itself destroys nothing (#2375).
     expect(fsPromises.rename).toHaveBeenCalledWith('/repo/Readme.md', '/repo/README.md');
+    expect(fsPromises.link).not.toHaveBeenCalled();
   });
 
   it('reports a missing source as not found', async () => {
@@ -1106,6 +1118,44 @@ describe('fs rename', () => {
     expect(res.statusCode).toBe(404);
     expect(res.body.reason).toBe('not-found');
     expect(fsPromises.rename).not.toHaveBeenCalled();
+  });
+
+  it('returns a conflict when the destination appears between the check and the commit', async () => {
+    const exists = () => Object.assign(new Error('exists'), { code: 'EEXIST' });
+    const fsPromises = {
+      lstat: vi.fn(async (targetPath) => {
+        if (targetPath === '/repo/a.txt') return { dev: 1, ino: 10, isDirectory: () => false, isSymbolicLink: () => false };
+        throw missing();
+      }),
+      link: vi.fn(async () => { throw exists(); }),
+      unlink: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+    };
+    const res = createMockResponse();
+    await registerRename(fsPromises)({ body: { oldPath: '/repo/a.txt', newPath: '/repo/b.txt' } }, res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    expect(fsPromises.unlink).not.toHaveBeenCalled();
+    expect(fsPromises.rename).not.toHaveBeenCalled();
+  });
+
+  it('renames a directory with a plain rename (no hard-link primitive can name one)', async () => {
+    const fsPromises = {
+      lstat: vi.fn(async (targetPath) => {
+        if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
+        throw missing();
+      }),
+      link: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+    };
+    const res = createMockResponse();
+    await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
+
+    expect(res.body).toEqual({ success: true, path: '/repo/dir-renamed' });
+    expect(fsPromises.rename).toHaveBeenCalledWith('/repo/dir', '/repo/dir-renamed');
+    expect(fsPromises.link).not.toHaveBeenCalled();
   });
 });
 
@@ -4156,5 +4206,83 @@ describe('fs env readers (#696)', () => {
     expect(readWith('OPENCHAMBER_FS_EXEC_TIMEOUT_MS', '2147483647', createCommandTimeoutMs)).toBe(2_147_483_647);
     expect(readWith('OPENCHAMBER_FS_EXEC_TIMEOUT_MS', '3000000000', createCommandTimeoutMs)).toBe(5 * 60 * 1000);
     expect(readWith('OPENCHAMBER_FS_EXEC_TIMEOUT_MS', '9007199254740993', createCommandTimeoutMs)).toBe(5 * 60 * 1000);
+  });
+});
+
+describe('fs rename destination race (real fs)', () => {
+  const registerRacing = (workspace, fsPromises) => {
+    const { app, getRoute } = createRouteRegistry();
+    registerFsRoutes(app, {
+      os: { homedir: () => workspace },
+      path,
+      fsPromises,
+      spawn: vi.fn(),
+      crypto: { randomUUID: () => 'job-0' },
+      normalizeDirectoryPath: (p) => p,
+      resolveProjectDirectory: async () => ({ directory: workspace }),
+      buildAugmentedPath: () => '/usr/bin',
+      resolveGitBinaryForSpawn: () => 'git',
+      openchamberUserConfigRoot: path.join(workspace, '.config'),
+    });
+    return getRoute('POST', '/api/fs/rename');
+  };
+
+  let root;
+  let workspace;
+
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'oc-fs-rename-race-'));
+    workspace = path.join(root, 'workspace');
+    await mkdir(workspace, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('preserves both files and returns a conflict when the destination is created after the lookup', async () => {
+    const source = path.join(workspace, 'source.txt');
+    const destination = path.join(workspace, 'dest.txt');
+    await nativeFs.writeFile(source, 'source bytes');
+
+    // The issue's repro (#2375): create the destination immediately after
+    // the route's destination lookup observes ENOENT, before the commit.
+    let injected = false;
+    const racingFs = {
+      ...nativeFs,
+      lstat: async (targetPath, ...rest) => {
+        try {
+          return await nativeFs.lstat(targetPath, ...rest);
+        } catch (error) {
+          if (!injected && error.code === 'ENOENT' && path.basename(targetPath) === 'dest.txt') {
+            injected = true;
+            await nativeFs.writeFile(destination, 'concurrent bytes');
+          }
+          throw error;
+        }
+      },
+    };
+
+    const res = createMockResponse();
+    await registerRacing(workspace, racingFs)({ body: { oldPath: source, newPath: destination } }, res);
+
+    expect(injected).toBe(true);
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    expect(await nativeFs.readFile(source, 'utf8')).toBe('source bytes');
+    expect(await nativeFs.readFile(destination, 'utf8')).toBe('concurrent bytes');
+  });
+
+  it('moves a file to a free destination', async () => {
+    const source = path.join(workspace, 'source.txt');
+    const destination = path.join(workspace, 'dest.txt');
+    await nativeFs.writeFile(source, 'source bytes');
+
+    const res = createMockResponse();
+    await registerRacing(workspace, nativeFs)({ body: { oldPath: source, newPath: destination } }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(await nativeFs.readFile(destination, 'utf8')).toBe('source bytes');
+    await expect(nativeFs.lstat(source)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
