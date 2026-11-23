@@ -526,46 +526,10 @@ jobs:
   # The phone apps are Canary only until they have store releases: the
   # Android APK goes into the canary pre-release with the desktop files, and
   # iOS goes to TestFlight. Both report the Canary version to the update check.
-  build-android:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.build == 'true' }}
-    permissions:
-      contents: write
-    uses: ./.github/workflows/mobile-release.yml
-    with:
-      ref: ${{ needs.prepare.outputs.sha }}
-      app_version: ${{ needs.prepare.outputs.version }}
-      version_name: ${{ needs.prepare.outputs.version }}
-      build_number: ${{ needs.prepare.outputs.build_number }}
-      build_android: true
-      build_ios: false
-      retention_days: '3'
-    secrets: inherit
-
-  # Not needed by the publish job: a failed TestFlight upload does not hold
-  # back the desktop and Android builds.
-  build-ios:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.build == 'true' }}
-    # GitHub checks every job of the called workflow against these, the
-    # skipped Android one included.
-    permissions:
-      contents: write
-    uses: ./.github/workflows/mobile-release.yml
-    with:
-      ref: ${{ needs.prepare.outputs.sha }}
-      app_version: ${{ needs.prepare.outputs.version }}
-      version_name: ${{ needs.prepare.outputs.release }}
-      build_number: ${{ needs.prepare.outputs.build_number }}
-      build_android: false
-      build_ios: true
-      retention_days: '3'
-    secrets: inherit
-
   # Last, after npm too: the release notes name the commit the next night
   # compares main against, so a build that did not reach npm is retried.
   publish:
-    needs: [prepare, build-macos, build-windows, build-linux, build-android, publish-npm]
+    needs: [prepare, build-macos, build-windows, build-linux, publish-npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
