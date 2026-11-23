@@ -168,6 +168,25 @@ ${onTunnelStart}
 
     await new Promise((resolve) => outcome.value.process.once('exit', resolve));
   });
+
+  it('rejects promptly with the spawn error when cloudflared cannot be spawned', async () => {
+    // The fake binary removes itself while answering --version, so the
+    // availability check passes and the tunnel spawn itself fails with
+    // ENOENT — the missing-binary failure this pins. Without the
+    // startup promise's error wiring this hung until the 30s timeout
+    // and reported it instead of the spawn failure.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-quick-spawn-'));
+    tempDirs.push(dir);
+    const binary = path.join(dir, 'cloudflared');
+    fs.writeFileSync(binary, '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "cloudflared version 2025.1.0"\n  rm -- "$0"\n  exit 0\nfi\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ''}`;
+
+    const outcome = await settleWithin(startCloudflareQuickTunnel({ originUrl: 'http://localhost:3000' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('ENOENT');
+    expect(outcome.error.message).not.toContain('Tunnel URL not received within 30 seconds');
+  });
 });
 
 describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
@@ -261,6 +280,26 @@ describe('startCloudflareManagedRemoteTunnel startup settlement', () => {
     expect(outcome.status).toBe('resolved');
     expect(outcome.value.getPublicUrl()).toBe('https://tunnel.example.com');
     outcome.value.stop();
+  });
+
+  it('rejects promptly with the spawn error when cloudflared cannot be spawned', async () => {
+    // Same self-removing fake binary as the quick-tunnel spawn test:
+    // the availability check passes and the tunnel spawn itself fails
+    // with ENOENT. Without the managed wait's error wiring this
+    // surfaced only at the ~20s hard timeout, with misleading
+    // config/credentials advice instead of the spawn failure.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-cloudflared-managed-spawn-'));
+    tempDirs.push(dir);
+    const binary = path.join(dir, 'cloudflared');
+    fs.writeFileSync(binary, '#!/bin/sh\nif [ "$1" = "--version" ]; then\n  echo "cloudflared version 2025.1.0"\n  rm -- "$0"\n  exit 0\nfi\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = `${dir}${path.delimiter}${originalPath ?? ''}`;
+
+    const outcome = await settleWithin(startCloudflareManagedRemoteTunnel({ token: 'test-token', hostname: 'tunnel.example.com' }));
+
+    expect(outcome.status).toBe('rejected');
+    expect(outcome.error.message).toContain('Cloudflared failed to start managed-remote tunnel');
+    expect(outcome.error.message).toContain('ENOENT');
+    expect(outcome.error.message).not.toContain('Timed out waiting for cloudflared');
   });
 });
 

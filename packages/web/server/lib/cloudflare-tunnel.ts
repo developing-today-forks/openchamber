@@ -342,6 +342,7 @@ async function waitForManagedTunnelReady(child: ChildProcess, { modeLabel }: { m
       child.stdout?.off('end', onStdoutEnd);
       child.stderr?.off('end', onStderrEnd);
       child.off('exit', onExit);
+      child.off('error', onError);
       handler(value);
     };
 
@@ -411,11 +412,21 @@ async function waitForManagedTunnelReady(child: ChildProcess, { modeLabel }: { m
       finish(reject, new Error(`Cloudflared exited while starting ${modeLabel} (code ${code ?? 'unknown'})`));
     };
 
+    // A spawn failure (missing binary, bad permissions) emits 'error'
+    // and no 'exit' — no process exists — so without this the wait
+    // would hang until the hard timeout and surface misleading
+    // config/credentials advice instead of the real failure (mirrors
+    // the ngrok startup promise).
+    const onError = (error: Error) => {
+      finish(reject, new Error(`Cloudflared failed to start ${modeLabel}: ${error.message}`));
+    };
+
     child.stdout?.on('data', onStdout);
     child.stderr?.on('data', onStderr);
     child.stdout?.on('end', onStdoutEnd);
     child.stderr?.on('end', onStderrEnd);
     child.once('exit', onExit);
+    child.once('error', onError);
 
     const fallbackTimer = setTimeout(() => {
       // A fatal final line wins over the liveness fallback: flush and
@@ -507,13 +518,27 @@ export async function startCloudflareQuickTunnel({ originUrl }: { originUrl: str
       if (publicUrl) {
         clearTimeout(timeout);
         clearInterval(checkReady);
+        child.off('error', onError);
         resolve(null);
       }
     }, 100);
 
-    child.on('exit', (code, signal) => {
+    // A spawn failure (missing binary, bad permissions) emits 'error'
+    // and no 'exit' — no process exists — so without this the promise
+    // would hang until the 30s timeout and report it instead of the
+    // real failure (mirrors the ngrok startup promise). The outer
+    // 'error' listener above still logs and cleans the temp dir.
+    const onError = (error: Error) => {
       clearTimeout(timeout);
       clearInterval(checkReady);
+      child.off('exit', onExit);
+      reject(error);
+    };
+
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      clearTimeout(timeout);
+      clearInterval(checkReady);
+      child.off('error', onError);
       cleanupTempDir();
       // Any exit while startup is pending is a failed startup, even a
       // clean one after a URL was printed: the tunnel dies with the
@@ -524,7 +549,10 @@ export async function startCloudflareQuickTunnel({ originUrl }: { originUrl: str
       } else {
         reject(new Error(`Cloudflared exited with code ${code}`));
       }
-    });
+    };
+
+    child.once('error', onError);
+    child.on('exit', onExit);
   });
 
   return {
