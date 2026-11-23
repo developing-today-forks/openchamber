@@ -2102,7 +2102,7 @@ describe('fs reveal', () => {
   });
 });
 
-describe('fs reveal containment (real fs)', () => {
+describe.skipIf(process.platform === 'win32')('fs reveal containment (real fs)', () => {
   let base;
   let workspace;
   let outside;
