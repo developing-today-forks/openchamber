@@ -609,6 +609,84 @@ describe('fs write', () => {
     expect(fsPromises.unlink).not.toHaveBeenCalled();
   });
 
+  it('preserves the existing file mode on an editor save', async () => {
+    const fsPromises = {
+      open: openText('old'),
+      stat: vi.fn(async () => ({ isDirectory: () => false, mode: 0o100755 })),
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      chmod: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
+
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    const tmp = fsPromises.writeFile.mock.calls[0][0];
+    // Permission bits only: the stat mode's file-type bits are masked off.
+    expect(fsPromises.chmod).toHaveBeenCalledWith(tmp, 0o755);
+    // The mode is set on the temp file before the rename, so content and
+    // mode commit together and readers never see a wrong-mode file.
+    expect(fsPromises.chmod.mock.invocationCallOrder[0]).toBeLessThan(fsPromises.rename.mock.invocationCallOrder[0]);
+    expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+  });
+
+  it('does not chmod a new-file save (no existing mode to preserve)', async () => {
+    const enoent = () => { throw Object.assign(new Error('not found'), { code: 'ENOENT' }); };
+    const fsPromises = {
+      open: vi.fn(enoent),
+      stat: vi.fn(enoent),
+      mkdir: vi.fn(async () => undefined),
+      writeFile: vi.fn(async () => undefined),
+      chmod: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+    };
+    const handler = registerWrite(fsPromises);
+
+    const res = await callWrite(handler, { path: '/repo/file.txt', content: 'new' });
+
+    expect(res.body).toEqual({ success: true, path: '/repo/file.txt' });
+    expect(fsPromises.chmod).not.toHaveBeenCalled();
+    const tmp = fsPromises.writeFile.mock.calls[0][0];
+    expect(tmp).toMatch(/^\/repo\/file\.txt\.tmp-/);
+    expect(fsPromises.rename).toHaveBeenCalledWith(tmp, '/repo/file.txt');
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps a 0755 script executable across an editor save on a real disk', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'oc-fs-write-mode-'));
+    try {
+      const scriptPath = path.join(dir, 'script.sh');
+      await nativeFs.writeFile(scriptPath, '#!/bin/sh\necho old\n', 'utf8');
+      await nativeFs.chmod(scriptPath, 0o755);
+      const { app, getRoute } = createRouteRegistry();
+      registerFsRoutes(app, {
+        os: { homedir: () => dir },
+        path,
+        fsPromises: nativeFs,
+        spawn: vi.fn(),
+        crypto: { randomUUID: () => 'job-0' },
+        normalizeDirectoryPath: (p) => p,
+        resolveProjectDirectory: async () => ({ directory: dir }),
+        buildAugmentedPath: () => '/usr/bin',
+        resolveGitBinaryForSpawn: () => 'git',
+        openchamberUserConfigRoot: dir,
+      });
+      const handler = getRoute('POST', '/api/fs/write');
+
+      const res = await callWrite(handler, { path: scriptPath, content: '#!/bin/sh\necho new\n' });
+
+      expect(res.body).toEqual({ success: true, path: scriptPath });
+      await expect(nativeFs.readFile(scriptPath, 'utf8')).resolves.toBe('#!/bin/sh\necho new\n');
+      const stats = await nativeFs.stat(scriptPath);
+      expect(stats.mode & 0o777).toBe(0o755);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes through existing symlinks without replacing the link', async () => {
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => {

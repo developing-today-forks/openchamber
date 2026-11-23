@@ -1769,9 +1769,24 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
 
       await fsPromises.mkdir(path.dirname(writePath), { recursive: true });
 
+      // An editor save must keep the existing file's permission mode, the
+      // same as the upload path (#2249): the temp file is created with the
+      // process default mode, so without this the rename would silently
+      // reset the target's bits (an executable 0755 becomes 0644 under a
+      // 022 umask). Captured here, applied to the temp file below so the
+      // mode commits atomically with the content at rename time.
+      let existingMode = null;
+      try {
+        const stats = await fsPromises.stat(writePath);
+        if (isNumber(stats.mode)) existingMode = stats.mode & 0o7777;
+      } catch {
+        // A missing file is the ordinary create case: no mode to preserve.
+      }
+
       const tmp = `${writePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
         await fsPromises.writeFile(tmp, content, 'utf8');
+        if (existingMode !== null) await fsPromises.chmod(tmp, existingMode);
         await renameWithRetry((from, to) => fsPromises.rename(from, to), tmp, writePath);
       } catch (error) {
         await fsPromises.unlink(tmp).catch(() => {});
