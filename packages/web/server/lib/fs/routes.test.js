@@ -4427,7 +4427,7 @@ describe('fs rename destination race (real fs)', () => {
         try {
           return await nativeFs.lstat(targetPath, ...rest);
         } catch (error) {
-          if (!injected && error.code === 'ENOENT' && targetPath === destination) {
+          if (!injected && error.code === 'ENOENT' && path.basename(targetPath) === 'dest-dir') {
             injected = true;
             await mkdir(destination);
             destinationIdentity = await nativeFs.lstat(destination);
