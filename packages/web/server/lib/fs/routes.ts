@@ -563,7 +563,8 @@ const deriveCloneDirectoryName = (remoteUrl: string) => {
   if (!remote) return '';
   const withoutQuery = remote.split(/[?#]/, 1)[0] || remote;
   const match = withoutQuery.match(/([^/:]+?)(?:\.git)?\/?$/);
-  return match?.[1]?.trim() || '';
+  const name = match?.[1]?.trim() || '';
+  return name.includes('\\') ? '' : name;
 };
 
 const resolveReadPathFromContext = async ({ req, targetPath, resolveProjectDirectory, path, os, fsPromises, normalizeDirectoryPath, managedRoots, chatsRoots }: WorkspaceContextOptions): Promise<WorkspacePathResult> => {
@@ -1046,7 +1047,26 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
         return res.status(400).json({ error: 'Destination path is required' });
       }
 
-      let resolvedDestination = path.resolve(normalizeDirectoryPath(destination));
+      const resolvedWorkspace = await resolveWorkspacePathFromContext({
+        fsPromises,
+        req,
+        targetPath: destination,
+        resolveProjectDirectory,
+        path,
+        os,
+        normalizeDirectoryPath,
+        managedRoots,
+        chatsRoots,
+      });
+      if (!resolvedWorkspace.ok) {
+        return res.status(400).json({ error: resolvedWorkspace.error });
+      }
+      const containedDestination = await containedMkdirPath(resolvedWorkspace, { fsPromises, path, os });
+      if (!containedDestination) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      let resolvedDestination = containedDestination;
       let parentPath = path.dirname(resolvedDestination);
       let directoryName = path.basename(resolvedDestination);
 
