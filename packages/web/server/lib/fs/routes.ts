@@ -1664,6 +1664,15 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
 
       const canonicalPath = await fsPromises.realpath(resolved.resolved);
 
+      // Canonical containment re-check: the lexical check in
+      // resolveWorkspacePath cannot see through symlinks, so a link
+      // inside the granted tree that resolves outside must be refused
+      // here (#2564). Mirrors POST /api/fs/reveal.
+      const canonicalBase = await canonicalDirectoryPath(resolved.base, fsPromises, path);
+      if (!isPathWithinRoot(canonicalPath, canonicalBase, path, os)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
       const stats = await fsPromises.stat(canonicalPath);
       if (!stats.isFile()) {
         return res.status(400).json({ error: 'Specified path is not a file' });
