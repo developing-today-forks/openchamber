@@ -10,6 +10,7 @@ const job = (overrides: Partial<GoalSpecJob> = {}): GoalSpecJob => ({
   status: 'writing',
   error: null,
   cancelled: false,
+  sendUncertain: false,
   content: 'build it',
   attachmentCount: 0,
   createdAt: 1,

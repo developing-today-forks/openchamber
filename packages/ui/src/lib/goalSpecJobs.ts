@@ -16,6 +16,7 @@ const goalSpecJobSchema = z.object({
   status: z.enum(['writing', 'enqueuing', 'failed']),
   error: z.string().nullable(),
   cancelled: z.boolean(),
+  sendUncertain: z.boolean().default(false),
   content: z.string(),
   attachmentCount: z.number().int().nonnegative(),
   createdAt: z.number(),
@@ -23,6 +24,14 @@ const goalSpecJobSchema = z.object({
 });
 
 export type GoalSpecJob = z.infer<typeof goalSpecJobSchema>;
+
+export type GoalSpecJobFailure = 'certain' | 'cancelled' | 'uncertain' | null;
+
+export const goalSpecJobFailure = (job: Pick<GoalSpecJob, 'status' | 'cancelled' | 'sendUncertain'>): GoalSpecJobFailure => {
+  if (job.status !== 'failed') return null;
+  if (job.cancelled) return 'cancelled';
+  return job.sendUncertain ? 'uncertain' : 'certain';
+};
 
 const goalSpecJobRemovedSchema = z.object({
   id: z.string().min(1),

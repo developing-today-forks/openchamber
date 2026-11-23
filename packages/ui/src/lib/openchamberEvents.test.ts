@@ -370,7 +370,7 @@ describe('openchamber events', () => {
     const unsubscribe = subscribeOpenchamberEvents((event) => { if (event.type === 'goal-spec-job') seen.push(event.update); });
     try {
       const source = MockEventSource.instances[0];
-      const job = { id: 'j1', sessionId: 's1', directory: '/repo', status: 'failed', error: 'down', cancelled: false, content: 'hi', attachmentCount: 0, createdAt: 1, updatedAt: 2 };
+      const job = { id: 'j1', sessionId: 's1', directory: '/repo', status: 'failed', error: 'down', cancelled: false, sendUncertain: false, content: 'hi', attachmentCount: 0, createdAt: 1, updatedAt: 2 };
       const removed = { id: 'j1', sessionId: 's1', directory: '/repo', outcome: 'queued' };
       source.onmessage?.({ data: JSON.stringify({ type: 'openchamber:goal-spec-job.updated', properties: { job } }) });
       source.onmessage?.({ data: JSON.stringify({ type: 'openchamber:goal-spec-job.updated', properties: { removed } }) });
