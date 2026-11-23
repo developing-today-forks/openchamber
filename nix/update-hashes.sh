@@ -48,7 +48,7 @@ FAKE_SENTINEL="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 HASH_FILE="nix/hashes.json"
 
 system="$(nix eval --impure --raw --expr builtins.currentSystem)"
-current="$(grep -oP "\"$system\": \"\\Ksha256-[A-Za-z0-9+/=]+(?=\")" "$HASH_FILE" | head -1)"
+current="$(sed -nE "s/^[[:space:]]*\"$system\": \"(sha256-[A-Za-z0-9+/=]+)\".*/\1/p" "$HASH_FILE" | head -1)"
 [[ -n "$current" ]] || {
   echo "error: no nodeModules hash for $system in $HASH_FILE" >&2
   exit 1
@@ -59,7 +59,7 @@ if [[ "$current" == "$FAKE_SENTINEL" ]]; then
   log "$system: already at the sentinel — building to capture the real hash"
 else
   # Anchor the swap on this system's line only; the file is one key per line.
-  sed -i "/\"$system\":/s|$current|$FAKE_SENTINEL|" "$HASH_FILE"
+  sed -i.bak "/\"$system\":/s|$current|$FAKE_SENTINEL|" "$HASH_FILE" && rm -f "$HASH_FILE.bak"  # -i.bak works on GNU and BSD sed
   log "$system: sentinel set, building to discover the hash"
 fi
 
@@ -87,12 +87,12 @@ if [[ -z "$got" ]]; then
 fi
 rm -f "$err"
 
-sed -i "s|$FAKE_SENTINEL|$got|" "$HASH_FILE"
+sed -i.bak "s|$FAKE_SENTINEL|$got|" "$HASH_FILE" && rm -f "$HASH_FILE.bak"
 log "$system: baked $got — verifying with a rebuild"
 nix build --no-link --rebuild ".#openchamber.node_modules" >/dev/null
 log "$system: verified"
 
-others=$(grep -oP '^\s+"\K[a-z0-9_]+-[a-z0-9]+(?=":)' "$HASH_FILE" | grep -v "^$system$" || true)
+others=$(sed -nE 's/^[[:space:]]+"([a-z0-9_]+-[a-z0-9]+)":.*/\1/p' "$HASH_FILE" | grep -v "^$system$" || true)  # portable: no grep -P
 if [[ -n "$others" ]]; then
   log "note: hashes for $(echo $others | tr '\n' ' ')were NOT re-measured — no builder for them here"
 fi
