@@ -75,6 +75,16 @@ const findHeadersDir = async () => {
   }
 };
 
+const findWindowsNodeLib = async (headersDir) => {
+  const libPath = path.join(path.dirname(headersDir), 'node.lib');
+  if (fs.existsSync(libPath)) return libPath;
+  const url = `https://nodejs.org/dist/${process.version}/win-${process.arch}/node.lib`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`node.lib download failed: ${response.status} ${response.statusText}`);
+  await fsp.writeFile(libPath, Buffer.from(await response.arrayBuffer()));
+  return libPath;
+};
+
 const defaultCompiler = () => {
   if (process.env.CC) return process.env.CC;
   return process.platform === 'win32' ? 'cl' : 'cc';
@@ -120,10 +130,11 @@ const build = async (options) => {
       if (probe.status !== 0) winCompiler = findWindowsCompiler() || compiler;
     }
     const objDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'oc-rnr-obj-'));
+    const nodeLib = await findWindowsNodeLib(headersDir);
     try {
       result = spawnSync(
         winCompiler,
-        ['/nologo', '/LD', '/O2', `/I${headersDir}`, sourceFile, `/Fo${objDir}\\`, `/Fe${outFile}`],
+        ['/nologo', '/LD', '/O2', `/I${headersDir}`, sourceFile, `/Fo${objDir}\\`, `/Fe${outFile}`, '/link', nodeLib],
         { stdio: 'inherit' },
       );
     } finally {
