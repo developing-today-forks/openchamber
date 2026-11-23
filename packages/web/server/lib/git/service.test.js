@@ -3069,6 +3069,25 @@ describe('createWorktree', () => {
       expect(branchExists(repo, 'feature/failed-cow')).toBe(false);
     });
 
+    it('keeps terminal escape sequences out of the failure message when the command emits them', async () => {
+      if (!canRunGit()) return;
+      const repo = createRepo();
+
+      const failure = await createWorktree(repo, {
+        mode: 'new',
+        branchName: 'feature/failed-title',
+        worktreeName: 'failed-title',
+        returnAfterDirectoryCreated: true,
+        createCommand: 'printf "\\033]0;window title\\007" >&2; echo "source checkout is dirty" >&2; exit 3',
+      }).catch((error) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure.code).toBe('WORKTREE_CREATE_COMMAND_FAILED');
+      // The tool's own words, without the title sequence the shell emitted.
+      expect(failure.message).toBe('Worktree create command failed: source checkout is dirty');
+      expect(branchExists(repo, 'feature/failed-title')).toBe(false);
+    });
+
     it('keeps a local branch it did not make when making the branch fails', async () => {
       if (!canRunGit()) return;
       const remote = createTempDir();
