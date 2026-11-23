@@ -119,6 +119,35 @@ describe('client auth pairing runtime', () => {
     })).rejects.toThrow('Invalid or expired pairing session');
   });
 
+  it('admits a programmatic client kind only when the session names it', async () => {
+    const { runtime, remoteClientAuthRuntime } = await makeRuntime();
+
+    const programmatic = await runtime.createPairingSession({ allowedClientKinds: ['programmatic'] });
+    expect(programmatic.pairing.allowedClientKinds).toEqual(['programmatic']);
+
+    const result = await runtime.redeemPairingSession({
+      pairingId: programmatic.pairing.id,
+      secret: programmatic.pairing.secret,
+      clientKind: 'programmatic',
+      clientLabel: 'babysitter-sandbox',
+    });
+
+    // The kind survives redemption onto the created client instead of
+    // being normalized away to 'mobile' (#2290).
+    expect(result.client).toMatchObject({ clientKind: 'programmatic', label: 'babysitter-sandbox' });
+    expect(remoteClientAuthRuntime.createClient).toHaveBeenCalledWith(expect.objectContaining({
+      clientKind: 'programmatic',
+    }));
+
+    // A session that does not name the kind does not admit it.
+    const standard = await runtime.createPairingSession();
+    await expect(runtime.redeemPairingSession({
+      pairingId: standard.pairing.id,
+      secret: standard.pairing.secret,
+      clientKind: 'programmatic',
+    })).rejects.toThrow('Invalid or expired pairing session');
+  });
+
   it('does not consume the pairing session if client issuance fails', async () => {
     const createClient = vi.fn()
       .mockRejectedValueOnce(new Error('disk failed'))

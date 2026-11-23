@@ -47,10 +47,14 @@ const normalizeTimestamp = (value: string | null | undefined) => {
 
 const normalizeClientKind = (value: string | null | undefined): PairingClientKind | null => {
   const normalized = normalizeOptionalString(value);
-  return normalized === 'mobile' || normalized === 'desktop' ? normalized : null;
+  return normalized === 'mobile' || normalized === 'desktop' || normalized === 'programmatic' ? normalized : null;
 };
 
 const normalizeAllowedClientKinds = (value: readonly string[] | null): PairingClientKind[] => {
+  // The default stays mobile/desktop: a 'programmatic' client (a headless
+  // automation enrollment, #2290) is admitted only when a pairing session
+  // names the kind explicitly, so existing pairing links do not silently
+  // gain a new redeemable kind.
   if (!value) return ['mobile', 'desktop'];
   const kinds = value.map(normalizeClientKind).filter((kind) => kind !== null);
   return kinds.length > 0 ? Array.from(new Set(kinds)) : ['mobile', 'desktop'];

@@ -86,7 +86,7 @@ export interface RedemptionInput {
   dedupeKey?: unknown;
 }
 
-export type PairingClientKind = 'mobile' | 'desktop';
+export type PairingClientKind = 'mobile' | 'desktop' | 'programmatic';
 
 export interface PairingSession {
   id: string;
