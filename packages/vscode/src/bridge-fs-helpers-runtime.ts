@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { execGit } from './bridge-git-process-runtime';
 import { normalizeWindowsDriveLetter } from './pathUtils';
 
-const MAX_FILE_ATTACH_SIZE_BYTES = 20 * 1024 * 1024;
+export const MAX_FILE_ATTACH_SIZE_BYTES = 20 * 1024 * 1024;
 
 // An env value is judged by its whole text, not by what `Number(...)` can
 // reinterpret: '' or ' ' must not read as 0, and '1e3', '0x10' or '5.9' must
