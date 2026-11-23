@@ -661,8 +661,14 @@ export const resolveFileReadPath = async (targetPath: string, requestedRoot?: st
   }
 
   try {
+    // Canonicalize both sides before comparing: the access root itself can
+    // sit behind a symlink (e.g. /tmp on macOS), and a target that only
+    // escapes through a symlinked ancestor must still be refused. Checking
+    // the unresolved path instead would let an in-workspace symlink disclose
+    // files outside the root, because the canonical path is what gets read.
+    const canonicalRoot = await fs.promises.realpath(baseRoot).catch(() => path.resolve(baseRoot));
     const canonicalPath = await fs.promises.realpath(resolved);
-    if (!isPathInside(resolved, path.resolve(baseRoot))) {
+    if (!isPathInside(canonicalPath, canonicalRoot)) {
       return { ok: false, status: 403, error: 'Access to file denied' };
     }
 
