@@ -3633,9 +3633,10 @@ describe('fs html preview grants', () => {
     ['/home/user/.config/openchamber/projects/p1/canvases/c1/data.json', '[]'],
     ['/home/user/.config/openchamber/guest-auth.json', '{"token":"secret"}'],
     ['/tmp/mockup/index.html', '<h1>mockup</h1>'],
+    ['/secret/outside.txt', 'outside bytes'],
   ]);
 
-  const register = () => {
+  const register = (links = {}) => {
     const routes = [];
     const app = {
       get: (routePath, handler) => routes.push({ method: 'GET', routePath, handler }),
@@ -3646,7 +3647,7 @@ describe('fs html preview grants', () => {
       os: { homedir: () => '/home/user' },
       path: path.posix,
       fsPromises: {
-        realpath: async (targetPath) => targetPath,
+        realpath: async (targetPath) => links[targetPath] ?? targetPath,
         stat: async (targetPath) => {
           if (!files.has(targetPath)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
           return { isFile: () => true, size: files.get(targetPath).length };
@@ -3725,6 +3726,27 @@ describe('fs html preview grants', () => {
 
     const secret = await serve(`/api/fs/preview/${grant}/home/user/.config/openchamber/guest-auth.json`);
     expect(secret.getHeader('access-control-allow-origin')).toBeUndefined();
+  });
+
+  it('refuses a symlink inside the grant that resolves outside the read root', async () => {
+    const { mint, serve } = register({ '/workspace/site/escape.html': '/secret/outside.txt' });
+    const { grant } = (await mint('/workspace/site/index.html')).body;
+
+    const escaped = await serve(`/api/fs/preview/${grant}/workspace/site/escape.html`);
+    expect(escaped.statusCode).toBe(403);
+
+    // In-root content still serves through the same grant.
+    const page = await serve(`/api/fs/preview/${grant}/workspace/site/index.html`);
+    expect(page.statusCode).toBe(200);
+  });
+
+  it('serves a symlink that resolves inside the read root', async () => {
+    const { mint, serve } = register({ '/workspace/site/alias.html': '/workspace/site/index.html' });
+    const { grant } = (await mint('/workspace/site/index.html')).body;
+
+    const aliased = await serve(`/api/fs/preview/${grant}/workspace/site/alias.html`);
+    expect(aliased.statusCode).toBe(200);
+    expect(aliased.getHeader('access-control-allow-origin')).toBe('null');
   });
 
   it('refuses unknown grants and files outside the workspace', async () => {
