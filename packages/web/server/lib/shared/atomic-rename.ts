@@ -51,16 +51,18 @@ export const renameSyncWithRetry = (renameSync: (from: string, to: string) => vo
 // (#2375). This helper commits the destination name with a primitive
 // that fails when the name is already taken at commit time, then removes
 // the source name: link(2) for a regular file (CreateHardLink on Windows
-// also refuses an existing destination) and symlink(2) for a symbolic
-// link, whose target is recreated at the destination. Two cases keep the
-// plain rename: a directory, which no such primitive can name (a hard
-// link cannot name a directory) and whose rename onto an existing file
-// or non-empty directory fails instead of replacing it; and a rename
-// whose destination is the source itself (a case-only rename), which
-// replaces a file with itself and destroys nothing. If removing the
-// source name fails after the destination is committed, the destination
-// is removed again when it still names what this call created, so a
-// failed commit leaves the source as the only name.
+// also refuses an existing destination), symlink(2) for a symbolic
+// link, whose target is recreated at the destination, and the native
+// no-replace directory rename (#2573: renameat2(RENAME_NOREPLACE) on
+// Linux, renamex_np(RENAME_EXCL) on macOS, MoveFile without
+// MOVEFILE_REPLACE_EXISTING on Windows) for a directory. Two cases keep
+// the plain rename: a rename whose destination is the source itself
+// (a case-only rename), which replaces a file with itself and destroys
+// nothing. If removing the source name fails after the destination is
+// committed, the destination is removed again when it still names what
+// this call created, so a failed commit leaves the source as the only
+// name. A directory rename without the native helper fails closed with
+// ENOSYS instead of falling back to check-then-rename.
 
 type NoReplaceRenameOps = {
   link: (from: string, to: string) => Promise<void>;
@@ -69,7 +71,15 @@ type NoReplaceRenameOps = {
   readlink: (target: string) => Promise<string>;
   symlink: (target: string, targetPath: string) => Promise<void>;
   lstat: (target: string) => Promise<{ dev: number; ino: number }>;
+  renameDirNoReplace?: (from: string, to: string) => Promise<void> | void;
 };
+
+const noReplaceDirUnavailable = (): Error & { code: string } => (
+  Object.assign(
+    new Error('atomic no-replace directory rename is unavailable on this platform'),
+    { code: 'ENOSYS' },
+  )
+);
 
 export const renameWithoutReplace = async (
   ops: NoReplaceRenameOps,
@@ -78,6 +88,11 @@ export const renameWithoutReplace = async (
   sourceKind: { isDirectory: boolean; isSymbolicLink: boolean; destinationIsSource: boolean },
 ): Promise<void> => {
   if (sourceKind.isDirectory || sourceKind.destinationIsSource) {
+    if (sourceKind.isDirectory && !sourceKind.destinationIsSource) {
+      if (!ops.renameDirNoReplace) throw noReplaceDirUnavailable();
+      await ops.renameDirNoReplace(source, destination);
+      return;
+    }
     await ops.rename(source, destination);
     return;
   }

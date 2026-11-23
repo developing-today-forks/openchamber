@@ -1251,7 +1251,7 @@ describe('fs rename', () => {
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
-  it('renames a directory with a plain rename (no hard-link primitive can name one)', async () => {
+  it('renames a directory with the native no-replace rename', async () => {
     const fsPromises = {
       lstat: vi.fn(async (targetPath) => {
         if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
@@ -1260,13 +1260,42 @@ describe('fs rename', () => {
       link: vi.fn(async () => undefined),
       unlink: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
+      renameDirNoReplace: vi.fn(async () => undefined),
     };
     const res = createMockResponse();
     await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
 
     expect(res.body).toEqual({ success: true, path: '/repo/dir-renamed' });
-    expect(fsPromises.rename).toHaveBeenCalledWith('/repo/dir', '/repo/dir-renamed');
+    expect(fsPromises.renameDirNoReplace).toHaveBeenCalledWith('/repo/dir', '/repo/dir-renamed');
+    expect(fsPromises.rename).not.toHaveBeenCalled();
     expect(fsPromises.link).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with 500 when the no-replace directory rename is unavailable', async () => {
+    const emptyPrebuilds = await mkdtemp(path.join(tmpdir(), 'oc-empty-prebuilds-'));
+    const previousOverride = process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
+    process.env.OPENCHAMBER_NOREPLACE_PREBUILDS = emptyPrebuilds;
+    try {
+      const fsPromises = {
+        lstat: vi.fn(async (targetPath) => {
+          if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
+          throw missing();
+        }),
+        link: vi.fn(async () => undefined),
+        unlink: vi.fn(async () => undefined),
+        rename: vi.fn(async () => undefined),
+      };
+      const res = createMockResponse();
+      await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toEqual({ error: 'Directory rename is not supported on this platform', reason: 'unsupported' });
+      expect(fsPromises.rename).not.toHaveBeenCalled();
+    } finally {
+      if (previousOverride === undefined) delete process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
+      else process.env.OPENCHAMBER_NOREPLACE_PREBUILDS = previousOverride;
+      await rm(emptyPrebuilds, { recursive: true, force: true });
+    }
   });
 });
 
@@ -3077,7 +3106,7 @@ describe('fs stat directory error handling', () => {
         fileURLToPath(new URL('../git/redaction.ts', import.meta.url)),
          fileURLToPath(new URL('../shared/object-guards.ts', import.meta.url)),
          fileURLToPath(new URL('../path-realpath-cache.ts', import.meta.url)),
-         ...['atomic-rename', 'traversal-budget', 'bounded-file-read'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
+         ...['atomic-rename', 'no-replace-dir', 'traversal-budget', 'bounded-file-read'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
       ], { cwd: directory, stdio: 'pipe' });
       await copyFile(new URL('../shared/guards.ts', import.meta.url), path.join(directory, 'shared/guards.js'));
       await copyFile(new URL('../shared/parse-int.js', import.meta.url), path.join(directory, 'shared/parse-int.js'));
@@ -4382,6 +4411,44 @@ describe('fs rename destination race (real fs)', () => {
     expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
     expect(await nativeFs.readFile(source, 'utf8')).toBe('source bytes');
     expect(await nativeFs.readFile(destination, 'utf8')).toBe('concurrent bytes');
+  });
+
+  it('preserves both directories and returns a conflict when the destination is created after the lookup', async () => {
+    const source = path.join(workspace, 'source-dir');
+    const destination = path.join(workspace, 'dest-dir');
+    await mkdir(source);
+    const sourceIdentity = await nativeFs.lstat(source);
+
+    let injected = false;
+    let destinationIdentity;
+    const racingFs = {
+      ...nativeFs,
+      lstat: async (targetPath, ...rest) => {
+        try {
+          return await nativeFs.lstat(targetPath, ...rest);
+        } catch (error) {
+          if (!injected && error.code === 'ENOENT' && targetPath === destination) {
+            injected = true;
+            await mkdir(destination);
+            destinationIdentity = await nativeFs.lstat(destination);
+          }
+          throw error;
+        }
+      },
+    };
+
+    const res = createMockResponse();
+    await registerRacing(workspace, racingFs)({ body: { oldPath: source, newPath: destination } }, res);
+
+    expect(injected).toBe(true);
+    expect.soft(res.statusCode).toBe(409);
+    expect.soft(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    const [sourceAfter, destinationAfter] = await Promise.all([
+      nativeFs.lstat(source).catch(() => null),
+      nativeFs.lstat(destination).catch(() => null),
+    ]);
+    expect.soft(sourceAfter && { dev: sourceAfter.dev, ino: sourceAfter.ino }).toEqual({ dev: sourceIdentity.dev, ino: sourceIdentity.ino });
+    expect.soft(destinationAfter && { dev: destinationAfter.dev, ino: destinationAfter.ino }).toEqual({ dev: destinationIdentity.dev, ino: destinationIdentity.ino });
   });
 
   it('moves a file to a free destination', async () => {
