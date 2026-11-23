@@ -3,7 +3,9 @@ name: workflow audit
 # The recurrence guard for #1399 (and #118 before it): a reusable-workflow
 # caller job carrying a key GitHub does not allow (timeout-minutes is the
 # classic case) invalidates the whole workflow file, and every run fails
-# at startup with zero jobs. This audit runs nightly and on manual dispatch;
+# at startup with zero jobs. It also fails caller jobs that under-grant the
+# permissions the called workflow declares (#2560; the #2554 canary shape).
+# This audit runs nightly and on manual dispatch;
 # it detects regressions but is not a PR check or a merge gate.
 
 # Read-only: scheduled runs check out main; manual runs check out the selected
@@ -23,5 +25,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Test the audit itself
         run: bash .github/scripts/test-audit-workflow-caller-jobs.sh
-      - name: Audit every workflow for invalid caller jobs
+      - name: Audit every workflow for invalid or under-granting caller jobs
         run: python3 .github/scripts/audit-workflow-caller-jobs.py .github/workflows
