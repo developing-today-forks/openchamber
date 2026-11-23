@@ -2321,9 +2321,20 @@ const WORKTREE_CREATE_COMMAND_FAILED = 'WORKTREE_CREATE_COMMAND_FAILED';
 
 const createCommandFailure = (message: string) => Object.assign(new Error(message), { code: WORKTREE_CREATE_COMMAND_FAILED });
 
+// A login shell's startup files can write terminal escape sequences
+// (window-title updates and the like) into a command's captured output.
+// Those sequences are not part of what the command said, so they are
+// stripped before the output becomes a user-facing failure message.
+const stripTerminalSequences = (value: string) =>
+  String(value || '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+
 const shownCommandFailure = (result: StartCommandResult, maxChars: number) => {
-  const message = String(result.message || '');
-  const output = `${result.stderr || ''}\n${result.stdout || ''}`.trim();
+  const message = stripTerminalSequences(String(result.message || '')).trim();
+  const output = `${stripTerminalSequences(String(result.stderr || ''))}\n${stripTerminalSequences(String(result.stdout || ''))}`.trim();
   const text = (message.startsWith('Command failed:') || !message) && output
     ? output
     : message || 'the command exited with an error';
