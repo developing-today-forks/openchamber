@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createOpenCodeLifecycleRuntime } from './lifecycle.js';
-import { readDrainingOpenCodeRecords } from './managed-opencode-state.js';
+import { currentRecordFromManagedStore, readManagedOpenCodeStore, resolveManagedOpenCodeStorePaths } from './managed-opencode-state.js';
 
 // Other test files mock node:child_process for the shared lifecycle module, so these must be the real functions.
 const { spawn: realSpawn, spawnSync: realSpawnSync } = createRequire(import.meta.url)('node:child_process');
@@ -118,7 +118,12 @@ const createFixture = async ({ busySessionIds = [] } = {}) => {
   return { root, binary, busy, handoffs, state, createRuntime, spawnedPids, cleanup };
 };
 
-const readState = (root) => JSON.parse(fs.readFileSync(path.join(root, 'managed-opencode', 'state.json'), 'utf8'));
+// The v2 store is the only state record since #2423: the current record is
+// derived from its newest starting-or-active generation, and draining
+// generations are the drain record.
+const readState = (root) => currentRecordFromManagedStore(readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(root).storePath));
+const readDraining = (root) => (readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(root).storePath)?.generations ?? [])
+  .filter((generation) => generation.state === 'draining');
 const portOf = (server) => Number(new URL(server.url).port);
 
 describe('OpenCode handoff with real children', () => {
@@ -159,7 +164,7 @@ describe('OpenCode handoff with real children', () => {
       expect(saved.port).not.toBe(oldPort);
       expect(fixture.handoffs.map((entry) => entry.url)).toEqual([`http://127.0.0.1:${oldPort}`]);
 
-      const draining = readDrainingOpenCodeRecords(path.join(fixture.root, 'managed-opencode', 'draining.json'));
+      const draining = readDraining(fixture.root);
       expect(draining.map((record) => record.pid)).toEqual([first.pid]);
       expect(alive(first.pid)).toBe(true);
 
@@ -173,7 +178,9 @@ describe('OpenCode handoff with real children', () => {
       fixture.busy.current = [];
       await waitFor(() => !alive(first.pid), 6000);
       await waitFor(() => oldStream.ended(), 3000);
-      expect(readDrainingOpenCodeRecords(path.join(fixture.root, 'managed-opencode', 'draining.json'))).toEqual([]);
+      // The generation closes as the drain release finishes closing the
+      // process, which lands just after the process itself is gone.
+      await waitFor(() => readDraining(fixture.root).length === 0, 3000);
       expect(alive(current.pid)).toBe(true);
     } finally {
       await fixture.cleanup(runtime, streams);

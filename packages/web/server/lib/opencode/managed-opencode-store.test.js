@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendGeneration,
   createEmptyManagedOpenCodeStore,
+  currentRecordFromManagedStore,
   MANAGED_OPENCODE_STORE_VERSION,
   migrateV1StoreToV2,
   readManagedOpenCodeStore,
@@ -14,10 +15,21 @@ import {
   replayHandoffStep,
   resolveManagedOpenCodeStorePaths,
   transitionGenerationState,
-  writeDrainingOpenCodeRecords,
-  writeManagedOpenCodeState,
   writeManagedOpenCodeStore,
 } from './managed-opencode-state.js';
+
+// The v1 pair is migration input only since #2423: nothing writes it any
+// more, so fixtures write the on-disk v1 JSON directly, exactly as a
+// pre-store installation left it.
+const writeV1StateFile = (state) => {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, `${JSON.stringify({ version: 1, ...state }, null, 2)}\n`, { mode: 0o600 });
+};
+
+const writeV1DrainingFile = (records) => {
+  fs.mkdirSync(path.dirname(drainingPath), { recursive: true });
+  fs.writeFileSync(drainingPath, `${JSON.stringify({ version: 1, draining: records }, null, 2)}\n`, { mode: 0o600 });
+};
 
 let root;
 let storePath;
@@ -119,6 +131,87 @@ describe('generations', () => {
     expect(() => transitionGenerationState(store, 1, 'active')).toThrow();
     expect(() => transitionGenerationState(store, 999, 'closed')).toThrow();
   });
+
+  it('accepts the launch credential and instance fields a spawn records', () => {
+    const store = appendGeneration(createEmptyManagedOpenCodeStore(), generation({
+      password: 'secret-password',
+      agent_tool_token: 'token-value',
+      instance_dir: '/data/instances/instance-a',
+    }));
+
+    expect(store.generations[0]).toMatchObject({
+      password: 'secret-password',
+      agent_tool_token: 'token-value',
+      instance_dir: '/data/instances/instance-a',
+    });
+    expect(() => appendGeneration(createEmptyManagedOpenCodeStore(), generation({ password: '' }))).toThrow();
+    expect(() => appendGeneration(createEmptyManagedOpenCodeStore(), generation({ agent_tool_token: 7 }))).toThrow();
+  });
+
+  it('scrubs launch credentials when a generation closes, keeping the rest of its history', () => {
+    let store = appendGeneration(createEmptyManagedOpenCodeStore(), generation({
+      password: 'secret-password',
+      agent_tool_token: 'token-value',
+      instance_dir: '/data/instances/instance-a',
+    }));
+    store = transitionGenerationState(store, 1, 'closed', '2026-02-01T00:00:00.000Z');
+
+    expect(store.generations[0].password).toBeNull();
+    expect(store.generations[0].agent_tool_token).toBeNull();
+    expect(store.generations[0].instance_dir).toBe('/data/instances/instance-a');
+    // The scrubbed document still validates on read-back.
+    writeManagedOpenCodeStore(storePath, store);
+    expect(readManagedOpenCodeStore(storePath)?.generations[0].state).toBe('closed');
+  });
+});
+
+describe('current record derivation', () => {
+  it('returns null when the store names no current generation', () => {
+    expect(currentRecordFromManagedStore(createEmptyManagedOpenCodeStore())).toBeNull();
+    expect(currentRecordFromManagedStore(null)).toBeNull();
+
+    let store = appendGeneration(createEmptyManagedOpenCodeStore(), generation());
+    store = transitionGenerationState(store, 1, 'closed');
+    expect(currentRecordFromManagedStore(store)).toBeNull();
+
+    // A draining predecessor is never the current record: it is being
+    // retired, and the record state.json carried was always the current
+    // server's.
+    let drainingOnly = appendGeneration(createEmptyManagedOpenCodeStore(), generation({ state: 'draining' }));
+    expect(currentRecordFromManagedStore(drainingOnly)).toBeNull();
+  });
+
+  it('derives the record from the newest starting-or-active generation', () => {
+    let store = appendGeneration(createEmptyManagedOpenCodeStore(), generation({
+      password: 'secret-password',
+      agent_tool_token: null,
+      instance_dir: '/data/instances/instance-a',
+    }));
+    store = appendGeneration(store, generation({ pid: 4243, state: 'starting', started_at: '2026-01-02T00:00:00.000Z' }));
+    store = transitionGenerationState(store, 1, 'draining');
+
+    // The handoff successor (newest, still starting) supersedes the draining
+    // predecessor, and fields a generation never recorded read back as null.
+    expect(currentRecordFromManagedStore(store)).toEqual({
+      pid: 4243,
+      port: 45678,
+      binary: '/usr/bin/opencode',
+      args: ['serve', '--hostname', '127.0.0.1'],
+      fingerprint: 'abc123',
+      password: null,
+      agentToolToken: null,
+      instanceDir: null,
+      startedAt: '2026-01-02T00:00:00.000Z',
+    });
+  });
+
+  it('falls back to an earlier live generation when the newest is closed', () => {
+    let store = appendGeneration(createEmptyManagedOpenCodeStore(), generation());
+    store = appendGeneration(store, generation({ pid: 4243, state: 'starting' }));
+    store = transitionGenerationState(store, 2, 'closed');
+
+    expect(currentRecordFromManagedStore(store)?.pid).toBe(4242);
+  });
 });
 
 describe('write-ahead handoff record', () => {
@@ -183,8 +276,8 @@ describe('v1 migration', () => {
   };
 
   it('imports every v1 generation with states preserved and loses none', () => {
-    writeManagedOpenCodeState(statePath, v1State);
-    writeDrainingOpenCodeRecords(drainingPath, [
+    writeV1StateFile(v1State);
+    writeV1DrainingFile([
       { pid: 7001, port: 45001, binary: '/usr/bin/opencode', drainStartedAt: 1700000000000 },
       { pid: 7002, port: 45002, binary: '/usr/bin/opencode', drainStartedAt: 1700000000001 },
     ]);
@@ -198,12 +291,32 @@ describe('v1 migration', () => {
   });
 
   it('migrates a v1 install with no draining processes to one active generation', () => {
-    writeManagedOpenCodeState(statePath, v1State);
+    writeV1StateFile(v1State);
 
     const migrated = migrateV1StoreToV2({ statePath, drainingPath });
 
     expect(migrated.generations).toHaveLength(1);
     expect(migrated.generations[0]).toMatchObject({ pid: 4242, state: 'active' });
+  });
+
+  it('carries the v1 record launch credentials and instance folder into the generation', () => {
+    writeV1StateFile({ ...v1State, agentToolToken: 'token-value', instanceDir: '/data/instances/instance-a' });
+
+    const migrated = migrateV1StoreToV2({ statePath, drainingPath });
+
+    expect(migrated.generations[0]).toMatchObject({
+      password: 'secret-password',
+      agent_tool_token: 'token-value',
+      instance_dir: '/data/instances/instance-a',
+    });
+    // And the derived current record hands them back in the lifecycle shape,
+    // so a migrated installation adopts with the values the v1 pair held.
+    expect(currentRecordFromManagedStore(migrated)).toMatchObject({
+      pid: 4242,
+      password: 'secret-password',
+      agentToolToken: 'token-value',
+      instanceDir: '/data/instances/instance-a',
+    });
   });
 
   it('migrates an empty v1 install to an empty store and leaves v1 files untouched', () => {
@@ -214,12 +327,13 @@ describe('v1 migration', () => {
     expect(fs.existsSync(drainingPath)).toBe(false);
   });
 
-  it('leaves the v1 files in place for the one-release fallback', () => {
-    writeManagedOpenCodeState(statePath, v1State);
+  it('leaves the v1 files in place, untouched, after migrating', () => {
+    writeV1StateFile(v1State);
+    const before = fs.readFileSync(statePath, 'utf8');
 
     migrateV1StoreToV2({ statePath, drainingPath });
 
-    expect(fs.existsSync(statePath)).toBe(true);
+    expect(fs.readFileSync(statePath, 'utf8')).toBe(before);
     expect(fs.existsSync(drainingPath)).toBe(false);
   });
 });

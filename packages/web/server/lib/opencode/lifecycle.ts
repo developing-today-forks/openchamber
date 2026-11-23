@@ -9,16 +9,14 @@ import { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses
 import { parseBoundedIntWithDefault, parsePositiveIntWithDefault } from '../shared/parse-int.js';
 import {
   appendGeneration,
-  clearManagedOpenCodeState,
   createEmptyManagedOpenCodeStore,
   createLaunchFingerprint,
+  currentRecordFromManagedStore,
   decideManagedOpenCodeLaunch,
   hashLaunchSecret,
   migrateV1StoreToV2,
-  readDrainingOpenCodeRecords,
   readLogSince,
   readLogTail,
-  readManagedOpenCodeState,
   readManagedOpenCodeStore,
   recordHandoffStep,
   reapManagedOpenCodeStore,
@@ -26,8 +24,6 @@ import {
   rotateManagedLogIfOversized,
   sameOpenCodeArgs,
   transitionGenerationState,
-  writeDrainingOpenCodeRecords,
-  writeManagedOpenCodeState,
   writeManagedOpenCodeStore,
 } from './managed-opencode-state.js';
 import { createDrainingOpenCodeRegistry, resolveOpenCodeDrainGraceMs } from './draining-opencode.js';
@@ -232,7 +228,7 @@ export interface OpenCodeLifecycleDependencies {
   onOpenCodeHandoff?: ((upstream: { url: string; headers: Record<string, string> }) => (() => void) | null | undefined) | null;
 }
 
-/** A managed OpenCode as state.json / draining.json record it (managed-opencode-state.js). */
+/** A managed OpenCode as the v2 store records it (managed-opencode-state.js). */
 interface ManagedOpenCodeRecord {
   pid: number;
   port: number;
@@ -447,7 +443,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     getInstanceDir = () => null,
     // Whose OpenCode a recorded pid is (managed-process-registry.js), and the
     // server handing off to this one, if any. Two OpenChamber servers on one
-    // data dir share state.json and draining.json; without this each took the
+    // data dir share the managed store; without this each took the
     // other's OpenCode for its own and retired it.
     readProcessOwner = readManagedProcessOwner,
     claimProcess = claimManagedProcess,
@@ -700,25 +696,22 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     }
   };
 
-  // The record this server last wrote. state.json is shared by every server on
-  // the data dir and another one can overwrite it, so this server's own reload
-  // and restart decisions start from this copy when the file names someone else's.
+  // The record this server last wrote. The store is shared by every server on
+  // the data dir and another one can append generations to it, so this server's
+  // own reload and restart decisions start from this copy when the store's
+  // newest live generation names someone else's OpenCode.
   let ownRecord: ManagedOpenCodeRecord | null = null;
   const writeOwnState = (record: ManagedOpenCodeRecord) => {
     ownRecord = record;
-    writeManagedOpenCodeState(managedPaths.statePath, record);
     recordGenerationStart(record);
   };
   const clearOwnState = () => {
     if (ownRecord?.pid) closeGenerationForPid(ownRecord.pid);
     ownRecord = null;
-    clearManagedOpenCodeState(managedPaths.statePath);
   };
 
   const clearManagedStateIfOwned = (pid: number) => {
     if (ownRecord?.pid === pid) ownRecord = null;
-    const saved = readManagedOpenCodeState(managedPaths.statePath);
-    if (saved?.pid === pid) clearManagedOpenCodeState(managedPaths.statePath);
     closeGenerationForPid(pid);
   };
 
@@ -731,16 +724,16 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     }
   };
 
-  // ---- v2 store wiring (#82) ----
-  // The v2 store (managed-opencode-state.js) is the ownership record for
-  // action paths. It is dual-written with the v1 pair for one release:
-  // state.json + draining.json keep their exact v1 behaviour for the
-  // other servers sharing this data dir, while the store accumulates
-  // the generation history, the write-ahead handoff record and the
-  // reaper's view. First read bootstraps the store by migrating the
-  // v1 pair (no lost generations); every load reaps generations whose
-  // recorded pid is gone (store-only reaper: signal-0 liveness, never
-  // `ps` inference). Store sync failures never break the v1 flow.
+  // ---- v2 store wiring (#82, #2423) ----
+  // The v2 store (managed-opencode-state.js) is the sole ownership and
+  // drain record: it holds the generation history, the write-ahead
+  // handoff record and the reaper's view. The v1 state.json +
+  // draining.json pair is retired — nothing writes it and no action,
+  // adoption or recovery path reads it. First read of a data dir whose
+  // store has not been bootstrapped yet migrates the v1 pair (no lost
+  // generations); that migration is the pair's only remaining reader.
+  // Every load reaps generations whose recorded pid is gone (store-only
+  // reaper: signal-0 liveness, never `ps` inference).
   const syncStore = (fn: () => void) => {
     try {
       fn();
@@ -751,12 +744,12 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   const loadManagedStore = (): ManagedStore => {
     let store = readManagedOpenCodeStore(managedPaths.storePath);
     if (!store) {
-      const hasV1 = readManagedOpenCodeState(managedPaths.statePath) !== null
-        || readDrainingOpenCodeRecords(managedPaths.drainingPath).length > 0;
-      store = hasV1
-        ? migrateV1StoreToV2({ statePath: managedPaths.statePath, drainingPath: managedPaths.drainingPath })
-        : createEmptyManagedOpenCodeStore();
-      if (hasV1) writeManagedOpenCodeStore(managedPaths.storePath, store);
+      // No store yet: import the v1 pair if an older installation left one
+      // (the migration is the pair's only remaining reader). An empty
+      // migration means a fresh data dir, and nothing is written.
+      store = migrateV1StoreToV2({ statePath: managedPaths.statePath, drainingPath: managedPaths.drainingPath });
+      if (store.generations.length === 0) store = createEmptyManagedOpenCodeStore();
+      else writeManagedOpenCodeStore(managedPaths.storePath, store);
     }
     const { store: reapedStore, reaped } = reapManagedOpenCodeStore(store, { isPidAlive });
     if (reaped.length > 0) writeManagedOpenCodeStore(managedPaths.storePath, reapedStore);
@@ -775,6 +768,9 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       fingerprint: record.fingerprint ?? '',
       state,
       started_at: record.startedAt ?? new Date().toISOString(),
+      password: record.password ?? null,
+      agent_tool_token: record.agentToolToken ?? null,
+      instance_dir: record.instanceDir ?? null,
     });
     return { store: next, generation: generationForPid(next, record.pid) };
   };
@@ -829,28 +825,18 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   });
   syncStore(() => loadManagedStore());
 
-  // Ownership for action paths comes from the records (#82): a pid is
-  // ours only when a non-closed store generation names it, or the v1
-  // pair does (a record a v1-only peer wrote after this store was
-  // bootstrapped). The record is then verified. A store generation is
-  // its own identity — binary, fingerprint and started_at were
-  // recorded at spawn — so signal-0 liveness verifies it and `ps` is
-  // never consulted on the store path. A v1-only record carries no
-  // such identity, so until the v1 pair retires it keeps the legacy
-  // command-line verification: a recycled pid must never be adopted
-  // or signalled on a bare number.
-  const isOwnedOpenCodePid = (pid: number, binary: string | null | undefined) => {
+  // Ownership for action paths comes from the store (#82, #2423): a pid
+  // is ours only when a non-closed store generation names it. A store
+  // generation is its own identity — binary, fingerprint and started_at
+  // were recorded at spawn — so signal-0 liveness verifies it and `ps`
+  // is never consulted: a recycled pid must never be adopted or
+  // signalled on a bare number, and no v1 record can establish ownership
+  // now that the pair is retired.
+  const isOwnedOpenCodePid = (pid: number) => {
     if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 0) return false;
     const store = readManagedOpenCodeStore(managedPaths.storePath);
     const inStore = store?.generations.some((generation: ManagedStoreGeneration) => generation.pid === pid && generation.state !== 'closed') ?? false;
-    if (inStore && isPidAlive(pid)) return true;
-    const recorded = inStore
-      || readManagedOpenCodeState(managedPaths.statePath)?.pid === pid
-      || readDrainingOpenCodeRecords(managedPaths.drainingPath).some((record: ManagedOpenCodeRecord) => record.pid === pid);
-    if (!recorded) return false;
-    const result = spawnSyncProcess('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 3000, windowsHide: true });
-    const command = String(result?.stdout ?? '').trim();
-    return command.includes(path.basename(String(binary))) && /\bserve\b/.test(command);
+    return inStore && isPidAlive(pid);
   };
 
   // Identity check for the managed-servers read: a recorded pid can be
@@ -933,20 +919,21 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     userEnv: withoutSecretEnv(getUserEnvironment()),
   });
 
-  const closeRecordedOpenCodeProcess = async ({ pid, binary }: { pid: number; binary: string | null | undefined }) => {
-    if (isOwnedOpenCodePid(pid, binary)) await terminateRecordedOpenCodeProcess(pid);
+  const closeRecordedOpenCodeProcess = async ({ pid }: { pid: number }) => {
+    if (isOwnedOpenCodePid(pid)) await terminateRecordedOpenCodeProcess(pid);
     if (!isPidAlive(pid)) await unregisterManagedProcess(pid);
     closeGenerationForPid(pid);
   };
 
-  // draining.json is shared by every server on the data dir; a write keeps the
-  // records another live server still owns, or their draining children would
-  // lose that protection the next time this server's list changes.
+  // The store is the drain record shared by every server on the data dir;
+  // the generations another live server still owns stay untouched, or their
+  // draining children would lose that protection the next time this server's
+  // list changes.
   const persistDrainingOpenCode = (records: ManagedOpenCodeRecord[]) => {
     const mine = new Set(records.map((record) => record.pid));
-    const theirs = readDrainingOpenCodeRecords(managedPaths.drainingPath)
-      .filter((record: ManagedOpenCodeRecord) => !mine.has(record.pid) && Number.isInteger(otherServerOwning(record.pid)));
-    writeDrainingOpenCodeRecords(managedPaths.drainingPath, [...records, ...theirs]);
+    const theirs = (readManagedOpenCodeStore(managedPaths.storePath)?.generations ?? [])
+      .filter((generation: ManagedStoreGeneration) => generation.state === 'draining' && !mine.has(generation.pid) && Number.isInteger(otherServerOwning(generation.pid)))
+      .map((generation: ManagedStoreGeneration) => ({ pid: generation.pid, port: generation.port, binary: generation.binary }));
     syncStore(() => {
       let store = loadManagedStore();
       for (const record of [...records, ...theirs]) {
@@ -1002,7 +989,6 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
 
   const seedDrainingOpenCode = () => {
     const recordsByPid = new Map<number, ManagedOpenCodeRecord>();
-    for (const record of readDrainingOpenCodeRecords(managedPaths.drainingPath)) recordsByPid.set(record.pid, record);
     const store = readManagedOpenCodeStore(managedPaths.storePath);
     for (const generation of store?.generations ?? []) {
       if (generation.state === 'draining' && !recordsByPid.has(generation.pid)) {
@@ -1010,7 +996,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       }
     }
     for (const record of recordsByPid.values()) {
-      if (drainingOpenCode.has(record.pid) || !isOwnedOpenCodePid(record.pid, record.binary) || otherServerOwning(record.pid) !== null) continue;
+      if (drainingOpenCode.has(record.pid) || !isOwnedOpenCodePid(record.pid) || otherServerOwning(record.pid) !== null) continue;
       drainingOpenCode.add({
         ...record,
         close: () => closeRecordedOpenCodeProcess(record),
@@ -1048,7 +1034,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       );
     },
     async close() {
-      if (isOwnedOpenCodePid(saved.pid, saved.binary)) await terminateRecordedOpenCodeProcess(saved.pid);
+      if (isOwnedOpenCodePid(saved.pid)) await terminateRecordedOpenCodeProcess(saved.pid);
       if (!isPidAlive(saved.pid)) {
         await unregisterManagedProcess(saved.pid);
         clearManagedStateIfOwned(saved.pid);
@@ -1468,9 +1454,9 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     let phaseStartedAt = attemptStartedAt;
     recordStartupPerformanceEvent('opencode.attempt.start', { attempt });
     const desiredPort = env.ENV_CONFIGURED_OPENCODE_PORT ?? 0;
-    const recordedState = readManagedOpenCodeState(managedPaths.statePath);
+    const recordedState = currentRecordFromManagedStore(loadManagedStore());
     const recordedOwner = recordedState ? otherServerOwning(recordedState.pid) : null;
-    if (recordedOwner !== null) {
+    if (recordedState && recordedOwner !== null) {
       console.log(recordedOwner === 'unknown'
         ? `[OpenCode] managed state names OpenCode ${recordedState.pid}, whose owner the registry does not record; leaving it alone`
         : `[OpenCode] managed state names OpenCode ${recordedState.pid} of another OpenChamber server (pid ${recordedOwner}); leaving it alone`);
@@ -1479,8 +1465,9 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
         throw new Error(`OpenCode port ${desiredPort} is held by another OpenChamber server (pid ${recordedOwner}) using the same data folder. Give one of them a different OPENCODE_PORT, or its own OPENCHAMBER_DATA_DIR.`);
       }
     }
-    // When the shared file names another server's OpenCode, this server's own
-    // still-running one (from its own last write) is the one it manages.
+    // When the store's current record names another server's OpenCode, this
+    // server's own still-running one (from its own last write) is the one it
+    // manages.
     const ownAlive = ownRecord && isPidAlive(ownRecord.pid) ? ownRecord : null;
     const savedState = recordedOwner === null ? recordedState : ownAlive;
     seedDrainingOpenCode();
@@ -1570,8 +1557,8 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       const hostname = env.ENV_CONFIGURED_OPENCODE_HOSTNAME;
       const cwd = state.openCodeWorkingDirectory;
       let launchFingerprint = computeLaunchFingerprint({ binary: binaryIdentity, hostname, port: spawnPort, cwd, password: openCodePassword, managedEnv: managedOpenCodeEnv });
-      const ownsSavedPid = savedState ? isOwnedOpenCodePid(savedState.pid, savedState.binary) : false;
-      const healthy = ownsSavedPid ? await probeManagedOpenCodeHealth(`http://${formatHost(hostname)}:${savedState.port}`) : false;
+      const ownsSavedPid = savedState ? isOwnedOpenCodePid(savedState.pid) : false;
+      const healthy = ownsSavedPid && savedState ? await probeManagedOpenCodeHealth(`http://${formatHost(hostname)}:${savedState.port}`) : false;
       const args = managedOpenCodeArgs(hostname);
       let decision = savedState
         ? decideManagedOpenCodeLaunch({ state: savedState, ownsPid: ownsSavedPid, binary: binaryIdentity, args, fingerprint: launchFingerprint, port: spawnPort, healthy })
@@ -1581,11 +1568,11 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       }
       console.log(`[OpenCode] managed launch: ${decision.action} (${decision.reason})`);
 
-      if (decision.action === 'adopt') {
+      if (decision.action === 'adopt' && savedState) {
         serverInstance = adoptManagedOpenCodeServer(savedState, hostname);
         ownRecord = savedState;
         await registerAsOwner(savedState);
-      } else if (decision.action === 'handoff') {
+      } else if (decision.action === 'handoff' && savedState) {
         if (spawnPort === savedState.port) {
           spawnPort = await resolveManagedOpenCodePort(0, hostname);
         }
@@ -1757,7 +1744,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // interrupts running sessions for them.
   const reloadOpenCode = async () => {
     if (state.isShuttingDown || state.isExternalOpenCode || !state.openCodeProcess) return false;
-    const recorded = readManagedOpenCodeState(managedPaths.statePath);
+    const recorded = currentRecordFromManagedStore(loadManagedStore());
     const saved = recorded?.pid === state.openCodeProcess.pid ? recorded : ownRecord?.pid === state.openCodeProcess.pid ? ownRecord : null;
     if (!saved) return false;
     await applyOpencodeBinaryFromSettings({ strict: false });
@@ -2111,7 +2098,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // writes no state and signals nothing; the inputs are the same ones the real start
   // computes (recorded state, binary identity, launch fingerprint, ownership, health).
   const previewManagedOpenCodeLaunch = async ({ listenerPort = null }: { listenerPort?: number | null } = {}) => {
-    const recordedState = readManagedOpenCodeState(managedPaths.statePath);
+    const recordedState = currentRecordFromManagedStore(readManagedOpenCodeStore(managedPaths.storePath));
     if (!recordedState) return { decision: { action: 'adopt', reason: 'no-managed-state' }, openCodeVersion: null };
     if (otherServerOwning(recordedState.pid) !== null) {
       return { decision: { action: 'start', reason: 'unverified-owner' }, openCodeVersion: null };
@@ -2141,7 +2128,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       password: openCodePassword,
       managedEnv,
     });
-    const ownsPid = isOwnedOpenCodePid(recordedState.pid, recordedState.binary);
+    const ownsPid = isOwnedOpenCodePid(recordedState.pid);
     const healthy = ownsPid ? await probeManagedOpenCodeHealth(`http://${formatHost(hostname)}:${recordedState.port}`) : false;
     const decision = decideManagedOpenCodeLaunch({
       state: recordedState,
@@ -2163,7 +2150,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // successor as owner. After the predecessor kills it, both records name the predecessor
   // again. Idempotent, and it leaves an OpenCode another live server owns alone.
   const reclaimManagedOpenCodeOwnership = async ({ successorPid }: { successorPid: number | null }) => {
-    const record = readManagedOpenCodeState(managedPaths.statePath);
+    const record = currentRecordFromManagedStore(readManagedOpenCodeStore(managedPaths.storePath));
     if (!record) return false;
     const owner = readProcessOwner(record.pid);
     if (owner !== null && Number.isInteger(owner) && owner !== process.pid && owner !== successorPid && isPidAlive(owner)) return false;
@@ -2195,10 +2182,10 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     try {
       try {
         const orphanReapStartedAt = performance.now();
-        const keepPids = [
-          readManagedOpenCodeState(managedPaths.statePath)?.pid,
-          ...readDrainingOpenCodeRecords(managedPaths.drainingPath).map((record: ManagedOpenCodeRecord) => record.pid),
-        ].filter((pid): pid is number => Number.isInteger(pid));
+        const keepPids = loadManagedStore().generations
+          .filter((generation: ManagedStoreGeneration) => generation.state !== 'closed')
+          .map((generation: ManagedStoreGeneration) => generation.pid)
+          .filter((pid): pid is number => Number.isInteger(pid));
         const { reaped } = await reapManagedOrphanedProcesses({ log: (msg: string) => console.log(msg), keepPids });
         recordStartupPerformanceEvent('opencode.orphan-reap.ready', {
           durationMs: performance.now() - orphanReapStartedAt,
@@ -2584,14 +2571,16 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // The managed-servers read (design #612 phase 2, #525): registry entries
   // from the validated readers, this instance's own server completed from
   // lifecycle state, and the session runtime's live count. The projection
-  // in managed-servers.js is the allowlist; state.json fields beyond the
+  // in managed-servers.js is the allowlist; store fields beyond the
   // own pid/port/startedAt never leave this runtime.
   const getManagedServersSnapshot = async () => {
     // A failed registry read propagates: the route answers 500 rather than
     // presenting an unavailable registry as an empty server list.
     const registryEntries = await readRegistryEntries();
     const drainingRecords = [
-      ...readDrainingOpenCodeRecords(managedPaths.drainingPath),
+      ...(readManagedOpenCodeStore(managedPaths.storePath)?.generations ?? [])
+        .filter((generation: ManagedStoreGeneration) => generation.state === 'draining')
+        .map((generation: ManagedStoreGeneration) => ({ pid: generation.pid, port: generation.port, binary: generation.binary })),
       ...drainingOpenCode.snapshot(),
     ];
     // Adopt the live state as the ready own server when no ready transition

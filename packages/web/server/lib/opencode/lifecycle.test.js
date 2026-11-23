@@ -26,6 +26,14 @@ const {
   resolveHealthCheckTimeoutMs,
 } = await import('./lifecycle.js');
 const { createServerDiagnosticJournal } = await import('../diagnostics/server-journal.js');
+const {
+  appendGeneration,
+  createEmptyManagedOpenCodeStore,
+  currentRecordFromManagedStore,
+  readManagedOpenCodeStore,
+  resolveManagedOpenCodeStorePaths,
+  writeManagedOpenCodeStore,
+} = await import('./managed-opencode-state.js');
 
 describe('getBoundedTextTail', () => {
   it('returns the value whole when it fits', () => {
@@ -1989,12 +1997,27 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
   // Never a live pid, so a replace path cannot signal an unrelated process.
   const DEAD_PID = 2147483646;
 
-  const startFirstRuntime = async () => {
+  // The v2 store is the only state record since #2423: a previous server is
+  // simulated by the store its runtime wrote, and ownership of a recorded
+  // pid is signal-0 liveness against that store — so a scenario that needs
+  // the recorded OpenCode alive passes a live pid (the test runner's own)
+  // for the first runtime's child instead of the dead one.
+  const readStore = (dataDir) => readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(dataDir).storePath);
+  const readCurrent = (dataDir) => currentRecordFromManagedStore(readStore(dataDir));
+  const drainingPids = (dataDir) => (readStore(dataDir)?.generations ?? [])
+    .filter((generation) => generation.state === 'draining')
+    .map((generation) => generation.pid);
+  const appendStoreGeneration = (dataDir, generation) => {
+    const storePath = resolveManagedOpenCodeStorePaths(dataDir).storePath;
+    writeManagedOpenCodeStore(storePath, appendGeneration(readManagedOpenCodeStore(storePath) ?? createEmptyManagedOpenCodeStore(), generation));
+  };
+
+  const startFirstRuntime = async (childPid = DEAD_PID) => {
     const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-adopt-test-'));
     tempDataDirs.push(dataDir);
     spawnMock.mockImplementationOnce(() => {
       const child = createMockChild();
-      child.pid = DEAD_PID;
+      child.pid = childPid;
       queueMicrotask(() => child.stdout.emit('data', READY_LINE));
       return child;
     });
@@ -2006,7 +2029,7 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
 
   it('adopts a healthy OpenCode whose recorded pid, port and launch config match', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir, server: firstServer } = await startFirstRuntime();
+    const { dataDir, server: firstServer } = await startFirstRuntime(process.pid);
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
 
     const second = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode') });
@@ -2019,12 +2042,15 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
 
   it('hands off from the recorded OpenCode when its binary changed and keeps it draining', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
-    const recorded = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'state.json'), 'utf8'));
+    const { dataDir } = await startFirstRuntime(process.pid);
+    const recorded = readCurrent(dataDir);
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     globalThis.fetch = vi.fn(async () => Response.json({}));
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
+      // A live pid, so the successor's generation survives the store reaper
+      // when the assertions read the store back.
+      child.pid = process.ppid;
       // Like OpenCode, the line names the port the child was started on.
       queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
       return child;
@@ -2036,21 +2062,21 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const { binary } = unwrapLaunch(spawnMock.mock.calls[0][0], spawnMock.mock.calls[0][1]);
     expect(binary).toBe('/opt/other/opencode');
-    const draining = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'draining.json'), 'utf8'));
-    expect(draining.draining).toEqual([expect.objectContaining({ pid: recorded.pid, port: recorded.port, binary: recorded.binary })]);
-    const current = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'state.json'), 'utf8'));
+    const draining = (readStore(dataDir)?.generations ?? []).filter((generation) => generation.state === 'draining');
+    expect(draining).toEqual([expect.objectContaining({ pid: recorded.pid, port: recorded.port, binary: recorded.binary })]);
+    const current = readCurrent(dataDir);
     expect(current.port).not.toBe(recorded.port);
     expect(current.binary).toBe('/opt/other/opencode');
   });
 
   // Two OpenChamber servers on one data dir (the desktop app and `openchamber
-  // serve`) share state.json and draining.json. The recorded OpenCode may be
+  // serve`) share the managed store. The recorded OpenCode may be
   // the other server's; it must never be adopted, handed off from or drained.
   // The test runner's parent stands in for that other server: alive, not us.
   it('leaves an OpenCode that another live server owns alone and starts its own', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
-    const recorded = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'state.json'), 'utf8'));
+    const { dataDir } = await startFirstRuntime(process.pid);
+    const recorded = readCurrent(dataDir);
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
@@ -2059,22 +2085,22 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
       return child;
     });
 
+    // Unpinned: the pinned-port refusal is the separate scenario below; this
+    // one is about the other server's process being left alone.
     const second = createRuntime({
       dataDir,
       ensureOpencodeCliEnv: vi.fn(() => '/opt/other/opencode'),
       readProcessOwner: () => process.ppid,
-    });
+    }, {}, { ENV_CONFIGURED_OPENCODE_PORT: 0 });
     await second.startOpenCode();
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    const drainingPath = path.join(dataDir, 'managed-opencode', 'draining.json');
-    const draining = fsSync.existsSync(drainingPath) ? JSON.parse(fsSync.readFileSync(drainingPath, 'utf8')).draining : [];
-    expect(draining.map((record) => record.pid)).not.toContain(recorded.pid);
+    expect(drainingPids(dataDir)).not.toContain(recorded.pid);
   });
 
   it('adopts the OpenCode of the server handing off to it, and records itself as the owner', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir, server: firstServer } = await startFirstRuntime();
+    const { dataDir, server: firstServer } = await startFirstRuntime(process.pid);
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     // The registry names the predecessor as the owner, as it would after it spawned this OpenCode.
     const entryPath = path.join(process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY, `${firstServer.pid}.json`);
@@ -2095,8 +2121,8 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
 
   it('leaves an OpenCode whose owner the registry does not record alone', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
-    const recorded = JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'state.json'), 'utf8'));
+    const { dataDir } = await startFirstRuntime(process.pid);
+    const recorded = readCurrent(dataDir);
     fsSync.rmSync(path.join(process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY, `${recorded.pid}.json`), { force: true });
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     spawnMock.mockImplementationOnce((command, args) => {
@@ -2108,34 +2134,57 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     await createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => '/opt/other/opencode') }).startOpenCode();
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
-    const drainingPath = path.join(dataDir, 'managed-opencode', 'draining.json');
-    const draining = fsSync.existsSync(drainingPath) ? JSON.parse(fsSync.readFileSync(drainingPath, 'utf8')).draining : [];
-    expect(draining.map((record) => record.pid)).not.toContain(recorded.pid);
+    expect(drainingPids(dataDir)).not.toContain(recorded.pid);
   });
 
   it('says another server holds a pinned port instead of failing to bind', async () => {
     delete process.env.OPENCODE_BINARY;
     const { dataDir } = await startFirstRuntime();
-    // A live recorded process on the pinned port, owned by another live server.
-    const statePath = path.join(dataDir, 'managed-opencode', 'state.json');
-    fsSync.writeFileSync(statePath, JSON.stringify({ ...JSON.parse(fsSync.readFileSync(statePath, 'utf8')), pid: process.ppid }));
+    // A live recorded process on the pinned port, owned by another live server:
+    // the store's current generation names the other server's OpenCode, as its
+    // own spawn would have recorded it.
+    const storePath = resolveManagedOpenCodeStorePaths(dataDir).storePath;
+    writeManagedOpenCodeStore(storePath, appendGeneration(createEmptyManagedOpenCodeStore(), {
+      pid: process.ppid,
+      port: 45678,
+      binary: 'opencode',
+      args: ['serve', '--hostname', '127.0.0.1'],
+      fingerprint: 'abc123',
+      state: 'active',
+      started_at: new Date().toISOString(),
+      password: 'fixture-password',
+      agent_tool_token: null,
+      instance_dir: null,
+    }));
 
     const second = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode'), readProcessOwner: () => process.ppid });
     await expect(second.startOpenCode()).rejects.toThrow(/port 45678 is held by another OpenChamber server/);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it('reloads its own OpenCode when another server has overwritten state.json', async () => {
+  it('reloads its own OpenCode when another server has taken over the store', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
+    const { dataDir } = await startFirstRuntime(process.pid);
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     const ensureOpencodeCliEnv = vi.fn(() => 'opencode');
     const runtime = createRuntime({ dataDir, ensureOpencodeCliEnv });
     // The server keeps the started process in state, as restartOpenCode does.
     runtime.testState.openCodeProcess = await runtime.startOpenCode();
-    const statePath = path.join(dataDir, 'managed-opencode', 'state.json');
-    const mine = JSON.parse(fsSync.readFileSync(statePath, 'utf8'));
-    fsSync.writeFileSync(statePath, JSON.stringify({ ...mine, pid: process.ppid, port: 51000 }));
+    // Another server's spawn appends its own generation, which becomes the
+    // store's current record; this server's reload must still start from the
+    // OpenCode it itself is running.
+    appendStoreGeneration(dataDir, {
+      pid: process.ppid,
+      port: 51000,
+      binary: 'opencode',
+      args: ['serve', '--hostname', '127.0.0.1'],
+      fingerprint: 'abc123',
+      state: 'active',
+      started_at: new Date().toISOString(),
+      password: 'fixture-password',
+      agent_tool_token: null,
+      instance_dir: null,
+    });
     ensureOpencodeCliEnv.mockImplementation(() => '/opt/other/opencode');
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
@@ -2166,12 +2215,20 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps another live server\'s draining records when it rewrites draining.json', async () => {
+  it('keeps another live server\'s draining generations when it persists its own', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
-    const drainingPath = path.join(dataDir, 'managed-opencode', 'draining.json');
-    const foreign = { pid: 424242, port: 50075, binary: '/opt/other/opencode', drainStartedAt: Date.now() };
-    fsSync.writeFileSync(drainingPath, JSON.stringify({ version: 1, draining: [foreign] }));
+    const { dataDir } = await startFirstRuntime(process.pid);
+    // A live draining process (the runner's parent stands in for it) owned by
+    // the other live server: a dead pid's generation is the reaper's to
+    // close, not this server's to preserve.
+    const foreign = { pid: process.ppid, port: 50075, binary: '/opt/other/opencode' };
+    appendStoreGeneration(dataDir, {
+      ...foreign,
+      args: [],
+      fingerprint: '',
+      state: 'draining',
+      started_at: new Date().toISOString(),
+    });
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     globalThis.fetch = vi.fn(async () => Response.json({}));
     spawnMock.mockImplementationOnce((command, args) => {
@@ -2187,18 +2244,26 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     });
     await second.startOpenCode();
 
-    const pids = JSON.parse(fsSync.readFileSync(drainingPath, 'utf8')).draining.map((record) => record.pid);
+    const pids = drainingPids(dataDir);
     expect(pids).toContain(foreign.pid);
     expect(pids.length).toBeGreaterThan(1);
   });
 
   it('registers the draining OpenCode it inherits under itself', async () => {
     delete process.env.OPENCODE_BINARY;
-    const { dataDir } = await startFirstRuntime();
+    const { dataDir } = await startFirstRuntime(process.pid);
     const registry = process.env.OPENCHAMBER_MANAGED_PROCESS_REGISTRY;
-    // A draining child its predecessor left, registered to a server that is gone.
-    const inherited = { pid: 424243, port: 50076, binary: 'opencode', drainStartedAt: Date.now() };
-    fsSync.writeFileSync(path.join(dataDir, 'managed-opencode', 'draining.json'), JSON.stringify({ version: 1, draining: [inherited] }));
+    // A draining child its predecessor left, registered to a server that is
+    // gone. The child itself is a live process (this test runner stands in
+    // for it), recorded as a draining generation in the shared store.
+    const inherited = { pid: process.pid, port: 50076, binary: 'opencode' };
+    appendStoreGeneration(dataDir, {
+      ...inherited,
+      args: ['serve', '--hostname', '127.0.0.1'],
+      fingerprint: '',
+      state: 'draining',
+      started_at: new Date().toISOString(),
+    });
     fsSync.writeFileSync(path.join(registry, `${inherited.pid}.json`), JSON.stringify({ pid: inherited.pid, ownerPid: DEAD_PID - 1, port: inherited.port, binary: 'opencode' }));
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
 
@@ -2225,10 +2290,9 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 
-  it('starts fresh without signalling when the recorded pid no longer runs OpenCode', async () => {
+  it('starts fresh without signalling when the recorded pid is no longer running', async () => {
     delete process.env.OPENCODE_BINARY;
     const { dataDir } = await startFirstRuntime();
-    spawnSyncMock.mockImplementation(() => ({ stdout: '' }));
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
       // Like OpenCode, the line names the port the child was started on.
@@ -2282,8 +2346,6 @@ describe('parsePositiveInt health env parsing (#689)', () => {
 describe('managed credential rotation', () => {
   const READY_LINE = 'opencode server listening on http://127.0.0.1:45678\n';
   const OWNED_PS_OUTPUT = 'opencode serve --hostname 127.0.0.1 --port 45678\n';
-  // Never a live pid, so a replace path cannot signal an unrelated process.
-  const DEAD_PID = 2147483646;
   // Fixture values only. Assertions compare SHA-256 hashes, never the
   // values themselves, matching how a real rotation is verified.
   const OLD_PASSWORD = 'old-fixture-password';
@@ -2291,7 +2353,8 @@ describe('managed credential rotation', () => {
   const OLD_TOKEN = 'old-fixture-token';
   const NEW_TOKEN = 'new-fixture-token';
   const sha256 = (value) => createHash('sha256').update(String(value)).digest('hex');
-  const readState = (dataDir) => JSON.parse(fsSync.readFileSync(path.join(dataDir, 'managed-opencode', 'state.json'), 'utf8'));
+  // The saved pair lives in the v2 store's current generation since #2423.
+  const readState = (dataDir) => currentRecordFromManagedStore(readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(dataDir).storePath));
   const readyLineFor = (command, args) => {
     const launched = unwrapLaunch(command, args).args;
     const port = launched[launched.indexOf('--port') + 1];
@@ -2300,6 +2363,9 @@ describe('managed credential rotation', () => {
   const spawnOnceWithReadyLine = () => {
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
+      // A live pid distinct from the recorded predecessor's, so the new
+      // generation survives the store reaper on the next start.
+      child.pid = process.ppid;
       queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
       return child;
     });
@@ -2318,7 +2384,10 @@ describe('managed credential rotation', () => {
     tempDataDirs.push(dataDir);
     spawnMock.mockImplementationOnce(() => {
       const child = createMockChild();
-      child.pid = DEAD_PID;
+      // The recorded process must be alive for the next runtime to adopt or
+      // hand off from it; the test runner stands in (neither path signals it:
+      // adoption leaves it running and a handoff only drains it).
+      child.pid = process.pid;
       queueMicrotask(() => child.stdout.emit('data', READY_LINE));
       return child;
     });
