@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { renameSyncWithRetry, renameWithRetry } from './atomic-rename.js';
+import { renameSyncWithRetry, renameWithRetry, renameWithoutReplace } from './atomic-rename.js';
 
 const codedError = (code) => {
   const error = new Error(`rename failed: ${code}`);
@@ -81,5 +81,80 @@ describe('renameSyncWithRetry', () => {
     };
     expect(() => renameSyncWithRetry(renameSync, 'tmp', 'dest')).toThrowError(expect.objectContaining({ code: 'ENOENT' }));
     expect(calls).toBe(1);
+  });
+});
+
+describe('renameWithoutReplace', () => {
+  const fileKind = { isDirectory: false, isSymbolicLink: false, destinationIsSource: false };
+  const makeOps = (overrides = {}) => {
+    const calls = [];
+    const ops = {
+      link: async (from, to) => { calls.push(['link', from, to]); },
+      unlink: async (target) => { calls.push(['unlink', target]); },
+      rename: async (from, to) => { calls.push(['rename', from, to]); },
+      readlink: async (target) => { calls.push(['readlink', target]); return 'link-target'; },
+      symlink: async (target, targetPath) => { calls.push(['symlink', target, targetPath]); },
+      lstat: async (target) => { calls.push(['lstat', target]); return { dev: 1, ino: 10 }; },
+      ...overrides,
+    };
+    return { ops, calls };
+  };
+
+  it('commits a file as a hard link, then removes the source name', async () => {
+    const { ops, calls } = makeOps();
+    await renameWithoutReplace(ops, 'a.txt', 'b.txt', fileKind);
+    expect(calls).toEqual([['link', 'a.txt', 'b.txt'], ['unlink', 'a.txt']]);
+  });
+
+  it('surfaces EEXIST from the link and leaves the source in place', async () => {
+    const { ops, calls } = makeOps({
+      link: async () => { throw codedError('EEXIST'); },
+    });
+    await expect(renameWithoutReplace(ops, 'a.txt', 'b.txt', fileKind)).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(calls.filter(([name]) => name === 'unlink')).toEqual([]);
+    expect(calls.filter(([name]) => name === 'rename')).toEqual([]);
+  });
+
+  it('uses a plain rename for a directory', async () => {
+    const { ops, calls } = makeOps();
+    await renameWithoutReplace(ops, 'dir', 'dir2', { ...fileKind, isDirectory: true });
+    expect(calls).toEqual([['rename', 'dir', 'dir2']]);
+  });
+
+  it('uses a plain rename when the destination is the source itself', async () => {
+    const { ops, calls } = makeOps();
+    await renameWithoutReplace(ops, 'Readme.md', 'README.md', { ...fileKind, destinationIsSource: true });
+    expect(calls).toEqual([['rename', 'Readme.md', 'README.md']]);
+  });
+
+  it('recreates a symbolic link at the destination, then removes the source', async () => {
+    const { ops, calls } = makeOps();
+    await renameWithoutReplace(ops, 'link-a', 'link-b', { ...fileKind, isSymbolicLink: true });
+    expect(calls).toEqual([['readlink', 'link-a'], ['symlink', 'link-target', 'link-b'], ['unlink', 'link-a']]);
+  });
+
+  it('rolls the destination link back when removing the source fails', async () => {
+    const unlinked = [];
+    const { ops } = makeOps({
+      unlink: async (target) => {
+        unlinked.push(target);
+        if (target === 'a.txt') throw codedError('EPERM');
+      },
+    });
+    await expect(renameWithoutReplace(ops, 'a.txt', 'b.txt', fileKind)).rejects.toMatchObject({ code: 'EPERM' });
+    expect(unlinked).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('keeps a destination that no longer names the source file', async () => {
+    const unlinked = [];
+    const { ops } = makeOps({
+      unlink: async (target) => {
+        unlinked.push(target);
+        if (target === 'a.txt') throw codedError('EPERM');
+      },
+      lstat: async (target) => (target === 'a.txt' ? { dev: 1, ino: 10 } : { dev: 1, ino: 99 }),
+    });
+    await expect(renameWithoutReplace(ops, 'a.txt', 'b.txt', fileKind)).rejects.toMatchObject({ code: 'EPERM' });
+    expect(unlinked).toEqual(['a.txt']);
   });
 });
