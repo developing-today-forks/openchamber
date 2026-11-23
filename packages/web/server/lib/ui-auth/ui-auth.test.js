@@ -877,3 +877,86 @@ describe('ui auth jwt-secret handle-judged writes (issue #1940)', () => {
     }
   });
 });
+
+describe('ui auth client route scopes', () => {
+  const scopedController = {
+    authenticateBearerToken: async (token) => (token === 'scoped-token'
+      ? { ok: true, clientId: 'babysitter', client: { id: 'babysitter', scopes: ['quota:read'] } }
+      : null),
+  };
+
+  it('admits a scoped token inside its family and refuses it outside (password auth)', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({
+      password: '<MASKED_SECRET_001>',
+      clientAuthController: scopedController,
+    });
+    try {
+      const allowedRes = createResponse();
+      let allowed = false;
+      await auth.requireAuth(
+        { method: 'GET', originalUrl: '/api/quota/codex', headers: { authorization: 'Bearer ' + 'scoped' + '-token' } },
+        allowedRes,
+        () => { allowed = true; },
+      );
+      expect(allowed).toBe(true);
+
+      const deniedRes = createResponse();
+      let denied = false;
+      await auth.requireAuth(
+        { method: 'GET', originalUrl: '/api/session', headers: { authorization: 'Bearer ' + 'scoped' + '-token' } },
+        deniedRes,
+        () => { denied = true; },
+      );
+      expect(denied).toBe(false);
+      expect(deniedRes.statusCode).toBe(403);
+      expect(deniedRes.body).toMatchObject({ scope: 'sessions:read' });
+    } finally {
+      auth.dispose();
+    }
+  });
+
+  it('refuses a scoped token outside its family when UI password auth is disabled', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({
+      requireClientAuth: true,
+      clientAuthController: scopedController,
+    });
+    try {
+      const deniedRes = createResponse();
+      let denied = false;
+      await auth.requireAuth(
+        { method: 'POST', originalUrl: '/api/session/ses_123/message', headers: { authorization: 'Bearer ' + 'scoped' + '-token' } },
+        deniedRes,
+        () => { denied = true; },
+      );
+      expect(denied).toBe(false);
+      expect(deniedRes.statusCode).toBe(403);
+      expect(deniedRes.body).toMatchObject({ scope: 'sessions:message' });
+    } finally {
+      auth.dispose();
+    }
+  });
+
+  it('leaves unscoped client tokens admitted on every route', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({
+      password: '<MASKED_SECRET_001>',
+      clientAuthController: {
+        authenticateBearerToken: async () => ({ ok: true, clientId: 'phone', client: { id: 'phone', scopes: null } }),
+      },
+    });
+    try {
+      const res = createResponse();
+      let allowed = false;
+      await auth.requireAuth(
+        { method: 'GET', originalUrl: '/api/config/settings', headers: { authorization: 'Bearer ' + 'scoped' + '-token' } },
+        res,
+        () => { allowed = true; },
+      );
+      expect(allowed).toBe(true);
+    } finally {
+      auth.dispose();
+    }
+  });
+});

@@ -3,6 +3,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Request, Response, NextFunction, RequestHandler } from '../shared/http-contracts.js';
 import { rateLimitKey } from '../security/client-address.js';
 import type { BearerRequest, ClientInput, CreatedClient, RemoteClient } from '../client-auth/contracts.js';
+import { clientScopeDenial } from '../client-auth/scopes.js';
 import type { PasskeyOptions } from './ui-passkeys.js';
 
 type AuthRequest = Pick<IncomingMessage, 'headers' | 'method' | 'url'> & Partial<Pick<Request, 'query' | 'originalUrl' | 'baseUrl' | 'path' | 'secure'>>;
@@ -687,6 +688,18 @@ export const createUiAuth = ({
     return raw.startsWith('client:') ? raw.slice('client:'.length) : raw;
   };
 
+  // Route scopes bind to the paired-client token (#2290): the check
+  // runs here, where a bearer token has just been resolved to its client
+  // record, so a scoped token is refused outside its route families on
+  // any transport that presents it. Session cookies and URL-auth tokens
+  // carry no client record and are never scope-checked.
+  const respondIfClientScopeDenied = (req: AuthRequest, res: Response, clientAuth: ClientAuthentication): boolean => {
+    const denial = clientScopeDenial(clientAuth?.client, req.method, req.originalUrl || req.url);
+    if (!denial) return false;
+    res.status(403).json({ error: 'Client token is not scoped for this route', scope: denial.scope });
+    return true;
+  };
+
   const clientAuthContext = (clientAuth: ClientAuthentication): AuthContext => ({
     type: 'client',
     token: clientSessionToken(clientAuth),
@@ -728,6 +741,9 @@ export const createUiAuth = ({
       }
       const clientAuth = await authenticateClientRequest(req);
       if (clientAuth) {
+        if (respondIfClientScopeDenied(req, res, clientAuth)) {
+          return;
+        }
         return next();
       }
       return res.status(401).json({ error: 'Client authentication required', locked: true, clientAuthRequired: true });
@@ -955,6 +971,9 @@ export const createUiAuth = ({
     }
     const clientAuth = await authenticateClientRequest(req);
     if (clientAuth) {
+      if (respondIfClientScopeDenied(req, res, clientAuth)) {
+        return;
+      }
       return next();
     }
     clearSessionCookie(req, res);

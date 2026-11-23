@@ -859,6 +859,7 @@ export const registerAuthAndAccessRoutes = (app: Application, dependencies: Auth
       const result = await remoteClientAuthRuntime.createClient({
         label: readBody(req)?.label,
         clientKind: readBody(req)?.clientKind,
+        scopes: readBody(req)?.scopes,
         dedupeKey: readBody(req)?.dedupeKey,
       });
       res.setHeader('Cache-Control', 'no-store');
@@ -917,6 +918,7 @@ export const registerAuthAndAccessRoutes = (app: Application, dependencies: Auth
       const result = await clientPairingRuntime.createPairingSession({
         label: readBody(req)?.label,
         allowedClientKinds: readBody(req)?.allowedClientKinds,
+        scopes: readBody(req)?.scopes,
         createdByClientId: clientIdFromAuthContext(authContext),
         usesRelay,
         localOnly: isLocalOnlyCandidateSet(candidates),

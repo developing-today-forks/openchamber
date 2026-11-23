@@ -358,3 +358,34 @@ describe('remote client auth runtime store durability', () => {
     }
   });
 });
+
+describe('remote client scopes', () => {
+  it('persists declared scopes on the record and drops unknown families', async () => {
+    const { dir, runtime } = await createRuntime();
+    try {
+      const created = await runtime.createClient({ label: 'Babysitter', scopes: ['quota:read', 'bogus', 'sessions:read', 'quota:read'] });
+      expect(created.client.scopes).toEqual(['quota:read', 'sessions:read']);
+
+      const listed = await runtime.listClients();
+      expect(listed[0].scopes).toEqual(['quota:read', 'sessions:read']);
+
+      const authenticated = await runtime.authenticateBearerToken(created.token);
+      expect(authenticated?.client.scopes).toEqual(['quota:read', 'sessions:read']);
+
+      // A fresh runtime over the same store reads the same scopes back.
+      const reread = createRemoteClientAuthRuntime({
+        fsPromises: fs,
+        path,
+        crypto,
+        storePath: path.join(dir, 'remote-clients.json'),
+      });
+      const relisted = await reread.listClients();
+      expect(relisted[0].scopes).toEqual(['quota:read', 'sessions:read']);
+
+      const unscoped = await runtime.createClient({ label: 'Phone' });
+      expect(unscoped.client.scopes).toBe(null);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});

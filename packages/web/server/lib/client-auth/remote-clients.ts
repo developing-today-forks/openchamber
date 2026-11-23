@@ -6,6 +6,7 @@ import {
 import type { BearerRequest, ClientInput, ClientStore, CreatedClient, RemoteClient, StoreDependencies, StoredClient, StoredInput, StoreInput } from './contracts.js';
 import { hasRelayProvenance } from '../relay/provenance.js';
 import { hasChmod, isInputArray, isStoreInput, isStoredInput, isString } from './inputs.js';
+import { normalizeClientScopes } from './scopes.js';
 
 const STORE_VERSION = 1;
 const TOKEN_PREFIX = 'oc_client_';
@@ -103,6 +104,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
           revokedAt: isString(client.revokedAt) ? client.revokedAt : null,
           expiresAt: normalizeTimestamp(isString(client.expiresAt) ? client.expiresAt : null),
           clientKind: normalizeOptionalString(isString(client.clientKind) ? client.clientKind : null),
+          scopes: normalizeClientScopes(client.scopes),
           dedupeKey: normalizeOptionalString(isString(client.dedupeKey) ? client.dedupeKey : null),
           usesRelay: client.usesRelay === true,
           localOnly: client.localOnly === true,
@@ -180,6 +182,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     revokedAt: client.revokedAt,
     expiresAt: client.expiresAt,
     clientKind: client.clientKind,
+    scopes: client.scopes ?? null,
     authMethod: client.authMethod,
     pairingId: client.pairingId,
     deviceName: client.deviceName,
@@ -211,6 +214,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     fallbackLabel,
     expiresAt,
     clientKind,
+    scopes,
     dedupeKey,
     authMethod,
     pairingId,
@@ -237,6 +241,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
         revokedAt: null,
         expiresAt: normalizeTimestamp(isString(expiresAt) ? expiresAt : null),
         clientKind: normalizeOptionalString(isString(clientKind) ? clientKind : null),
+        scopes: normalizeClientScopes(scopes),
         dedupeKey: normalizedDedupeKey,
         ...normalizeMetadata({ authMethod, pairingId, deviceName, devicePlatform, deviceModel, appVersion }),
         usesRelay: usesRelay === true,

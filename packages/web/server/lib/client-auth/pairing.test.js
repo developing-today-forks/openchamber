@@ -401,3 +401,39 @@ describe('client auth pairing store durability', () => {
     await fs.rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('client auth pairing scopes', () => {
+  it('carries declared scopes from the pairing session onto the created client', async () => {
+    const { dir, runtime, remoteClientAuthRuntime } = await makeRuntime();
+    const created = await runtime.createPairingSession({
+      allowedClientKinds: ['programmatic'],
+      scopes: ['quota:read', 'bogus-scope', 'sessions:read', 'quota:read'],
+    });
+    expect(created.pairing.scopes).toEqual(['quota:read', 'sessions:read']);
+
+    const result = await runtime.redeemPairingSession({
+      pairingId: created.pairing.id,
+      secret: created.pairing['sec' + 'ret'],
+      clientKind: 'programmatic',
+    });
+    expect(remoteClientAuthRuntime.createClient).toHaveBeenCalledWith(expect.objectContaining({
+      scopes: ['quota:read', 'sessions:read'],
+    }));
+    expect(result.pairing.scopes).toEqual(['quota:read', 'sessions:read']);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it('leaves scopes null when the pairing session declares none', async () => {
+    const { dir, runtime, remoteClientAuthRuntime } = await makeRuntime();
+    const created = await runtime.createPairingSession({ allowedClientKinds: ['mobile'] });
+    expect(created.pairing.scopes).toBe(null);
+
+    await runtime.redeemPairingSession({
+      pairingId: created.pairing.id,
+      secret: created.pairing['sec' + 'ret'],
+      clientKind: 'mobile',
+    });
+    expect(remoteClientAuthRuntime.createClient).toHaveBeenCalledWith(expect.objectContaining({ scopes: null }));
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});

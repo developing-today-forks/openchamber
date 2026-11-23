@@ -5,6 +5,7 @@ import {
 } from '../shared/durable-json-store.js';
 import type { PairingClientKind, PairingDependencies, PairingInput, PairingSession, PairingStore, RedemptionInput, StoreDependencies, StoredPairingSession, StoreInput } from './contracts.js';
 import { hasChmod, isInputArray, isStoreInput, isStoredInput, isString } from './inputs.js';
+import { normalizeClientScopes } from './scopes.js';
 
 const STORE_VERSION = 1;
 const PAIRING_ID_PREFIX = 'pair_';
@@ -77,6 +78,7 @@ const publicSession = (session: StoredPairingSession): PairingSession => ({
   label: session.label || PAIRING_LABEL_PLACEHOLDER,
   fingerprint: session.fingerprint,
   allowedClientKinds: session.allowedClientKinds,
+  scopes: session.scopes ?? null,
   createdByClientId: session.createdByClientId,
   usesRelay: session.usesRelay === true,
   localOnly: session.localOnly === true,
@@ -146,6 +148,7 @@ export const createClientPairingRuntime = ({
           label: normalizeStoredLabel(isString(session.label) ? session.label : null),
           fingerprint: normalizeOptionalString(isString(session.fingerprint) ? session.fingerprint : null) || generateFingerprint(),
           allowedClientKinds: normalizeAllowedClientKinds(isInputArray(session.allowedClientKinds) ? session.allowedClientKinds.filter(isString) : null),
+          scopes: normalizeClientScopes(session.scopes),
           createdByClientId: normalizeOptionalString(isString(session.createdByClientId) ? session.createdByClientId : null),
           usesRelay: session.usesRelay === true,
           localOnly: session.localOnly === true,
@@ -226,7 +229,7 @@ export const createClientPairingRuntime = ({
     });
   };
 
-  const createPairingSession = async ({ label, allowedClientKinds, createdByClientId, usesRelay, localOnly }: PairingInput = {}) => {
+  const createPairingSession = async ({ label, allowedClientKinds, scopes, createdByClientId, usesRelay, localOnly }: PairingInput = {}) => {
     return withStoreMutation(async () => {
       const store = await readStore();
       sweepExpiredSessionsFromStore(store);
@@ -242,6 +245,7 @@ export const createClientPairingRuntime = ({
         label: normalizeStoredLabel(isString(label) ? label : null),
         fingerprint: generateFingerprint(),
         allowedClientKinds: normalizeAllowedClientKinds(isInputArray(allowedClientKinds) ? allowedClientKinds.filter(isString) : null),
+        scopes: normalizeClientScopes(scopes),
         createdByClientId: normalizeOptionalString(isString(createdByClientId) ? createdByClientId : null),
         usesRelay: usesRelay === true,
         localOnly: localOnly === true,
@@ -317,6 +321,7 @@ export const createClientPairingRuntime = ({
           || normalizeOptionalString(isString(deviceName) ? deviceName : null)
           || 'Remote client',
         clientKind: normalizedKind,
+        scopes: session.scopes ?? null,
         dedupeKey: normalizeOptionalString(isString(dedupeKey) ? dedupeKey : null) || `pairing:${session.id}`,
         authMethod: 'pairing',
         pairingId: session.id,

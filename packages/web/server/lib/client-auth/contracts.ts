@@ -2,6 +2,7 @@ import type * as fs from 'node:fs/promises';
 import type * as path from 'node:path';
 import type * as crypto from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import type { ClientScope } from './scopes.js';
 
 export interface StoreDependencies {
   fsPromises: Pick<typeof fs, 'readFile' | 'mkdir' | 'writeFile'> & Partial<Pick<typeof fs, 'chmod'>>;
@@ -15,6 +16,7 @@ export interface ClientInput {
   fallbackLabel?: unknown;
   expiresAt?: unknown;
   clientKind?: unknown;
+  scopes?: unknown;
   dedupeKey?: unknown;
   authMethod?: unknown;
   pairingId?: unknown;
@@ -34,6 +36,7 @@ export interface RemoteClient {
   revokedAt: string | null;
   expiresAt: string | null;
   clientKind: string | null;
+  scopes: ClientScope[] | null;
   authMethod: string | null;
   pairingId: string | null;
   deviceName: string | null;
@@ -69,6 +72,7 @@ export interface BearerRequest {
 export interface PairingInput {
   label?: unknown;
   allowedClientKinds?: unknown;
+  scopes?: unknown;
   createdByClientId?: unknown;
   usesRelay?: unknown;
   localOnly?: unknown;
@@ -99,6 +103,7 @@ export interface PairingSession {
   label: string;
   fingerprint: string;
   allowedClientKinds: PairingClientKind[];
+  scopes: ClientScope[] | null;
   createdByClientId: string | null;
   usesRelay: boolean;
   localOnly: boolean;
