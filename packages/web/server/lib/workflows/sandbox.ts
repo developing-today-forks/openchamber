@@ -183,7 +183,6 @@ export const runWorkflowSandbox = ({ body, args, filename, timeoutMs = WORKFLOW_
     resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
   });
   let settled = false;
-  let timeout: ReturnType<typeof setTimeout>;
   let settle: (outcome: SandboxOutcome) => void;
   const result = new Promise<unknown>((resolve, reject) => {
     settle = (outcome) => {
@@ -195,7 +194,7 @@ export const runWorkflowSandbox = ({ body, args, filename, timeoutMs = WORKFLOW_
       else reject(outcome.error);
     };
   });
-  timeout = setTimeout(() => {
+  const timeout = setTimeout(() => {
     settle({ ok: false, error: new Error(`Workflow execution timed out after ${timeoutMs / 1000} seconds`) });
   }, timeoutMs);
   timeout.unref?.();
