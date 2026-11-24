@@ -97,9 +97,13 @@ export const registerMessageSearchRoutes = (app: MessageSearchApp, { messageSear
     // `.catch('')` would degrade a repeated `session` to '' and the route
     // would send `sessionId: null`, silently widening a scoped search to
     // every indexed conversation (#2421). Reject the ambiguous filter.
-    const rawSession: unknown = req.query.session;
-    if (rawSession !== undefined && typeof rawSession !== 'string') {
-      return res.status(400).json({ error: 'Message search session must be a single value' });
+    // The same holds for role and lifecycle: a repeated key would otherwise
+    // fall back to the widest value (all roles, all lifecycles) with a 200.
+    for (const key of ['session', 'role', 'lifecycle'] as const) {
+      const raw: unknown = req.query[key];
+      if (raw !== undefined && typeof raw !== 'string') {
+        return res.status(400).json({ error: `Message search ${key} must be a single value` });
+      }
     }
     const query = querySchema.parse({ role: null, ...req.query });
     const directories = directoriesFrom(query.directory);
