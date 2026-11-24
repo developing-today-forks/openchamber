@@ -45,6 +45,9 @@ globalThis.Date = new Proxy(RealDate, {
     if (values.length === 0) throw new Error('new Date() without a value' + replayNote);
     return new target(...values);
   },
+  apply() {
+    throw new Error('Date()' + replayNote);
+  },
   get(target, property) {
     if (property === 'now') return () => { throw new Error('Date.now()' + replayNote); };
     return Reflect.get(target, property);
