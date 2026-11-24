@@ -2109,6 +2109,10 @@ describe.skipIf(process.platform === 'win32')('fs reveal containment (real fs)',
 
   beforeEach(async () => {
     base = await mkdtemp(path.join(tmpdir(), 'oc-fs-reveal-'));
+    // The reveal handler answers with the canonical path; on macOS the
+    // temp dir sits behind the /var -> /private/var symlink, so compare
+    // against the canonical base everywhere below.
+    base = await nativeFs.realpath(base);
     workspace = path.join(base, 'workspace');
     outside = path.join(base, 'outside');
     await mkdir(workspace, { recursive: true });
