@@ -124,7 +124,7 @@ const normalizeContextPanelTabDedupeKey = (
   targetPath: string | null,
   dedupeKey: string | null | undefined,
 ): string => {
-  if (mode === 'diff') {
+  if (mode === 'diff' || mode === 'git') {
     return mode;
   }
 
@@ -238,20 +238,23 @@ export const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
     const targetDirectory = contextPanelModeKeepsTargetDirectory(candidate.mode)
       ? normalizeContextTargetDirectory(candidate.targetDirectory)
       : null;
+    const mode: ContextPanelMode = candidate.mode === 'diff' && !targetDirectory ? 'git' : candidate.mode;
     const dedupeKey = normalizeContextPanelTabDedupeKey(
-      candidate.mode,
+      mode,
       targetPath,
       typeof candidate.dedupeKey === 'string' ? candidate.dedupeKey : null,
     );
-    const id = buildContextPanelTabID(candidate.mode, dedupeKey);
-    if (!id || seen.has(id)) {
+    const id = buildContextPanelTabID(mode, dedupeKey);
+    const replacesPlainGit = mode !== candidate.mode && seen.has(id);
+    if (!id || (seen.has(id) && !replacesPlainGit)) {
       continue;
     }
 
     seen.add(id);
-    result.push({
+    const slot = replacesPlainGit ? result.findIndex((tab) => tab.id === id) : result.length;
+    result[slot] = {
       id,
-      mode: candidate.mode,
+      mode,
       targetPath,
       targetDirectory,
       dedupeKey,
@@ -260,19 +263,23 @@ export const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       readOnly: candidate.readOnly === true,
       stagedDiff: candidate.stagedDiff === true,
       diffScope: normalizePendingDiffScope(candidate.diffScope) ?? (candidate.stagedDiff === true ? 'staged' : null),
-      preview: candidate.mode === 'file' && candidate.preview === true,
+      preview: mode === 'file' && candidate.preview === true,
       ownerSessionId: normalizeBrowserTabOwner(
-        candidate.mode,
+        mode,
         typeof candidate.ownerSessionId === 'string' ? candidate.ownerSessionId : null,
       ),
       touchedAt: typeof candidate.touchedAt === 'number' && Number.isFinite(candidate.touchedAt)
         ? candidate.touchedAt
         : Date.now(),
-    });
+    };
   }
 
   return result;
 };
+
+export const migrateLegacyContextTabId = (id: string | null, tabs: readonly ContextPanelTab[]): string | null => (
+  id === 'diff' && !tabs.some((tab) => tab.id === 'diff') && tabs.some((tab) => tab.id === 'git') ? 'git' : id
+);
 
 export const resolveActiveContextPanelTabID = (tabs: ContextPanelTab[], activeTabId: string | null): string | null => {
   if (activeTabId && tabs.some((tab) => tab.id === activeTabId)) {

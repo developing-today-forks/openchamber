@@ -23,6 +23,7 @@ import {
 import { projectInboxMessage, sessionParentID, structuredErrorText, toolAttachments, toolOutputText } from "./projection"
 import { runningShellFromWire, type RunningShell, type ShellEnd } from "./background-shell"
 import type { MessagingCreated } from "./messaging"
+import { imageJobUpdate, type ImageJobUpdate } from "./background-image"
 
 
 export type SessionPatch = {
@@ -115,6 +116,7 @@ type SyncEventPayload =
   /** A terminal the agent started with the pty tool. */
   | { type: "persistent-pty.added"; properties: { sessionID: string; terminal: PersistentPtyInfo } }
   | { type: "persistent-pty.removed"; properties: { sessionID: string; ptyID: string } }
+  | { type: "image.job.updated"; properties: ImageJobUpdate }
   | { type: "vcs.branch.updated"; properties: { branch?: string } }
   | { type: "filesystem.changed"; properties: { file: string } }
   | { type: "mcp.status.changed"; properties: { server: string } }
@@ -746,19 +748,13 @@ export function translateWireEvent(event: OpenCodeEvent): SyncEvent[] {
     case "websearch.updated":
       return [{ type: "catalog.updated", properties: { kind: "websearch" } }]
 
-
     // external: https://github.com/anomalyco/opencode/tree/v2.3.0/packages/core/src Integration changes also publish provider.updated and model.updated; handling both doubles catalog reads.
     case "integration.updated":
-      return []
     case "session.inbox.delivery.changed":
-      return []
     case "installation.updated":
-      return []
     case "models-dev.refreshed":
     case "reference.updated":
-      return []
     case "mcp.resources.changed":
-      return []
     case "experimental.mcp.event":
       return []
     case "filesystem.changed":
@@ -792,6 +788,10 @@ export function translateWireEvent(event: OpenCodeEvent): SyncEvent[] {
       return [{ type: "persistent-pty.removed", properties: { sessionID: event.data.sessionID, ptyID: event.data.ptyID } }]
     case "artifact.updated":
       return []
+    case "experimental.job.updated": {
+      const update = imageJobUpdate(event.data?.info)
+      return update ? [{ type: "image.job.updated", properties: update }] : []
+    }
 
     case "tui.command.execute":
     case "tui.prompt.append":

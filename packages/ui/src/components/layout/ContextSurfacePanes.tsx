@@ -48,6 +48,7 @@ import { isZoneExposed, ZoneInteractiveContext } from './zoneInteractiveContext'
 import { PauseClock } from '@/components/ui/pause-clock';
 import { DockedPanelSurfaceContext } from '@/hooks/usePageColors';
 
+const GitView = lazyWithChunkRecovery(() => import('@/components/views/GitView').then((m) => ({ default: m.GitView })));
 const WalkthroughView = lazyWithChunkRecovery(() => import('@/components/views/walkthrough/WalkthroughView').then((m) => ({ default: m.WalkthroughView })));
 const DiffView = lazyWithChunkRecovery(() => import('@/components/views/DiffView').then((m) => ({ default: m.DiffView })));
 const FilesView = lazyWithChunkRecovery(() => import('@/components/views/FilesView').then((m) => ({ default: m.FilesView })));
@@ -274,6 +275,7 @@ export const ContextSurfacePanes: React.FC = () => {
   const fileZone = zoneFor('file');
   const chatZone = zoneFor('chat');
   const browserZone = zoneFor('browser');
+  const gitZone = zoneFor('git');
   const diffZone = zoneFor('diff');
   const terminalZone = zoneFor('terminal');
   const walkthroughZone = zoneFor('walkthrough');
@@ -386,6 +388,22 @@ export const ContextSurfacePanes: React.FC = () => {
     };
   }, [activeChatDirectory, activeChatSessionID]);
 
+  const gitTabIsGit = gitZone.activeTab?.mode === 'git';
+  const gitTabTargetPath = gitZone.activeTab?.targetPath;
+  const gitTabDiffScope = gitZone.activeTab?.diffScope;
+  const handleGitScopeChange = React.useCallback((nextScope: PendingDiffScope) => {
+    if (!directoryKey || !gitTabIsGit || gitTabDiffScope === nextScope) {
+      return;
+    }
+
+    openContextPanelTab(directoryKey, {
+      mode: 'git',
+      targetPath: gitTabTargetPath,
+      stagedDiff: nextScope === 'staged',
+      diffScope: nextScope,
+    });
+  }, [directoryKey, gitTabDiffScope, gitTabIsGit, gitTabTargetPath, openContextPanelTab]);
+
   const diffActiveTab = diffZone.activeTab;
   const handleDiffScopeChange = React.useCallback((nextScope: PendingDiffScope) => {
     if (!directoryKey || diffActiveTab?.mode !== 'diff') {
@@ -464,6 +482,7 @@ export const ContextSurfacePanes: React.FC = () => {
     return () => unregister.forEach((release) => release());
   }, [sleepingBrowserTabs, wakeBrowserTab]);
 
+  const gitTab = React.useMemo(() => tabs.find((tab) => tab.mode === 'git') ?? null, [tabs]);
   const diffTabs = React.useMemo(() => tabs.filter((tab) => tab.mode === 'diff'), [tabs]);
   const terminalTab = React.useMemo(
     () => tabs.find((tab) => tab.mode === 'terminal') ?? null,
@@ -576,6 +595,27 @@ export const ContextSurfacePanes: React.FC = () => {
           </ZonePane>
         );
       })}
+      {gitTab ? (
+        <ZonePane
+          key={gitTab.id}
+          zone={gitZone.zone}
+          interactive={interactive[gitZone.zone]}
+          isOpen={gitZone.isOpen}
+          hidden={contentHidden(gitZone.zone)}
+          className={cn('absolute inset-0', gitZone.activeTab?.id !== gitTab.id && 'hidden')}
+        >
+          <React.Suspense fallback={null}>
+            <ContextPanelHeaderSlotProvider value={headerSlotFor(gitZone.zone, gitZone.activeTab?.id === gitTab.id)}>
+              <GitView
+                isActive={gitZone.isOpen && gitZone.activeTab?.id === gitTab.id}
+                diffScope={gitTab.diffScope ?? (gitTab.stagedDiff ? 'staged' : null)}
+                onDiffScopeChange={handleGitScopeChange}
+                targetFilePath={gitTab.targetPath}
+              />
+            </ContextPanelHeaderSlotProvider>
+          </React.Suspense>
+        </ZonePane>
+      ) : null}
       {diffTabs.map((tab) => {
         const active = diffZone.activeTab?.id === tab.id;
         return (

@@ -113,7 +113,8 @@ const buildCopilotWindows = (payload: CopilotPayload | null | undefined) => {
       usedPercent,
       windowSeconds: null,
       resetAt,
-      valueLabel
+      valueLabel,
+      credits: used === null || entitlement === null ? undefined : { used, limit: entitlement }
     });
   };
 

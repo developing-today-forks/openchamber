@@ -30,6 +30,7 @@ export interface EnvelopeFields {
 interface CodingPlanLimitFields extends TokenWindowLimit {
   type?: unknown;
   currentValue?: unknown;
+  remaining?: unknown;
   usage?: unknown;
   percentage?: unknown;
   nextResetTime?: unknown;
@@ -66,6 +67,14 @@ export const formatCreditValueLabel = (limit: CodingPlanLimitFields) => {
 // toUsageWindow: wafer's overage branch deliberately exceeds 100.)
 const clampUsedPercent = <Value>(value: Value) =>
   isNumber(value) && Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
+
+export const creditAmounts = (limit: CodingPlanLimitFields) => {
+  const used = toNumber(limit?.currentValue);
+  const total = toNumber(limit?.usage);
+  const remaining = toNumber(limit?.remaining);
+  if (used === null || total === null || used < 0 || total <= 0) return undefined;
+  return remaining === null || remaining < 0 ? { used, limit: total } : { used, limit: total, remaining };
+};
 
 const resolveUsedPercent = (limit: CodingPlanLimitFields) => {
   const percentage = toNumber(limit?.percentage);
@@ -182,7 +191,8 @@ export const fetchQuota = async ({ readAuth = readOpenCodeCredentials } = {}) =>
         usedPercent: resolveUsedPercent(limit),
         windowSeconds,
         resetAt,
-        valueLabel: formatCreditValueLabel(limit)
+        valueLabel: formatCreditValueLabel(limit),
+        credits: creditAmounts(limit)
       });
     }
 

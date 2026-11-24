@@ -287,6 +287,7 @@ const uiStorePersistOptions = {
     fileTreeSide: state.fileTreeSide,
     contextEditorVisible: state.contextEditorVisible,
     contextEditorTreeWidth: state.contextEditorTreeWidth,
+    gitSidebarWidth: state.gitSidebarWidth,
     contextZoneSizes: state.contextZoneSizes,
     contextZoneExpandedChatSizes: state.contextZoneExpandedChatSizes,
     workStatusExpandedSections: state.workStatusExpandedSections,
