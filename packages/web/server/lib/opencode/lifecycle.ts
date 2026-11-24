@@ -880,9 +880,12 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     const binary = generation.binary;
     if (!binary) return false;
     if (command.includes(binary)) return true;
+    // Basename fallback for argv[0] only (the executable position): a
+    // match in a later argument or script path must not identify us.
     const base = path.basename(binary);
     if (!base) return false;
-    return command.split(/\s+/).some((token) => token === base || token.endsWith(`/${base}`));
+    const argv0 = command.split(/\s+/, 1)[0] ?? '';
+    return argv0 === binary || argv0 === base || argv0.endsWith(`/${base}`);
   };
 
   const terminateRecordedOpenCodeProcess = async (pid: number) => {
