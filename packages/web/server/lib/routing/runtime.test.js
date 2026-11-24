@@ -25,7 +25,7 @@ const readyConfig = () => {
 const makeRuntime = ({
   config = readyConfig(), token = 'key', classifierSource = null, customEndpoint = null, geminiKey = null, providerKeys = {}, zenPromotionActive = true,
   enterprise = false, pinned = null, catalog = [], answers, askError, lastAnswer = null, configEntries = [], nowMs = 1_000_000_000,
-  warmSessions = [], readModelPools = () => ({}),
+  warmSessions = [], readModelPools = () => ({}), readChoiceNotes = async () => [],
   // The agent OpenCode holds per session; tests switch it the way a send does.
   sessionAgents = {},
 } = {}) => {
@@ -76,6 +76,7 @@ const makeRuntime = ({
     isSessionWarm: (sessionId) => warmSessions.includes(sessionId),
     now: () => nowMs,
     readModelPools,
+    readChoiceNotes,
   });
   return { runtime, store, jev, events, readConfigEntries };
 };
@@ -254,6 +255,45 @@ describe('resolveAutoSelection', () => {
     expect(resolved.decision.reason).toBe('routed');
     const hard = config.categories.find((c) => c.id === 'hard');
     expect(jev.ask.mock.calls[0][0].questions.category.criteria.hard).toBe(hard.description);
+  });
+
+  it('feeds the model-choice notes to Jev in the routing request state (#147)', async () => {
+    const notes = ['picks low effort on claude-opus for goal specs (7 of 9 times)'];
+    const readChoiceNotes = vi.fn(async () => notes);
+    const { runtime, jev } = makeRuntime({ readChoiceNotes, answers: { category: { choice: 'hard', confidence: 0.97 } } });
+    const resolved = await runtime.resolveAutoSelection(send());
+    expect(resolved.decision.reason).toBe('routed');
+    expect(readChoiceNotes).toHaveBeenCalledTimes(1);
+    const [request] = jev.ask.mock.calls[0];
+    expect(request.state.choiceNotes).toBe(notes[0]);
+    expect(request.questions.category.instructions).toContain('`choiceNotes`');
+  });
+
+  it('asks exactly as before when there are no choice notes', async () => {
+    const { runtime, jev } = makeRuntime({ answers: { category: { choice: 'hard', confidence: 0.97 } } });
+    await runtime.resolveAutoSelection(send());
+    const [request] = jev.ask.mock.calls[0];
+    expect(request.state).not.toHaveProperty('choiceNotes');
+    expect(request.questions.category.instructions).not.toContain('`choiceNotes`');
+  });
+
+  it('never sends the choice notes in enterprise mode', async () => {
+    const readChoiceNotes = vi.fn(async () => ['picks low effort on claude-opus for goal specs (7 of 9 times)']);
+    const { runtime, jev } = makeRuntime({ enterprise: true, readChoiceNotes, answers: { category: { choice: 'hard', confidence: 0.97 } } });
+    const resolved = await runtime.resolveAutoSelection(send());
+    expect(resolved.decision.reason).toBe('routed');
+    expect(readChoiceNotes).not.toHaveBeenCalled();
+    expect(jev.ask.mock.calls[0][0].state).not.toHaveProperty('choiceNotes');
+  });
+
+  it('routes without the notes when reading them fails', async () => {
+    const readChoiceNotes = vi.fn(async () => { throw new Error('malformed choices file'); });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { runtime, jev } = makeRuntime({ readChoiceNotes, answers: { category: { choice: 'hard', confidence: 0.97 } } });
+    const resolved = await runtime.resolveAutoSelection(send());
+    warn.mockRestore();
+    expect(resolved.decision.reason).toBe('routed');
+    expect(jev.ask.mock.calls[0][0].state).not.toHaveProperty('choiceNotes');
   });
 
   it('uses the fallback pair and keeps the composer agent when the category has no model', async () => {

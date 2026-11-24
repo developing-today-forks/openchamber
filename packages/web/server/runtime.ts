@@ -1334,6 +1334,13 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   deltaCoalesceWindowMs: resolveDeltaCoalesceWindowMs(),
 });
 
+// Manual model and effort choices and the notes built from them (lib/model-choices).
+const modelChoiceService = createModelChoiceService({
+  store: createModelChoiceStore({ dataDir: OPENCHAMBER_DATA_DIR }),
+  readSettings: () => readSettingsFromDiskMigrated(),
+  persistSettings: (changes: Parameters<typeof persistSettings>[0]) => persistSettings(changes),
+});
+
 const routingRuntime = createRoutingRuntime({
   dataDir: OPENCHAMBER_DATA_DIR,
   buildOpenCodeUrl,
@@ -1341,6 +1348,7 @@ const routingRuntime = createRoutingRuntime({
   broadcastGlobalUiEvent: broadcastOpenChamberUiEvent,
   isSessionWarm: (sessionId, cacheLifetimeMs) => sessionWarmingRuntime.isSessionWarm(sessionId, cacheLifetimeMs),
   readModelPools: (directory) => readLayeredModelRoutes(readConfigSources(directory || null)),
+  readChoiceNotes: () => modelChoiceService.routingNotes(),
 });
 
 const sessionWorkRuntime = createSessionWorkRuntime({
@@ -1823,12 +1831,6 @@ const clientPairingRuntime = createClientPairingRuntime({
 });
 // What each open window reports of its device-only settings (lib/device-settings).
 const deviceSettingsStore = createDeviceSettingsStore();
-// Manual model and effort choices and the notes built from them (lib/model-choices).
-const modelChoiceService = createModelChoiceService({
-  store: createModelChoiceStore({ dataDir: OPENCHAMBER_DATA_DIR }),
-  readSettings: () => readSettingsFromDiskMigrated(),
-  persistSettings: (changes: Parameters<typeof persistSettings>[0]) => persistSettings(changes),
-});
 const featureRoutesRuntime = createFeatureRoutesRuntime({
   clientReloadDelayMs: CLIENT_RELOAD_DELAY_MS,
   trackers: trackerRegistry,

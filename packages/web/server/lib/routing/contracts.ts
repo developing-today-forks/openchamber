@@ -102,6 +102,9 @@ export interface RoutingRuntimeOptions {
   // The `experimental.model_routes` map for a directory, so a category on a
   // pool carries the pool's description to Jev. Unset: no pool text.
   readModelPools?: (directory: SessionScope['directory']) => JsonObject;
+  // The user's summarized model-choice notes for the routing request
+  // (lib/model-choices, #147), already capped there. Unset: no notes fed.
+  readChoiceNotes?: () => Promise<string[]>;
   isSessionWarm?: (sessionId: string, cacheLifetimeMs: number) => boolean;
   now?: () => number;
 }

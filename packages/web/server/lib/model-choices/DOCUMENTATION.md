@@ -85,30 +85,41 @@ change there needs that same handling.
   Approve and Decline. Approve has the server write the settings through
   `persistSettings`, then record the answer; a failed write records nothing,
   so the suggestion stays on offer.
+- The routing runtime (`../routing/DOCUMENTATION.md`, "Model-choice
+  notes"), through the service's `routingNotes`: the capped note texts for
+  the Auto-mode classifier's request, and nothing while recording is off.
 
 ## Jev
 
-The notes are not sent to Jev. The routing request
-(`../routing/DOCUMENTATION.md`, `jev.js`) asks one choice question whose
-`criteria` are the category descriptions, one string per category, and Jev
-answers with a category, never a model. A note about which model the user
-picks would have to be folded into a category's criteria, where it describes
-a model rather than the kind of request, which is what Jev judges. It would
-also send the user's model habits to the classification provider, a new
-crossing for enterprise mode. Feeding them belongs with a request format that
-has a place for user preferences.
+The notes feed the Auto-mode routing request (#147) as state context:
+`choiceNotes`, one note per line beside `history` and `request`, with one
+added instruction line saying what they are. They are never folded into a
+category's criteria: Jev answers with a category, never a model, and the
+criteria describe the kind of request, which a note about a model does not.
+The feed is capped in `notes.js` (`routingNoteTexts`): at most 5 notes, at
+most 200 characters each, at most 800 in all, and it draws only on retained
+events, so no note describes a choice older than 90 days. Recording off
+means no feed: `service.routingNotes` returns nothing while
+`modelChoiceRecordingEnabled` is false. Enterprise mode never sends them
+either: the classification endpoint there is an administrator's crossing,
+and the notes are the user's own habits; the routing runtime holds that
+gate. The earlier design kept the notes away from Jev entirely, on the
+grounds that the request format had no place for user preferences that was
+not a category's criteria; the state field is that place.
 
 ## Boundary
 
 Everything stays on this machine: the file is in the data dir, and the agent
 reads the notes through the managed tool on the session's own provider.
-Enterprise mode gates nothing here.
+Enterprise mode gates nothing here, except the Jev feed above: the routing
+runtime withholds the notes there, as that section says.
 
 ## Files
 
 - `store.js` — the file, validation, retention, serialized writes.
 - `notes.js` — notes and suggestions.
-- `service.js` — the recording switch, summaries, answering a suggestion.
+- `service.js` — the recording switch, summaries, answering a suggestion,
+  the routing feed (`routingNotes`).
 - `routes.js` — the HTTP routes.
 - `../openchamber-control/model-choice-actions.js` — `models.choices`.
 - UI: `packages/ui/src/lib/modelChoices.ts` (sending and reading),
@@ -117,7 +128,9 @@ Enterprise mode gates nothing here.
 ## Tests
 
 - `model-choices.test.js`: store, retention, notes, suggestions, the
-  recording switch, routes and the agent action.
+  recording switch, the routing feed and its caps, routes and the agent
+  action. The routing side of the feed is covered in
+  `../routing/jev.test.js` and `../routing/runtime.test.js`.
 - UI: `modelChoices.test.ts` (size buckets, sending, the off switch),
   `GoalSpecDialog.test.tsx` and `SessionGoalDialog.test.tsx` (which goal
   window picks are recorded), `ModelControls.variant.behavior.test.tsx`

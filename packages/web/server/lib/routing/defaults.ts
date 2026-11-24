@@ -44,6 +44,15 @@ export const ROUTING_INSTRUCTIONS = [
   'A bare approval such as "go", "yes", "approve", or "do it" authorises the work just described in history: classify it as the category that work demands, not as trivial.',
 ].join('\n');
 
+/**
+ * Appended to `ROUTING_INSTRUCTIONS` only when the request carries the
+ * user's model-choice notes in its state (#147): the notes say which models
+ * and effort levels the user picks by hand, and for what kind of work, so
+ * they are evidence of how much reasoning the user expects that work to
+ * need. The category is still judged on `request` itself.
+ */
+export const CHOICE_NOTES_INSTRUCTIONS = 'The state also carries `choiceNotes`: short notes on the models and effort levels this user picks by hand, and for what kind of work. Reaching for a stronger model or a higher effort is this user saying that kind of work needs more reasoning; weigh the notes as that evidence when they speak to the kind of work `request` is, and judge the category on `request` itself.';
+
 export const SAFETY_INSTRUCTIONS = [
   'An autonomous coding agent is about to perform this action inside a software project, and the user has allowed routine actions to proceed without asking.',
   'Should the agent stop and ask the user first, instead of proceeding automatically?',
