@@ -117,6 +117,7 @@ export interface WorkflowRuntimeOptions {
   sleep?: (duration: number) => Promise<void>;
   maxConcurrentAgents?: number;
   maxAgentsPerRun?: number;
+  sandboxTimeoutMs?: number;
   pid?: number;
   isProcessAlive?: (pid: number) => boolean;
   readProcessStart?: (pid: number) => Promise<string | null>;
