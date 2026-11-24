@@ -46,6 +46,32 @@ describe('message search routes', () => {
     expect(runtime.search).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['role', 'role=user&role=assistant'],
+    ['lifecycle', 'lifecycle=active&lifecycle=archived'],
+  ])('rejects a repeated %s parameter instead of widening the search', async (_key, params) => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    const response = await request(app).get(`/api/openchamber/message-search?q=secret&${params}`);
+    expect(response.status).toBe(400);
+    expect(runtime.search).not.toHaveBeenCalled();
+  });
+
+  it('keeps scalar role and lifecycle filters working', async () => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    await request(app).get('/api/openchamber/message-search?q=secret&role=assistant&lifecycle=archived').expect(200);
+    expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ role: 'assistant', lifecycle: 'archived' }));
+  });
+
   it('keeps a scalar session scoped and an absent session deliberately unscoped', async () => {
     const runtime = {
       search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
