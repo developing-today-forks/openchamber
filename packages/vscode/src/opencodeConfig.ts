@@ -117,7 +117,7 @@ type PluginParsedKind = 'control' | 'npm' | 'path' | 'git';
 export type PluginEntry = {
   id: string;
   spec: string;
-  options?: Record<string, unknown>;
+  options?: JsonObject;
   scope: PluginScope;
   kind: 'config';
   parsedKind: PluginParsedKind;
@@ -279,11 +279,13 @@ const getUserAgentPath = (agentName: string, lookupCache: AgentLookupCache = glo
   return preferred;
 };
 
+type AgentScopeLookup = { scope: AgentScope | null; path: string | null };
+
 const getAgentScope = (
   agentName: string,
   workingDirectory?: string,
   lookupCache: AgentLookupCache = globalAgentLookupCache
-): { scope: AgentScope | null; path: string | null } => {
+): AgentScopeLookup => {
   if (workingDirectory) {
     const projectPath = getProjectAgentPath(workingDirectory, agentName);
     if (fs.existsSync(projectPath)) {
@@ -299,12 +301,14 @@ const getAgentScope = (
   return { scope: null, path: null };
 };
 
+type AgentWriteTarget = { scope: AgentScope; path: string };
+
 const getAgentWritePath = (
   agentName: string,
   workingDirectory?: string,
   requestedScope?: AgentScope,
   lookupCache: AgentLookupCache = globalAgentLookupCache
-): { scope: AgentScope; path: string } => {
+): AgentWriteTarget => {
   const existing = getAgentScope(agentName, workingDirectory, lookupCache);
   if (existing.path) {
     return { scope: existing.scope!, path: existing.path };
@@ -354,7 +358,9 @@ const getUserCommandPath = (commandName: string): string => {
   return preferred;
 };
 
-const getCommandScope = (commandName: string, workingDirectory?: string): { scope: CommandScope | null; path: string | null } => {
+type CommandScopeLookup = { scope: CommandScope | null; path: string | null };
+
+const getCommandScope = (commandName: string, workingDirectory?: string): CommandScopeLookup => {
   if (workingDirectory) {
     const projectPath = getProjectCommandPath(workingDirectory, commandName);
     if (fs.existsSync(projectPath)) {
@@ -370,7 +376,9 @@ const getCommandScope = (commandName: string, workingDirectory?: string): { scop
   return { scope: null, path: null };
 };
 
-const getCommandWritePath = (commandName: string, workingDirectory?: string, requestedScope?: CommandScope): { scope: CommandScope; path: string } => {
+type CommandWriteTarget = { scope: CommandScope; path: string };
+
+const getCommandWritePath = (commandName: string, workingDirectory?: string, requestedScope?: CommandScope): CommandWriteTarget => {
   const existing = getCommandScope(commandName, workingDirectory);
   if (existing.path) {
     return { scope: existing.scope!, path: existing.path };
@@ -410,7 +418,7 @@ const assertValidSnippetName = (name: string): void => {
   }
 };
 
-const normalizeSnippetAliases = (frontmatter: Record<string, unknown>): string[] => {
+const normalizeSnippetAliases = (frontmatter: JsonObject): string[] => {
   const raw = frontmatter.aliases ?? frontmatter.alias;
   if (!raw) return [];
   const aliases = Array.isArray(raw) ? raw : [raw];
@@ -512,11 +520,11 @@ const moveSnippetFile = (from: string, to: string): void => {
   }
 };
 
-const writeSnippetFile = (filePath: string, config: Record<string, unknown>): void => {
+const writeSnippetFile = (filePath: string, config: JsonObject): void => {
   const aliases = Array.isArray(config.aliases)
     ? config.aliases.map((alias) => String(alias).trim()).filter(Boolean)
     : [];
-  const frontmatter: Record<string, unknown> = {};
+  const frontmatter: JsonObject = {};
   if (aliases.length > 0) frontmatter.aliases = aliases;
   if (typeof config.description === 'string' && config.description.trim()) {
     frontmatter.description = config.description.trim();
@@ -525,7 +533,9 @@ const writeSnippetFile = (filePath: string, config: Record<string, unknown>): vo
   writeMdFile(filePath, frontmatter, typeof config.content === 'string' ? config.content : '');
 };
 
-const parseSnippetBlocks = (content: string): { inline: string; prepend: string[]; append: string[] } => {
+type SnippetBlocks = { inline: string; prepend: string[]; append: string[] };
+
+const parseSnippetBlocks = (content: string): SnippetBlocks => {
   const blocks = { prepend: [] as string[], append: [] as string[] };
   let inline = content;
   for (const type of ['prepend', 'append'] as const) {
@@ -579,7 +589,7 @@ const expandSnippetText = (
   return expanded;
 };
 
-const isPromptFileReference = (value: unknown): value is string => {
+const isPromptFileReference = (value: JsonValue): value is string => {
   return typeof value === 'string' && PROMPT_FILE_PATTERN.test(value.trim());
 };
 
@@ -660,12 +670,12 @@ const formatJsoncParseError = (filePath: string, errors: ParseError[]): string =
   return `OpenCode configuration at ${filePath} contains invalid JSONC and cannot be loaded safely${location}`;
 };
 
-const isConfigReadError = (error: unknown): error is Error & { code: string } =>
-  Boolean(error && typeof error === 'object' && 'code' in error
-    && (error.code === INVALID_JSONC || error.code === CONFIG_FILE_TOO_LARGE));
+const isConfigReadError = (cause: unknown): cause is Error & { code: string } =>
+  Boolean(cause && typeof cause === 'object' && 'code' in cause
+    && (cause.code === INVALID_JSONC || cause.code === CONFIG_FILE_TOO_LARGE));
 
-const isConfigFileTooLargeError = (error: unknown): error is Error & { code: string } =>
-  Boolean(error && typeof error === 'object' && 'code' in error && error.code === CONFIG_FILE_TOO_LARGE);
+const isConfigFileTooLargeError = (cause: unknown): cause is Error & { code: string } =>
+  Boolean(cause && typeof cause === 'object' && 'code' in cause && cause.code === CONFIG_FILE_TOO_LARGE);
 
 export type CappedFileErrors = {
   tooLarge: (filePath: string) => Error;
@@ -722,11 +732,11 @@ const readConfigFileContent = (filePath: string): string => {
   });
 };
 
-const isCommentOnlyParse = (parsed: unknown, errors: ParseError[]): boolean =>
+const isCommentOnlyParse = (parsed: JsonValue | undefined, errors: ParseError[]): boolean =>
   parsed === undefined
   && errors.every((entry) => printParseErrorCode(entry.error) === 'ValueExpected');
 
-type ConfigParseResult = { config: Record<string, unknown>; value: JsonValue; commentOnly: boolean };
+type ConfigParseResult = { config: JsonObject; value: JsonValue; commentOnly: boolean };
 
 const parseConfigResult = (content: string, filePath: string): ConfigParseResult => {
   const errors: ParseError[] = [];
@@ -740,10 +750,10 @@ const parseConfigResult = (content: string, filePath: string): ConfigParseResult
   return { config: parsed, value: parsed, commentOnly: false };
 };
 
-const parseConfigObject = (content: string, filePath: string): Record<string, unknown> =>
+const parseConfigObject = (content: string, filePath: string): JsonObject =>
   parseConfigResult(content, filePath).config;
 
-const readConfigFile = (filePath?: string | null): Record<string, unknown> => {
+const readConfigFile = (filePath?: string | null): JsonObject => {
   if (!filePath || !fs.existsSync(filePath)) return {};
   const content = readConfigFileContent(filePath);
   const normalized = content.trim();
@@ -751,11 +761,11 @@ const readConfigFile = (filePath?: string | null): Record<string, unknown> => {
   return parseConfigObject(normalized, filePath);
 };
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+const isPlainObject = <Value>(value: Value): value is Value & JsonObject =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-const mergeConfigs = (base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> => {
-  const result: Record<string, unknown> = { ...base };
+const mergeConfigs = (base: JsonObject, override: JsonObject): JsonObject => {
+  const result: JsonObject = Object.assign({}, base);
   for (const [key, value] of Object.entries(override)) {
     if (key in result) {
       const baseValue = result[key];
@@ -771,10 +781,12 @@ const mergeConfigs = (base: Record<string, unknown>, override: Record<string, un
   return result;
 };
 
-const readConfigLayer = (filePath?: string | null): {
-  config: Record<string, unknown>;
+type ConfigLayer = {
+  config: JsonObject;
   error: (Error & { code: string }) | null;
-} => {
+};
+
+const readConfigLayer = (filePath?: string | null): ConfigLayer => {
   try {
     return { config: readConfigFile(filePath), error: null };
   } catch (error) {
@@ -824,7 +836,7 @@ export const readConfigLayers = (workingDirectory?: string) => {
   };
 };
 
-export const readConfig = (workingDirectory?: string): Record<string, unknown> =>
+export const readConfig = (workingDirectory?: string): JsonObject =>
   readConfigLayers(workingDirectory).mergedConfig;
 
 const getAncestors = (startDir?: string, stopDir?: string): string[] => {
@@ -1271,7 +1283,7 @@ const buildConfigFileContent = (
   return JSON.stringify(desired, null, 2);
 };
 
-const writeConfig = (config: Record<string, unknown>, filePath: string = CONFIG_FILE) => {
+const writeConfig = (config: JsonObject, filePath: string = CONFIG_FILE) => {
   let existingRaw = '';
   let existingParse: ConfigParseResult | null = null;
   if (fs.existsSync(filePath)) {
@@ -1310,12 +1322,13 @@ const codedError = (message: string, code: string): Error & { code: string } => 
   return error;
 };
 
-const validatePluginScope = (scope: unknown): PluginScope => {
-  if (scope === 'user' || scope === 'project') return scope;
+const validatePluginScope = <Scope>(scope: Scope): PluginScope => {
+  if (scope === 'user') return 'user';
+  if (scope === 'project') return 'project';
   throw codedError('Plugin scope must be user or project', 'INVALID_SCOPE');
 };
 
-const validatePluginSpec = (spec: unknown): string => {
+const validatePluginSpec = <Spec>(spec: Spec): string => {
   if (typeof spec !== 'string' || spec.trim().length === 0) {
     throw codedError('Plugin spec must be a non-empty string', 'INVALID_SPEC');
   }
@@ -1335,7 +1348,7 @@ const requireLoadablePluginSpec = (spec: string): string => {
 
 const PLUGIN_FILE_NAME_PATTERN = /^[a-z0-9][a-z0-9-_.]*\.(js|ts|mjs|cjs)$/;
 
-const validatePluginFileName = (fileName: unknown): string => {
+const validatePluginFileName = <FileName>(fileName: FileName): string => {
   if (typeof fileName !== 'string' || fileName.trim().length === 0) {
     throw codedError('Plugin file name is required', 'INVALID_FILENAME');
   }
@@ -1354,7 +1367,9 @@ const validatePluginFileName = (fileName: unknown): string => {
 const encodePluginId = (prefix: 'config' | 'file', value: string): string =>
   Buffer.from(`${prefix}:${value}`, 'utf8').toString('base64url');
 
-const decodePluginId = (id: string): { prefix: string; value: string } => {
+type PluginIdParts = { prefix: string; value: string };
+
+const decodePluginId = (id: string): PluginIdParts => {
   try {
     const decoded = Buffer.from(id, 'base64url').toString('utf8');
     const separator = decoded.indexOf(':');
@@ -1365,7 +1380,9 @@ const decodePluginId = (id: string): { prefix: string; value: string } => {
   }
 };
 
-const parsePluginIdValue = (value: string): { scope: PluginScope; rest: string } => {
+type PluginIdValue = { scope: PluginScope; rest: string };
+
+const parsePluginIdValue = (value: string): PluginIdValue => {
   const separator = value.indexOf(':');
   if (separator <= 0) {
     throw codedError('Plugin id value must include scope', 'INVALID_SPEC');
@@ -1376,19 +1393,23 @@ const parsePluginIdValue = (value: string): { scope: PluginScope; rest: string }
   };
 };
 
-const parsePluginRaw = (raw: unknown): { spec: string; options?: Record<string, unknown> } => {
+type ParsedPluginRaw = { spec: string; options?: JsonObject };
+
+const parsePluginRaw = (raw: JsonValue): ParsedPluginRaw => {
   const entity = toPluginEntity(raw);
   if (!entity) {
     throw codedError('Plugin spec must be a string, [string, object], or {package, options}', 'INVALID_SPEC');
   }
-  const parsed: { spec: string; options?: Record<string, unknown> } = {
+  const parsed: ParsedPluginRaw = {
     spec: validatePluginSpec(entity.package),
   };
-  if (entity.options && Object.keys(entity.options).length > 0) parsed.options = { ...entity.options };
+  if (isPlainObject(entity.options) && Object.keys(entity.options).length > 0) parsed.options = { ...entity.options };
   return parsed;
 };
 
-const serializePluginEntry = (entry: { spec?: unknown; options?: unknown }): string | { package: string; options?: Record<string, unknown> } => {
+type SerializedPluginEntity = { package: string; options?: JsonObject };
+
+const serializePluginEntry = (entry: { spec?: unknown; options?: unknown }): string | SerializedPluginEntity => {
   const spec = validatePluginSpec(entry.spec);
   const options = isPlainObject(entry.options) && Object.keys(entry.options).length > 0 ? entry.options : undefined;
   if (options && isPluginControlSpec(spec)) {
@@ -1398,7 +1419,10 @@ const serializePluginEntry = (entry: { spec?: unknown; options?: unknown }): str
   if (serialized === null) {
     throw codedError('Plugin spec must be a non-empty string', 'INVALID_SPEC');
   }
-  return serialized;
+  // SAFETY: fromPluginEntity passes the options object through (toPluginEntity
+  // shallow-copies it in config-v2.ts), and the options here were narrowed to
+  // JsonObject by the isPlainObject check above, so the serialized form keeps it.
+  return serialized as string | SerializedPluginEntity;
 };
 
 const isPluginPathSpec = (spec: string): boolean =>
@@ -1411,7 +1435,9 @@ const pluginParsedKind = (spec: string): PluginParsedKind => {
   return 'npm';
 };
 
-const parsePluginPathSpec = (spec: string, workingDirectory?: string | null): { absolutePath: string } => {
+type PluginPathTarget = { absolutePath: string };
+
+const parsePluginPathSpec = (spec: string, workingDirectory?: string | null): PluginPathTarget => {
   if (spec === '~') return { absolutePath: path.resolve(os.homedir()) };
   if (spec.startsWith('~/')) return { absolutePath: path.resolve(os.homedir(), spec.slice(2)) };
   if (spec.startsWith('./') || spec.startsWith('../')) {
@@ -1467,7 +1493,9 @@ const ensureProjectPluginConfigPath = (workingDirectory?: string | null): string
   return path.join(workingDirectory, '.opencode', 'opencode.json');
 };
 
-const getPluginConfigSources = (workingDirectory?: string | null): Array<{ scope: PluginScope; path: string; config: Record<string, unknown> }> => {
+type PluginConfigSource = { scope: PluginScope; path: string; config: JsonObject };
+
+const getPluginConfigSources = (workingDirectory?: string | null): Array<PluginConfigSource> => {
   const directory = workingDirectory || undefined;
   const layers = readConfigLayers(directory);
   const { userPath, userOverridePath, customPath } = layers.paths;
@@ -1494,13 +1522,13 @@ const getPluginConfigSources = (workingDirectory?: string | null): Array<{ scope
   ];
 };
 
-const readPluginArray = (config: Record<string, unknown>): unknown[] => [
+const readPluginArray = (config: JsonObject): JsonValue[] => [
   ...(Array.isArray(config.plugin) ? config.plugin : []),
   ...(Array.isArray(config.plugins) ? config.plugins : []),
 ];
 
-const writePluginArray = (config: Record<string, unknown>, plugin: unknown[]): Record<string, unknown> => {
-  const next = { ...config };
+const writePluginArray = (config: JsonObject, plugin: JsonValue[]): JsonObject => {
+  const next: JsonObject = Object.assign({}, config);
   delete next.plugin;
   if (plugin.length > 0) {
     next.plugins = plugin.map((raw) => {
@@ -1516,7 +1544,7 @@ const writePluginArray = (config: Record<string, unknown>, plugin: unknown[]): R
   return next;
 };
 
-const hasPluginSpec = (plugin: unknown[], spec: string): boolean => plugin.some((raw) => {
+const hasPluginSpec = (plugin: JsonValue[], spec: string): boolean => plugin.some((raw) => {
   try {
     return parsePluginRaw(raw).spec === spec;
   } catch {
@@ -1524,14 +1552,16 @@ const hasPluginSpec = (plugin: unknown[], spec: string): boolean => plugin.some(
   }
 });
 
-const getPluginTarget = (id: string, workingDirectory?: string | null): null | {
+type PluginTarget = {
   scope: PluginScope;
   path: string;
-  config: Record<string, unknown>;
-  plugin: unknown[];
+  config: JsonObject;
+  plugin: JsonValue[];
   index: number;
   spec: string;
-} => {
+};
+
+const getPluginTarget = (id: string, workingDirectory?: string | null): null | PluginTarget => {
   const decoded = decodePluginId(id);
   if (decoded.prefix !== 'config') {
     throw codedError('Plugin entry id must use config prefix', 'INVALID_SPEC');
@@ -1580,7 +1610,7 @@ export const listPluginEntries = (workingDirectory?: string, switchDirectory?: s
         sourcePath: source.path,
         resolvedPath: resolveLocalPluginPath(item.entry.package, source.path),
       };
-      if (item.entry.options) entry.options = item.entry.options;
+      if (isPlainObject(item.entry.options)) entry.options = item.entry.options;
       const policyResource = pluginPolicyResource(item.entry.package, source.path);
       if (policyResource) {
         entry.policyResource = policyResource;
@@ -1673,7 +1703,9 @@ const getPluginDir = (scope: PluginScope, workingDirectory?: string | null): str
   return path.join(OPENCODE_CONFIG_DIR, 'plugins');
 };
 
-const getPluginFileTarget = (id: string, workingDirectory?: string): { scope: PluginScope; fileName: string; filePath: string } => {
+type PluginFileTarget = { scope: PluginScope; fileName: string; filePath: string };
+
+const getPluginFileTarget = (id: string, workingDirectory?: string): PluginFileTarget => {
   const decoded = decodePluginId(id);
   if (decoded.prefix !== 'file') {
     throw codedError('Plugin file id must use file prefix', 'INVALID_FILENAME');
@@ -1951,14 +1983,14 @@ export type McpConfigEntry = McpEntity & {
 
 type McpSource = {
   path: string;
-  config: Record<string, unknown>;
+  config: JsonObject;
   error: { code: string; message: string } | null;
   required: boolean;
 };
 
 const readMcpSources = (layers: ReturnType<typeof readConfigLayers>, workingDirectory?: string): McpSource[] => {
   const { userPath, userOverridePath, customPath } = layers.paths;
-  const required = (filePath: string, config: Record<string, unknown>): McpSource => ({
+  const required = (filePath: string, config: JsonObject): McpSource => ({
     path: filePath,
     config,
     error: getLayerError(layers, filePath),
@@ -2040,7 +2072,7 @@ export const getMcpConfig = (name: string, workingDirectory?: string): McpConfig
 
 export const createMcpConfig = (
   name: string,
-  mcpConfig: Record<string, unknown>,
+  mcpConfig: JsonObject,
   workingDirectory?: string,
   scope?: AgentScope,
 ) => {
@@ -2052,7 +2084,7 @@ export const createMcpConfig = (
   }
 
   let targetPath = CONFIG_FILE;
-  let config: Record<string, unknown> = {};
+  let config: JsonObject = {};
 
   if (scope === AGENT_SCOPE.PROJECT) {
     if (!workingDirectory) {
@@ -2063,7 +2095,7 @@ export const createMcpConfig = (
   } else {
     const jsonTarget = getJsonWriteTarget(layers, AGENT_SCOPE.USER);
     targetPath = jsonTarget.path || CONFIG_FILE;
-    config = (jsonTarget.config || {}) as Record<string, unknown>;
+    config = jsonTarget.config || {};
   }
 
   const { name: _ignoredName, scope: _ignoredScope, ...entryData } = mcpConfig;
@@ -2074,7 +2106,7 @@ export const createMcpConfig = (
   return { path: targetPath };
 };
 
-export const updateMcpConfig = (name: string, updates: Record<string, unknown>, workingDirectory?: string) => {
+export const updateMcpConfig = (name: string, updates: JsonObject, workingDirectory?: string) => {
   const source = findMcpSource(readMcpSources(readConfigLayers(workingDirectory), workingDirectory), name);
   if (!source) {
     throw new Error(`MCP server "${name}" not found`);
@@ -2118,7 +2150,7 @@ const throwIfLayerError = (
 
 type EntitySectionKind = SectionKind | 'mcp';
 
-const lookupSectionEntry = (config: unknown, sectionKind: EntitySectionKind, entryName: string) =>
+const lookupSectionEntry = (config: JsonObject, sectionKind: EntitySectionKind, entryName: string) =>
   sectionKind === 'mcp' ? readMcpEntry(config, entryName) : readSectionEntry(config, sectionKind, entryName);
 
 const getJsonEntrySource = (
@@ -2127,12 +2159,12 @@ const getJsonEntrySource = (
   entryName: string
 ) => {
   const { userConfig, projectConfig, customConfig, paths } = layers;
-  const found = (config: unknown, filePath: string) => {
+  const found = (config: JsonObject, filePath: string) => {
     const entry = lookupSectionEntry(config, sectionKind, entryName);
     if (entry.value === undefined) return null;
     return {
       section: entry.value,
-      config: config as Record<string, unknown>,
+      config,
       path: filePath,
       exists: true,
       sectionKey: entry.key,
@@ -2181,7 +2213,9 @@ const getJsonWriteTarget = (
   return { config: userConfig, path: paths.userPath };
 };
 
-export const setWebSearchSelection = (selection: WebSearchSelection): { changed: boolean } => {
+type ConfigChangeResult = { changed: boolean };
+
+export const setWebSearchSelection = (selection: WebSearchSelection): ConfigChangeResult => {
   const layers = readConfigLayers();
   const target = getJsonWriteTarget(layers, AGENT_SCOPE.USER);
   const changed = writeWebSearchSelection(target.config, selection);
@@ -2189,7 +2223,7 @@ export const setWebSearchSelection = (selection: WebSearchSelection): { changed:
   return { changed };
 };
 
-export const setWarmingEnabled = (enabled: boolean): { changed: boolean } => {
+export const setWarmingEnabled = (enabled: boolean): ConfigChangeResult => {
   const layers = readConfigLayers();
   const target = getJsonWriteTarget(layers, AGENT_SCOPE.USER);
   const changed = writeWarmingEnabled(target.config, enabled);
@@ -2246,8 +2280,10 @@ export const getWebSearchSource = (workingDirectory?: string) => ({
 });
 
 
-const readProjectConfigFiles = (workingDirectory?: string): Array<{ path: string; config: Record<string, unknown> }> => {
-  const files: Array<{ path: string; config: Record<string, unknown> }> = [];
+type ProjectConfigFile = { path: string; config: JsonObject };
+
+const readProjectConfigFiles = (workingDirectory?: string): Array<ProjectConfigFile> => {
+  const files: Array<ProjectConfigFile> = [];
   for (const filePath of getFolderConfigPaths(workingDirectory).reverse()) {
     try {
       files.push({ path: filePath, config: readConfigFile(filePath) });
@@ -2259,13 +2295,15 @@ const readProjectConfigFiles = (workingDirectory?: string): Array<{ path: string
   return files;
 };
 
-export const getAgentPermissions = (agentName: string, workingDirectory?: string): {
+type AgentPermissionsResult = {
   global: PermissionRule[];
   agent: PermissionRule[];
   effective: EffectivePermissionRule[];
   source: 'md' | 'json' | 'none';
   path: string | null;
-} => {
+};
+
+export const getAgentPermissions = (agentName: string, workingDirectory?: string): AgentPermissionsResult => {
   const layers = readConfigLayers(workingDirectory);
   const globalRules = [
     ...readGlobalPermissionRules(layers.userConfig),
@@ -2291,7 +2329,9 @@ export const getAgentPermissions = (agentName: string, workingDirectory?: string
 // never truncated, and a non-regular file is refused without blocking.
 export const MD_FILE_MAX_BYTES = 4 * 1024 * 1024;
 
-export const parseMdFile = (filePath: string): { frontmatter: Record<string, unknown>; body: string } => {
+type ParsedMdFile = { frontmatter: JsonObject; body: string };
+
+export const parseMdFile = (filePath: string): ParsedMdFile => {
   const content = readCappedFileSync(filePath, MD_FILE_MAX_BYTES, {
     tooLarge: (target) => codedError(
       `Markdown file exceeds the ${MD_FILE_MAX_BYTES}-byte size limit: ${target}`,
@@ -2301,9 +2341,9 @@ export const parseMdFile = (filePath: string): { frontmatter: Record<string, unk
   });
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
   if (!match) return { frontmatter: {}, body: content.trim() };
-  let frontmatter: Record<string, unknown> = {};
+  let frontmatter: JsonObject = {};
   try {
-    frontmatter = (yaml.parse(match[1]) || {}) as Record<string, unknown>;
+    frontmatter = (yaml.parse(match[1]) || {}) as JsonObject;
   } catch (error) {
     console.warn(`[OpenChamber][VSCode] Failed to parse frontmatter for ${filePath}, treating as empty:`, error);
     frontmatter = {};
@@ -2333,7 +2373,7 @@ const assertMdContentWithinCap = (filePath: string, content: string): void => {
   }
 };
 
-const writeMdFile = (filePath: string, frontmatter: Record<string, unknown>, body: string) => {
+const writeMdFile = (filePath: string, frontmatter: JsonObject, body: string) => {
   const content = serializeMdContent(frontmatter, body);
   assertMdContentWithinCap(filePath, content);
   writeFileAtomic(filePath, content);
@@ -2382,13 +2422,15 @@ export const getAgentSources = (agentName: string, workingDirectory?: string): C
   };
 };
 
-export const getAgentConfig = (agentName: string, workingDirectory?: string): {
+type AgentConfigResult = {
   source: 'md' | 'json' | 'none';
   scope: AgentScope | null;
   path: string | null;
   legacy: boolean;
   config: AgentEntity;
-} => {
+};
+
+export const getAgentConfig = (agentName: string, workingDirectory?: string): AgentConfigResult => {
   const { scope, path: mdPath } = getAgentScope(agentName, workingDirectory);
   if (mdPath) {
     const md = readMdAgent(mdPath);
@@ -2474,11 +2516,12 @@ export const listDisabledAgents = (workingDirectory?: string): DisabledAgent[] =
 
 const writeAgentMd = (targetPath: string, entity: AgentEntity): void => {
   const { fields, system } = fromAgentEntity(entity);
+  const frontmatter: JsonObject = JSON.parse(JSON.stringify(fields));
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  writeMdFile(targetPath, fields, system);
+  writeMdFile(targetPath, frontmatter, system);
 };
 
-export const createAgent = (agentName: string, config: Record<string, unknown>, workingDirectory?: string, scope?: AgentScope) => {
+export const createAgent = (agentName: string, config: JsonObject, workingDirectory?: string, scope?: AgentScope) => {
   ensureDirs();
 
   const projectPath = workingDirectory ? getProjectAgentPath(workingDirectory, agentName) : null;
@@ -2516,7 +2559,7 @@ export const createAgent = (agentName: string, config: Record<string, unknown>, 
 
 const AGENT_REQUEST_BODY_FIELDS = ['temperature', 'top_p'];
 
-const deleteRequestBodyField = (entity: Record<string, unknown>, key: string): void => {
+const deleteRequestBodyField = (entity: JsonObject, key: string): void => {
   const request = isPlainObject(entity.request) ? entity.request : undefined;
   if (!request) return;
   const body = isPlainObject(request.body) ? request.body : undefined;
@@ -2526,14 +2569,14 @@ const deleteRequestBodyField = (entity: Record<string, unknown>, key: string): v
   if (Object.keys(request).length === 0) delete entity.request;
 };
 
-const stripModelVariant = (entity: Record<string, unknown>): void => {
+const stripModelVariant = (entity: JsonObject): void => {
   const parsed = parseModelSelection(entity.model);
   if (!parsed) return;
   const stripped = formatModelSelection({ providerID: parsed.providerID, modelID: parsed.modelID });
   if (stripped) entity.model = stripped;
 };
 
-const deleteAgentField = (entity: Record<string, unknown>, field: string): void => {
+const deleteAgentField = (entity: JsonObject, field: string): void => {
   if (field === 'permission' || field === 'permissions') {
     delete entity.permissions;
     return;
@@ -2549,14 +2592,8 @@ const deleteAgentField = (entity: Record<string, unknown>, field: string): void 
   delete entity[field === 'prompt' ? 'system' : field];
 };
 
-const applyAgentUpdates = (entity: AgentEntity, updates: Record<string, unknown>): AgentEntity => {
-  const next: Record<string, unknown> = { ...entity };
-  if (entity.request) {
-    const request = { ...entity.request };
-    if (request.body) request.body = { ...request.body };
-    if (request.headers) request.headers = { ...request.headers };
-    next.request = request;
-  }
+const applyAgentUpdates = (entity: AgentEntity, updates: JsonObject): AgentEntity => {
+  const next: JsonObject = JSON.parse(JSON.stringify(entity));
   for (const [field, value] of Object.entries(updates || {})) {
     if (field === 'scope' || value === undefined) continue;
     if (value === null) {
@@ -2566,7 +2603,7 @@ const applyAgentUpdates = (entity: AgentEntity, updates: Record<string, unknown>
     if (field === 'permission' || field === 'permissions') {
       const rules = normalizePermissionRules(value);
       if (rules.length === 0) delete next.permissions;
-      else next.permissions = rules;
+      else next.permissions = rules.map((rule) => ({ ...rule }));
       continue;
     }
     next[field === 'prompt' ? 'system' : field] = value;
@@ -2574,7 +2611,7 @@ const applyAgentUpdates = (entity: AgentEntity, updates: Record<string, unknown>
   return toAgentEntity(next);
 };
 
-export const updateAgent = (agentName: string, updates: Record<string, unknown>, workingDirectory?: string) => {
+export const updateAgent = (agentName: string, updates: JsonObject, workingDirectory?: string) => {
   ensureDirs();
 
   const current = getAgentConfig(agentName, workingDirectory);
@@ -2589,7 +2626,7 @@ export const updateAgent = (agentName: string, updates: Record<string, unknown>,
   if (current.source === 'json') {
     const layers = readConfigLayers(workingDirectory);
     const jsonSource = getJsonEntrySource(layers, 'agents', agentName);
-    const config = (jsonSource.config || {}) as Record<string, unknown>;
+    const config = jsonSource.config || {};
     const section = isPlainObject(jsonSource.section) ? jsonSource.section : {};
     const rawSystem = section.system ?? section.prompt;
     if (isPromptFileReference(rawSystem)) {
@@ -2638,8 +2675,8 @@ export const deleteAgent = (agentName: string, workingDirectory?: string, scope?
   const layers = readConfigLayers(workingDirectory);
 
   if (requestedScope === AGENT_SCOPE.PROJECT) {
-    if (layers.paths.projectPath && deleteSectionEntry(layers.projectConfig as Record<string, unknown>, 'agents', agentName)) {
-      writeConfig(layers.projectConfig as Record<string, unknown>, layers.paths.projectPath);
+    if (layers.paths.projectPath && deleteSectionEntry(layers.projectConfig, 'agents', agentName)) {
+      writeConfig(layers.projectConfig, layers.paths.projectPath);
       return;
     }
     throw new Error(`Project agent ${agentName} not found`);
@@ -2647,7 +2684,7 @@ export const deleteAgent = (agentName: string, workingDirectory?: string, scope?
 
   if (requestedScope === AGENT_SCOPE.USER) {
     const userJsonPath = layers.paths.customPath || layers.paths.userPath;
-    const userJsonConfig = (layers.paths.customPath ? layers.customConfig : layers.userConfig) as Record<string, unknown>;
+    const userJsonConfig = layers.paths.customPath ? layers.customConfig : layers.userConfig;
     if (userJsonPath && deleteSectionEntry(userJsonConfig, 'agents', agentName)) {
       writeConfig(userJsonConfig, userJsonPath);
       return;
@@ -2703,13 +2740,15 @@ export const getCommandSources = (commandName: string, workingDirectory?: string
   };
 };
 
-export const getCommandConfig = (commandName: string, workingDirectory?: string): {
+type CommandConfigResult = {
   source: 'md' | 'json' | 'none';
   scope: CommandScope | null;
   path: string | null;
   legacy: boolean;
   config: CommandEntity;
-} => {
+};
+
+export const getCommandConfig = (commandName: string, workingDirectory?: string): CommandConfigResult => {
   const { scope, path: mdPath } = getCommandScope(commandName, workingDirectory);
   if (mdPath) {
     const { frontmatter, body } = parseMdFile(mdPath);
@@ -2743,7 +2782,7 @@ const writeCommandMd = (targetPath: string, entity: CommandEntity): void => {
   writeMdFile(targetPath, fields, template);
 };
 
-export const createCommand = (commandName: string, config: Record<string, unknown>, workingDirectory?: string, scope?: CommandScope) => {
+export const createCommand = (commandName: string, config: JsonObject, workingDirectory?: string, scope?: CommandScope) => {
   ensureDirs();
 
   const projectPath = workingDirectory ? getProjectCommandPath(workingDirectory, commandName) : null;
@@ -2778,7 +2817,7 @@ export const createCommand = (commandName: string, config: Record<string, unknow
   return { scope: targetScope, path: targetPath };
 };
 
-const deleteCommandField = (entity: Record<string, unknown>, field: string): void => {
+const deleteCommandField = (entity: JsonObject, field: string): void => {
   if (field === 'variant') {
     stripModelVariant(entity);
     return;
@@ -2786,8 +2825,8 @@ const deleteCommandField = (entity: Record<string, unknown>, field: string): voi
   delete entity[field === 'subtask' ? 'subagent' : field];
 };
 
-const applyCommandUpdates = (entity: CommandEntity, updates: Record<string, unknown>): CommandEntity => {
-  const next: Record<string, unknown> = { ...entity };
+const applyCommandUpdates = (entity: CommandEntity, updates: JsonObject): CommandEntity => {
+  const next: JsonObject = JSON.parse(JSON.stringify(entity));
   for (const [field, value] of Object.entries(updates || {})) {
     if (field === 'scope' || value === undefined) continue;
     if (value === null) {
@@ -2799,7 +2838,7 @@ const applyCommandUpdates = (entity: CommandEntity, updates: Record<string, unkn
   return toCommandEntity(next);
 };
 
-export const updateCommand = (commandName: string, updates: Record<string, unknown>, workingDirectory?: string) => {
+export const updateCommand = (commandName: string, updates: JsonObject, workingDirectory?: string) => {
   ensureDirs();
 
   const current = getCommandConfig(commandName, workingDirectory);
@@ -2813,7 +2852,7 @@ export const updateCommand = (commandName: string, updates: Record<string, unkno
   if (current.source === 'json') {
     const layers = readConfigLayers(workingDirectory);
     const jsonSource = getJsonEntrySource(layers, 'commands', commandName);
-    const config = (jsonSource.config || {}) as Record<string, unknown>;
+    const config = jsonSource.config || {};
     const section = isPlainObject(jsonSource.section) ? jsonSource.section : {};
     const rawTemplate = section.template;
     if (isPromptFileReference(rawTemplate)) {
@@ -2838,7 +2877,7 @@ export const updateCommand = (commandName: string, updates: Record<string, unkno
 };
 
 
-const providerExistsIn = (config: unknown, providerId: string): boolean =>
+const providerExistsIn = (config: JsonObject, providerId: string): boolean =>
   readSectionEntry(config, 'providers', providerId).value !== undefined;
 
 const getUserProviderPath = (layers: ReturnType<typeof readConfigLayers>, providerId: string) => {
@@ -2882,7 +2921,7 @@ export const removeProviderConfig = (providerId: string, workingDirectory?: stri
     targetPath = layers.paths.customPath;
   }
 
-  const targetConfig = getConfigForPath(layers, targetPath) as Record<string, unknown>;
+  const targetConfig = getConfigForPath(layers, targetPath);
   if (!deleteSectionEntry(targetConfig, 'providers', providerId)) {
     return false;
   }
@@ -2894,9 +2933,9 @@ export const removeProviderConfig = (providerId: string, workingDirectory?: stri
 export type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
 export type JsonObject = { [key: string]: JsonValue };
 
-export const upsertProviderConfig = (
+export const upsertProviderConfig = <Config>(
   providerId: string,
-  config: unknown,
+  config: Config,
   workingDirectory?: string,
   scope: 'user' | 'project' | 'custom' = 'user',
   options: { hasStoredAuth?: boolean } = {},
@@ -2925,7 +2964,7 @@ export const upsertProviderConfig = (
     throw new Error('Invalid scope');
   }
 
-  const targetConfig = getConfigForPath(layers, targetPath) as Record<string, unknown>;
+  const targetConfig = getConfigForPath(layers, targetPath);
   const existing = readSectionEntry(targetConfig, 'providers', validated.value.providerId).value;
   const mergedConfig = mergeCustomProviderConfig(existing, validated.value.config);
   writeSectionEntry(targetConfig, 'providers', validated.value.providerId, mergedConfig);
@@ -2996,7 +3035,7 @@ export const getSnippet = (name: string, workingDirectory?: string): Snippet | n
 
 export const createSnippet = (
   name: string,
-  config: Record<string, unknown>,
+  config: JsonObject,
   workingDirectory?: string,
   scope: SnippetScope = 'global',
 ): Snippet | null => {
@@ -3009,7 +3048,7 @@ export const createSnippet = (
   return getSnippet(name, workingDirectory);
 };
 
-export const updateSnippet = (name: string, updates: Record<string, unknown>, workingDirectory?: string): Snippet | null => {
+export const updateSnippet = (name: string, updates: JsonObject, workingDirectory?: string): Snippet | null => {
   assertValidSnippetName(name);
   const registry = loadSnippetRegistry(workingDirectory);
   const existing = registry.get(name.toLowerCase());
@@ -3213,11 +3252,13 @@ const getProjectAgentsSkillDir = (workingDirectory: string, skillName: string): 
   return path.join(workingDirectory, '.agents', 'skills', skillName);
 };
 
-const getSkillScope = (skillName: string, workingDirectory?: string): {
+type SkillScopeLookup = {
   scope: SkillScope | null;
   path: string | null;
   source: SkillSource | null;
-} => {
+};
+
+const getSkillScope = (skillName: string, workingDirectory?: string): SkillScopeLookup => {
   const discovered = discoverSkills(workingDirectory).find((skill) => skill.name === skillName);
   if (discovered?.path) {
     return { scope: discovered.scope, path: discovered.path, source: discovered.source };
@@ -3406,7 +3447,9 @@ const isModelInvocationDisabled = (frontmatter: SkillFrontmatter): boolean => {
 };
 
 const applyModelInvocation = (frontmatter: SkillFrontmatter, disabled: boolean): void => {
-  const metadata = isPlainObject(frontmatter.metadata) ? { ...frontmatter.metadata } : null;
+  const metadata: JsonObject | null = isPlainObject(frontmatter.metadata)
+    ? Object.assign({}, frontmatter.metadata)
+    : null;
   if (disabled) {
     frontmatter[DISABLE_MODEL_INVOCATION_KEY] = true;
     frontmatter.metadata = { ...metadata, [AUTOINVOKE_METADATA_KEY]: false };
@@ -3544,7 +3587,7 @@ export const SKILL_SUPPORTING_FILE_TOO_LARGE_CODE = 'skill_supporting_file_too_l
 // the real skill root. The bridge previously joined the caller-supplied
 // relativePath onto the skill dir with no validation, so a ../.. path
 // could read, write, and delete outside the skill directory.
-export const isUnsafeSkillRelativePath = (value: unknown): boolean => {
+export const isUnsafeSkillRelativePath = (value: JsonValue): boolean => {
   if (typeof value !== 'string' || value.length === 0) {
     return true;
   }
@@ -3657,7 +3700,7 @@ const validateSkillName = (skillName: string): void => {
   }
 };
 
-export const createSkill = (skillName: string, config: Record<string, unknown>, workingDirectory?: string, scope?: SkillScope): void => {
+export const createSkill = (skillName: string, config: JsonObject, workingDirectory?: string, scope?: SkillScope): void => {
   ensureSkillDirs();
   validateSkillName(skillName);
   
@@ -3690,7 +3733,7 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
     supportingFiles: supportingFilesData,
     disableModelInvocation,
     ...frontmatter
-  } = config as Record<string, unknown> & { 
+  } = config as JsonObject & { 
     instructions?: unknown; 
     scope?: unknown; 
     source?: unknown;
@@ -3738,7 +3781,7 @@ export const createSkill = (skillName: string, config: Record<string, unknown>, 
   }
 };
 
-export const updateSkill = (skillName: string, updates: Record<string, unknown>, workingDirectory?: string): void => {
+export const updateSkill = (skillName: string, updates: JsonObject, workingDirectory?: string): void => {
   const existing = getSkillScope(skillName, workingDirectory);
   if (!existing.path) {
     throw new Error(`Skill "${skillName}" not found`);
