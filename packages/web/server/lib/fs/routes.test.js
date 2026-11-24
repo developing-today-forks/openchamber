@@ -2161,7 +2161,13 @@ describe.skipIf(process.platform === 'win32')('fs reveal containment (real fs)',
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ success: true, path: path.join(workspace, 'file.txt') });
-    expect(spawn).toHaveBeenCalledWith('xdg-open', [workspace], { windowsHide: true, stdio: 'ignore', detached: true });
+    // The launcher is platform-specific: Finder reveals the file itself
+    // (open -R), while xdg-open opens the containing directory.
+    if (process.platform === 'darwin') {
+      expect(spawn).toHaveBeenCalledWith('open', ['-R', path.join(workspace, 'file.txt')], { windowsHide: true, stdio: 'ignore', detached: true });
+    } else {
+      expect(spawn).toHaveBeenCalledWith('xdg-open', [workspace], { windowsHide: true, stdio: 'ignore', detached: true });
+    }
   });
 
   it('rejects an outside path', async () => {
