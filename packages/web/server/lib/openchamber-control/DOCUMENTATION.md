@@ -758,10 +758,22 @@ constructor retains its existing `Object.assign` behavior.
   clearing the history stay with the user in Settings.
 - `projects.setup` returns a configured project's setup through
   `projectConfigRuntime.readProjectSetup`, the same read as
-  `GET /api/projects/:projectId/config`; an unknown id is a 404. It is read
-  only: worktree setup commands and project actions run outside OpenCode's
-  permission rules, so an agent able to write them could run commands it was
-  never allowed to. Writing them stays with the user in Settings.
+  `GET /api/projects/:projectId/config`; an unknown id is a 404.
+  `projects.setup.set` and `projects.actions.create`/`update`/`remove`
+  (`project-setup-actions.js`) are its write counterpart, added on the
+  2026-11-23 decision on #152 (issue #2580): worktree setup commands and
+  project actions run outside OpenCode's permission rules, and the decision
+  was that these writes are the point of the agent tool, with OpenCode's
+  permission rules still governing execution. A write names its store with
+  `setupTarget` (personal by default, or the repository's shared
+  `.openchamber/project.json`) and goes through the runtime's
+  `updateProjectSetup`/`updateSharedProjectSetup`, so it holds the
+  per-project write lock and validates like the Settings routes; action
+  create/update/remove write the store's whole action list back through
+  that writer. Enterprise mode refuses every one of these writes (403,
+  `enterprise_mode`), and each result carries a `change` record (action,
+  store, `agent-tool`, timestamp) so the mutation is auditable from the
+  result alone.
 - `projects.add`/`projects.remove` are the only destructive-adjacent actions
   wired: `projects.add` mirrors `POST /api/openchamber/directory` exactly
   (`validateDirectoryPath`, `createProjectIdFromPath`, `persistSettings`), so

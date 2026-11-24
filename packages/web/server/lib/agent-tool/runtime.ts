@@ -31,6 +31,7 @@ import { CONFIG_PARAMETERS } from '../openchamber-control/config-actions.js';
 import { INTEGRATION_PARAMETERS } from '../openchamber-control/integration-actions.js';
 import { INTEGRATION_SERVICE_PARAMETERS } from '../openchamber-control/integration-service-actions.js';
 import { ENVIRONMENT_PARAMETERS } from '../openchamber-control/environment-actions.js';
+import { PROJECT_SETUP_PARAMETERS } from '../openchamber-control/project-setup-actions.js';
 import { MAX_AGENTS_PER_RUN, MAX_CONCURRENT_AGENTS } from '../workflows/runtime.js';
 import {
   isAgentPrompt,
@@ -199,6 +200,7 @@ const ALL_PARAMETER_PROPERTIES = {
   ...INTEGRATION_PARAMETERS,
   ...INTEGRATION_SERVICE_PARAMETERS,
   ...ENVIRONMENT_PARAMETERS,
+  ...PROJECT_SETUP_PARAMETERS,
   link: {
     type: 'object',
     properties: {
