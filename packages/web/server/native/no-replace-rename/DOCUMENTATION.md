@@ -56,7 +56,8 @@ Details:
   from the host process at load time on POSIX, but on Windows they live in
   `node.exe`, so `cl` must link `node.lib`. It is not part of the headers
   tarball; the script downloads it as the standalone `win-<arch>/node.lib`
-  dist file from nodejs.org and caches it beside the headers. A build that
+  dist file from nodejs.org and caches it beside the headers under an
+  architecture-specific name, so x64 and ARM64 builds never share one. A build that
   can neither find nor download it fails closed rather than producing an
   unresolved addon.
 

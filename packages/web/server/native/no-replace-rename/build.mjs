@@ -76,7 +76,7 @@ const findHeadersDir = async () => {
 };
 
 const findWindowsNodeLib = async (headersDir) => {
-  const libPath = path.join(path.dirname(headersDir), 'node.lib');
+  const libPath = path.join(path.dirname(headersDir), `node-${process.arch}.lib`);
   if (fs.existsSync(libPath)) return libPath;
   const url = `https://nodejs.org/dist/${process.version}/win-${process.arch}/node.lib`;
   const response = await fetch(url);
@@ -134,7 +134,7 @@ const build = async (options) => {
     try {
       result = spawnSync(
         winCompiler,
-        ['/nologo', '/LD', '/O2', `/I${headersDir}`, sourceFile, `/Fo${objDir}\\`, `/Fe${outFile}`, '/link', nodeLib],
+        ['/nologo', '/LD', '/O2', '/DBUILDING_NODE_EXTENSION', `/I${headersDir}`, sourceFile, `/Fo${objDir}\\`, `/Fe${outFile}`, '/link', nodeLib],
         { stdio: 'inherit' },
       );
     } finally {

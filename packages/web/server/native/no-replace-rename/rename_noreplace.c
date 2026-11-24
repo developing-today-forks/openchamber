@@ -117,7 +117,7 @@ static int rnr_os_rename_dir(const char *from, const char *to, unsigned long *wi
 #elif defined(__x86_64__)
 #define RNR_SYS_renameat2 316
 #elif defined(__aarch64__)
-#define RNR_SYS_renameat2 382
+#define RNR_SYS_renameat2 276
 #elif defined(__i386__)
 #define RNR_SYS_renameat2 353
 #else
