@@ -124,10 +124,12 @@ export const getSessionActivityTime = (session: Session): number => (
 const createdAt = (session: Session): number => finiteTime(session.time?.created);
 
 const parentIdOf = (session: Session): string | null => (
+  // SAFETY: only the optional parentID field is read; a missing field collapses to null via ??.
   (session as Session & { parentID?: string | null }).parentID ?? null
 );
 
 const sessionDirectory = (session: Session): string | null => {
+  // SAFETY: only the optional directory and project.worktree fields are read; missing fields collapse to null via the ?? chain.
   const record = session as Session & {
     directory?: string | null;
     project?: { worktree?: string | null } | null;

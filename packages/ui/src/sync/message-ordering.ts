@@ -19,8 +19,10 @@ export const insertMessageInEventOrder = <T extends Message>(messages: T[], mess
 }
 
 export const messagesBefore = <T extends Message>(messages: readonly T[], messageID?: string): T[] => {
+  // SAFETY: this function never mutates `messages`; the assertion only drops the readonly modifier on the returned alias.
   if (!messageID) return messages as T[]
   const index = findMessageIndex(messages, messageID)
+  // SAFETY: this function never mutates `messages`; the assertion only drops the readonly modifier on the returned alias.
   return index < 0 ? messages as T[] : messages.slice(0, index)
 }
 

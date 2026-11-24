@@ -31,6 +31,7 @@ const readEnvelope = (storage: Storage): PersistedTopologyEnvelope => {
   try {
     const raw = storage.getItem(STORAGE_KEY)
     if (!raw) return emptyEnvelope()
+    // SAFETY: the parse result is treated as untrusted: version and runtimes are validated immediately below and entries pass through the parseEntries type guard.
     const parsed = JSON.parse(raw) as Partial<PersistedTopologyEnvelope>
     if (parsed.version !== 2 || !parsed.runtimes || typeof parsed.runtimes !== "object") return emptyEnvelope()
     const runtimes: Record<string, PersistedTopology> = {}

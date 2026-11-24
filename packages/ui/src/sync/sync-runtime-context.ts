@@ -31,6 +31,7 @@ type SyncGlobal = typeof globalThis & {
   [SYNC_RUNTIME_CONTEXT_GLOBAL_KEY]?: React.Context<SyncRuntime | null>
 }
 
+// SAFETY: SyncGlobal only declares the two optional context slots this module itself writes; reads fall back to createContext when a slot is absent.
 const syncGlobal = globalThis as SyncGlobal
 
 export const SyncContext = syncGlobal[SYNC_CONTEXT_GLOBAL_KEY] ?? createContext<SyncSystem | null>(null)

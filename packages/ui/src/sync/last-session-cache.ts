@@ -27,6 +27,7 @@ const readEnvelope = (storage: Storage): PersistedEnvelope => {
   try {
     const raw = storage.getItem(STORAGE_KEY)
     if (!raw) return emptyEnvelope()
+    // SAFETY: the parse result is treated as untrusted: version and runtimes are validated immediately below and every entry field is checked before use.
     const parsed = JSON.parse(raw) as Partial<PersistedEnvelope>
     if (parsed.version !== 1 || !parsed.runtimes || typeof parsed.runtimes !== "object") return emptyEnvelope()
     const runtimes: Record<string, PersistedEntry> = {}

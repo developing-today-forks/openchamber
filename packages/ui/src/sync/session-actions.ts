@@ -819,7 +819,7 @@ function restoreContextPartsToInput(
   }
 }
 
-function resolveSessionOwnedDirectory(session: Session): string | null {
+function resolveSessionOwnedDirectory(session: Session): string | null {  // SAFETY: only the optional directory and project.worktree fields are read, and each is typeof-checked as a non-empty string before use.
   const record = session as Session & {
     directory?: string | null
     project?: { worktree?: string | null } | null
@@ -844,7 +844,7 @@ function resolveDirectoryForBlockingRequest(
 
   for (const [directory, store] of stores.children) {
     const state = store.getState()
-    const requestMap = type === "permission" ? state.permission : state.form
+    const requestMap = type === "permission" ? state.permission : state.form  // SAFETY: requestMap is the store's own permission or form map whose values are request arrays; each candidate's id is matched by === and sessionID is typeof-checked before use.
     for (const requests of Object.values(requestMap) as Array<Array<{ id: string; sessionID?: string }> | undefined>) {
       const request = requests?.find((candidate) => candidate.id === requestId)
       if (!request) continue
@@ -962,7 +962,7 @@ function restorePermissionRequest(store: DirectoryStoreApi, sessionId: string, p
 }
 
 function isPermissionRequestNotFoundError(error: unknown): boolean {
-  if (error && typeof error === "object") {
+  if (error && typeof error === "object") {  // SAFETY: error is narrowed to a non-null object by the guard above, and the only field read (status) is compared against 404 before use.
     const status = (error as { status?: unknown }).status
     if (status === 404) return true
   }
@@ -1490,7 +1490,7 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
     return true
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
-    recordSessionActionFailure(sessionId, toError(error))
+    recordSessionActionFailure(sessionId, toError(error))  // SAFETY: the assertion only reads the optional status field, and it is compared against 404 before the branch acts.
     if ((error as { status?: number })?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
       finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
@@ -1918,7 +1918,7 @@ export async function optimisticSend(input: {
     revertedMessages.map((message) => [message.id, stateBeforeSend.part[message.id] ?? []] as const),
   )
 
-  if (revertMessageID) {
+  if (revertMessageID) {  // SAFETY: candidate is an element of the store's Session[]; the spread replaces only the existing revert field, so the result is a Session by construction.
     const session = stateBeforeSend.session.map((candidate) => (
       candidate.id === input.sessionId ? { ...candidate, revert: undefined } as Session : candidate
     ))
@@ -2060,7 +2060,7 @@ export async function optimisticSend(input: {
     let message = rollbackState.message
     let part = rollbackState.part
 
-    if (revertMessageID && revertStaged) {
+    if (revertMessageID && revertStaged) {  // SAFETY: candidate is an element of the store's Session[]; the spread replaces only the existing revert field, so the result is a Session by construction.
       session = rollbackState.session.map((candidate) => (
         candidate.id === input.sessionId ? { ...candidate, revert: sessionBeforeSend?.revert } as Session : candidate
       ))

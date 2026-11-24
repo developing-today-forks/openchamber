@@ -502,7 +502,7 @@ export type SessionUIState = {
 
 
 
-const resolveDirectoryKey = (session: Session): string | null => {
+const resolveDirectoryKey = (session: Session): string | null => {  // SAFETY: only the optional directory and project.worktree fields are read; missing fields collapse to null via the ?? chain.
   const sessionRecord = session as Session & {
     directory?: string | null
     project?: { worktree?: string | null } | null
@@ -523,7 +523,7 @@ type PersistedDraftTarget = {
 const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
   try {
     const raw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
-    if (!raw) return null
+    if (!raw) return null  // SAFETY: every field of the parse result is typeof- or value-checked in the returned object below; nothing is trusted as parsed.
     const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown; target?: unknown }
     return {
       projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
@@ -2333,7 +2333,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     let firstSyntheticIndex = targetIndex
     while (firstSyntheticIndex > 0 && messages[firstSyntheticIndex - 1]?.role === "synthetic") {
       firstSyntheticIndex -= 1
-    }
+    }  // SAFETY: the filter above narrows message to the synthetic variant; metadata is the value this app originally attached and persisted, forwarded unchanged into the replay.
     const syntheticParts = messages
       .slice(firstSyntheticIndex, Math.max(0, targetIndex))
       .filter((message): message is Extract<typeof message, { role: "synthetic" }> => message.role === "synthetic")
@@ -2389,7 +2389,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     if (!targetMessage) return
 
-    const targetParts = getSyncParts(targetMessage.id)
+    const targetParts = getSyncParts(targetMessage.id)  // SAFETY: the find predicate matches only parts whose type is "text", the TextPart discriminant; non-matching parts are excluded by the predicate itself.
     const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
     const preview = textPart?.text
       ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")

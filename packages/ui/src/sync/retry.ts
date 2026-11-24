@@ -29,6 +29,7 @@ function isTransientError(error: unknown): boolean {
   if (error instanceof Error && error.cause instanceof DOMException && error.cause.name === "AbortError") return false
   const message = String(error instanceof Error ? error.message : error).toLowerCase()
   if (TRANSIENT_MESSAGES.some((m) => message.includes(m))) return true
+  // SAFETY: the assertion only reads the optional status field; the value is typeof-checked as a number before it is used below.
   const status = (error as { status?: number })?.status
   if (typeof status === "number" && status >= 500 && status < 600) return true
   return false
