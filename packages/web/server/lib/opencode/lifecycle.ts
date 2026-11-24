@@ -862,7 +862,52 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     }
   };
 
+  // Live-identity check for the action path (#2618): the generation
+  // record names the binary and port the child was started with, so the
+  // live command must still name them before the pid is signalled. The
+  // managed-servers read check (opencode + serve + recorded port) applies
+  // first; a command that names the recorded binary (full resolved path
+  // or basename token) alongside serve and the exact recorded --port also
+  // matches, so children spawned from a custom binary path or a test
+  // fixture are still recognised as ours. An unrelated recycled process
+  // serves a different port under a different binary and matches neither.
+  const commandMatchesGeneration = (command: string, generation: ManagedStoreGeneration) => {
+    if (!command) return false;
+    if (commandIdentifiesOurServer(command, { pid: generation.pid, port: generation.port })) return true;
+    const portMatch = command.match(/--port(?:=|\s+)(\d+)/);
+    if (!portMatch || Number.parseInt(portMatch[1] ?? '', 10) !== generation.port) return false;
+    if (!command.toLowerCase().includes('serve')) return false;
+    const binary = generation.binary;
+    if (!binary) return false;
+    if (command.includes(binary)) return true;
+    const base = path.basename(binary);
+    if (!base) return false;
+    return command.split(/\s+/).some((token) => token === base || token.endsWith(`/${base}`));
+  };
+
   const terminateRecordedOpenCodeProcess = async (pid: number) => {
+    // A recorded pid can be recycled onto an unrelated process after ours
+    // exits, and signal-0 liveness cannot tell the two apart — so a
+    // recorded pid is never signalled on store membership plus liveness
+    // alone (#2618). The live command is verified against the generation
+    // record (commandMatchesGeneration: recorded binary + serve + exact
+    // recorded port). A readable command that does not match closes the
+    // generation as recycled and is never signalled; an unreadable
+    // command fails closed while the pid is alive, and a dead pid needs
+    // no signal. Only win32 keeps the old signal-first behavior: `ps` is
+    // unavailable there.
+    if (process.platform !== 'win32') {
+      const store = readManagedOpenCodeStore(managedPaths.storePath);
+      const generation = store ? generationForPid(store, pid) : null;
+      if (!generation) return;
+      if (isPidAlive(pid)) {
+        const command = await readRecordedProcessCommand(pid);
+        if (!commandMatchesGeneration(command, generation)) {
+          if (command) closeGenerationForPid(pid);
+          return;
+        }
+      }
+    }
     const signalGroup = (signal: NodeJS.Signals) => {
       try {
         process.kill(-pid, signal);

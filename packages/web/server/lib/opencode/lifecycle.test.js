@@ -2324,6 +2324,75 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });
+
+  it('never signals a live recorded pid whose command no longer matches (#2618)', async () => {
+    delete process.env.OPENCODE_BINARY;
+    // The recorded pid is live (the test runner's own), but the pid has
+    // been recycled: the live command is an unrelated process.
+    const { dataDir } = await startFirstRuntime(process.pid);
+    recordedProcessCommand = 'sleep 30\n';
+    globalThis.fetch = vi.fn(async () => ({ ok: false }));
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (signal === 0 || signal === undefined) return true;
+      throw Object.assign(new Error(`mock kill ${String(signal)}`), { code: 'ESRCH' });
+    });
+    spawnMock.mockImplementationOnce((command, args) => {
+      const child = createMockChild();
+      // Like OpenCode, the line names the port the child was started on.
+      queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
+      return child;
+    });
+    try {
+      const second = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode') });
+      await second.startOpenCode();
+
+      // The replace path ran (a fresh server started) without signalling
+      // the recycled pid: no SIGTERM/SIGKILL to the pid or its group.
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(kill.mock.calls.filter(([, signal]) => signal === 'SIGTERM' || signal === 'SIGKILL')).toEqual([]);
+      // The mismatched generation is closed as recycled, never signalled.
+      const generations = readStore(dataDir)?.generations ?? [];
+      expect(generations.find((generation) => generation.pid === process.pid)?.state).toBe('closed');
+    } finally {
+      kill.mockRestore();
+      recordedProcessCommand = '';
+    }
+  });
+
+  it('signals a live recorded pid whose command still matches (#2618)', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const { dataDir } = await startFirstRuntime(process.pid);
+    recordedProcessCommand = 'opencode serve --hostname 127.0.0.1 --port 45678\n';
+    globalThis.fetch = vi.fn(async () => ({ ok: false }));
+    let signalled = false;
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      // Signal 0 is the liveness probe; anything else is the real signal,
+      // after which the recorded process reads as dead so the wait loop
+      // exits instead of running to its deadline.
+      if (signal === 0 || signal === undefined) {
+        if (signalled) throw Object.assign(new Error('mock kill ESRCH'), { code: 'ESRCH' });
+        return true;
+      }
+      signalled = true;
+      throw Object.assign(new Error(`mock kill ${String(signal)}`), { code: 'ESRCH' });
+    });
+    spawnMock.mockImplementationOnce((command, args) => {
+      const child = createMockChild();
+      // Like OpenCode, the line names the port the child was started on.
+      queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
+      return child;
+    });
+    try {
+      const second = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode') });
+      await second.startOpenCode();
+
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(kill.mock.calls).toContainEqual([process.pid, 'SIGTERM']);
+    } finally {
+      kill.mockRestore();
+      recordedProcessCommand = '';
+    }
+  });
 });
 
 
