@@ -118,10 +118,10 @@ export function getStaleRunningToolMessageID(
     const message = messages[index]
     if (message.role === "user") return undefined
     if (message.role !== "assistant") continue
+    // SAFETY: part is narrowed to a tool part above, so state.status is the ToolState status; the Set membership check establishes it before use.
     const hasActiveTool = (state.part[message.id] ?? []).some((part) => {
       if (part.type !== "tool") return false
-      const status = (part as { state?: { status?: unknown } }).state?.status
-      return typeof status === "string" && ACTIVE_TOOL_STATUSES.has(status)
+      return ACTIVE_TOOL_STATUSES.has(part.state.status)
     })
     return hasActiveTool ? message.id : undefined
   }
@@ -175,21 +175,25 @@ function haveEquivalentPartSnapshots(left: Part[] | undefined, right: Part[]): b
 }
 
 function getPartEndTime(part: Part): number | undefined {
+  // SAFETY: `state` exists only on the tool variant, where `state.time.end` is a declared number; the typeof check establishes the value before use.
   const stateEnd = (part as { state?: { time?: { end?: unknown } } }).state?.time?.end
   if (typeof stateEnd === "number") {
     return stateEnd
   }
 
+  // SAFETY: `time` is optional on text/reasoning parts and its `end` is a declared number there; the typeof check establishes the value before use.
   const timeEnd = (part as { time?: { end?: unknown } }).time?.end
   return typeof timeEnd === "number" ? timeEnd : undefined
 }
 
 function getStringField(part: Part, field: "text" | "output"): string | undefined {
+  // SAFETY: `text` is a string on text/reasoning parts and `output` a string on completed/error tool states in the model; the typeof check establishes the read value before use.
   const value = (part as Record<string, unknown>)[field]
   return typeof value === "string" ? value : undefined
 }
 
 function getPartStateAttachments(part: Part): Array<unknown> | undefined {
+  // SAFETY: `state` exists only on the tool variant, where it is a ToolState object; the falsy check establishes the object read below.
   const state = (part as Record<string, unknown>).state as Record<string, unknown> | undefined
   if (!state) return undefined
   const attachments = state.attachments
@@ -204,7 +208,21 @@ function hasLiveStreamingField(part: Part): boolean {
   })
 }
 
+function getPartStateRecord(part: Part): Record<string, unknown> | undefined {
+  // SAFETY: `state` exists only on the tool variant, where it is a ToolState object; the object check below establishes the record return.
+  const state = (part as Record<string, unknown>).state
+  if (typeof state !== "object" || state === null) return undefined
+  // SAFETY: the guard above established `state` is a non-null object, so treating it as a string-keyed record performs no conversion.
+  return state as Record<string, unknown>
+}
+
+function withPartState(part: Part, state: Record<string, unknown>): Part {
+  // SAFETY: the spread preserves every field of the input part and only swaps `state`, which callers build from that part's own state record plus ToolState-declared attachments/time fields, so the result keeps the input's variant.
+  return { ...part, state } as Part
+}
+
 function getPartStateTime(part: Part): { start?: number; end?: number } | undefined {
+  // SAFETY: `state.time` exists only on tool states, where start/end are declared numbers; both are typeof-checked below before use.
   const stateTime = (part as { state?: { time?: { start?: unknown; end?: unknown } } }).state?.time
   if (!stateTime || typeof stateTime !== "object") return undefined
   const start = typeof stateTime.start === "number" ? stateTime.start : undefined
@@ -239,7 +257,9 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     ) {
       return existing
     }
+    // SAFETY: both parts are narrowed to tool parts above, whose state.status is a declared string on ToolState; the Set membership checks below establish both values before use.
     const existingStatus = (existing as { state?: { status?: unknown } }).state?.status
+    // SAFETY: both parts are narrowed to tool parts above, whose state.status is a declared string on ToolState; the Set membership checks below establish both values before use.
     const nextStatus = (next as { state?: { status?: unknown } }).state?.status
     if (
       typeof existingStatus === "string"
@@ -265,10 +285,7 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
   if (getPartEndTime(next) !== undefined) {
     const existingAttachments = getPartStateAttachments(existing)
     if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
-      const nextRecord = { ...next }
-      const nextState = { ...((next as Record<string, unknown>).state as Record<string, unknown> ?? {}), attachments: existingAttachments }
-      ;(nextRecord as Record<string, unknown>).state = nextState
-      return nextRecord
+      return withPartState(next, { ...(getPartStateRecord(next) ?? {}), attachments: existingAttachments })
     }
     return next
   }
@@ -283,17 +300,14 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     if (typeof nextValue === "string" && nextValue.length > 0 && !existingValue.startsWith(nextValue)) continue
 
     if (merged === next) merged = { ...next }
-    const mergedRecord = merged as Record<string, unknown>
-    mergedRecord[field] = existingValue
+    merged = { ...merged, [field]: existingValue }
   }
 
   const existingAttachments = getPartStateAttachments(existing)
   if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
     if (merged === next) merged = { ...next }
-    const mergedRecord = merged as Record<string, unknown>
-    const nextState = (next as Record<string, unknown>).state as Record<string, unknown> | undefined
-    const newState = { ...(nextState ?? {}), attachments: existingAttachments }
-    mergedRecord.state = newState
+    const nextState = getPartStateRecord(merged) ?? getPartStateRecord(next)
+    merged = withPartState(merged, { ...(nextState ?? {}), attachments: existingAttachments })
   }
 
   const existingTime = getPartStateTime(existing)
@@ -303,10 +317,8 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     const preservedEnd = nextTime?.end ?? existingTime.end
     if (preservedStart !== nextTime?.start || preservedEnd !== nextTime?.end) {
       if (merged === next) merged = { ...next }
-      const mergedRecord = merged as Record<string, unknown>
-      const currentState = (mergedRecord.state as Record<string, unknown> | undefined) ?? (next as Record<string, unknown>).state as Record<string, unknown> | undefined
-      const newState = { ...(currentState ?? {}), time: { start: preservedStart, end: preservedEnd } }
-      mergedRecord.state = newState
+      const currentState = getPartStateRecord(merged) ?? getPartStateRecord(next)
+      merged = withPartState(merged, { ...(currentState ?? {}), time: { start: preservedStart, end: preservedEnd } })
     }
   }
 

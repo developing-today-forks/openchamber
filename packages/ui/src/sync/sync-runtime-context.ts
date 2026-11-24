@@ -31,6 +31,7 @@ type SyncGlobal = typeof globalThis & {
   [SYNC_RUNTIME_CONTEXT_GLOBAL_KEY]?: React.Context<SyncRuntime | null>
 }
 
+// SAFETY: the two keys are this module's own global slots, and their values are read only as React contexts or null, the same types the assignments below store.
 const syncGlobal = globalThis as SyncGlobal
 
 export const SyncContext = syncGlobal[SYNC_CONTEXT_GLOBAL_KEY] ?? createContext<SyncSystem | null>(null)

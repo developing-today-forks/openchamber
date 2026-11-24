@@ -503,6 +503,7 @@ export type SessionUIState = {
 
 
 const resolveDirectoryKey = (session: Session): string | null => {
+  // SAFETY: the record adds optional directory and project fields that normalizePath receives as nullable strings, so the Session value is only widened.
   const sessionRecord = session as Session & {
     directory?: string | null
     project?: { worktree?: string | null } | null
@@ -524,6 +525,7 @@ const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
   try {
     const raw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
     if (!raw) return null
+    // SAFETY: the parsed fields are typed unknown and each is checked (string, "chat" or "project") before it is used.
     const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown; target?: unknown }
     return {
       projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
@@ -2334,14 +2336,13 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     while (firstSyntheticIndex > 0 && messages[firstSyntheticIndex - 1]?.role === "synthetic") {
       firstSyntheticIndex -= 1
     }
+    // SAFETY: the synthetic metadata is passed through unvalidated as the ContextPartMetadata OpenCode persisted; this is a trust-boundary assumption, not a checked invariant, and no field is read here.
     const syntheticParts = messages
       .slice(firstSyntheticIndex, Math.max(0, targetIndex))
       .filter((message): message is Extract<typeof message, { role: "synthetic" }> => message.role === "synthetic")
       .map((message) => ({
         text: message.text,
         synthetic: true,
-        // OpenCode persists the metadata we originally attached. Keep it with
-        // the replay so context cards and provider-specific annotations round-trip.
         metadata: message.metadata as ContextPartMetadata | undefined,
       }))
 
@@ -2390,7 +2391,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (!targetMessage) return
 
     const targetParts = getSyncParts(targetMessage.id)
-    const textPart = targetParts.find((p: Part) => p.type === "text") as TextPart | undefined
+    const textPart = targetParts.find((p: Part): p is TextPart => p.type === "text")
     const preview = textPart?.text
       ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
       : "[No text]"

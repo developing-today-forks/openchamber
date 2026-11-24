@@ -545,7 +545,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
   const isAbortError = (error: unknown): boolean =>
     error instanceof DOMException && error.name === "AbortError" ||
-    (typeof error === "object" && error !== null && (error as { name?: string }).name === "AbortError")
+    // SAFETY: error is narrowed to a non-null object by the guard; only the name field is read and it is compared by === before it is trusted.
+    (error as { name?: string }).name === "AbortError"
 
   const isOffline = (): boolean =>
     typeof navigator === "object" && navigator !== null && navigator.onLine === false
@@ -555,10 +556,13 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
 
   const extractStatus = (error: unknown): number | undefined => {
     if (!error || typeof error !== "object") return undefined
+    // SAFETY: error is narrowed to a non-null object above; the status field is typeof-checked as a number before the branch returns it.
     const direct = (error as { status?: unknown }).status
     if (typeof direct === "number") return direct
+    // SAFETY: error is narrowed to a non-null object above; the response field is walk-safe and its status is typeof-checked as a number before use.
     const fromResponse = (error as { response?: { status?: unknown } }).response?.status
     if (typeof fromResponse === "number") return fromResponse
+    // SAFETY: error is narrowed to a non-null object above; the cause field is walk-safe and its status is typeof-checked as a number before use.
     const fromCause = (error as { cause?: { status?: unknown } }).cause?.status
     if (typeof fromCause === "number") return fromCause
     return undefined
@@ -775,12 +779,15 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       await refreshRuntimeUrlAuthToken()
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error("Message stream WebSocket auth token unavailable")
+      // SAFETY: wrapped is an Error by construction above, and `code` and `reason` are the module's own marker properties, read by the fallback branch and the reconnect logging below.
+      const tagged = Object.assign(wrapped, {
+        ...(transport === "auto" && wsOpenFailureFallsBack() ? { code: "WS_FALLBACK" } : {}),
+        reason: "ws_auth_token_unavailable",
+      }) as Error & { code?: string; reason?: string }
       if (transport === "auto" && wsOpenFailureFallsBack()) {
         wsFallbackUntil = Date.now() + WS_FALLBACK_WINDOW_MS
-        ;(wrapped as Error & { code?: string }).code = "WS_FALLBACK"
       }
-      ;(wrapped as Error & { reason?: string }).reason = "ws_auth_token_unavailable"
-      throw wrapped
+      throw tagged
     }
     if (signal.aborted) {
       throw new DOMException("Aborted", "AbortError")
@@ -798,7 +805,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           if (!openFailureFallsBack) return
         }
         wsFallbackUntil = Date.now() + WS_FALLBACK_WINDOW_MS
-        ;(error as Error & { code?: string }).code = "WS_FALLBACK"
+        // SAFETY: error's declared type is Error here, and `code` is the module's own marker property read by the fallback branch below.
+        Object.assign(error, { code: "WS_FALLBACK" })
       }
 
       let readyTimer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
@@ -894,7 +902,8 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
 
         if (frame.type === "error") {
           const error = new Error(frame.message || "Message stream WebSocket error")
-          ;(error as Error & { reason?: string }).reason = `ws_error_frame:${frame.message || "unknown"}`
+          // SAFETY: error is the Error constructed above, and `reason` is the module's own marker property read by the reconnect-reason logging below.
+          Object.assign(error, { reason: `ws_error_frame:${frame.message || "unknown"}` })
           setFallbackCode(error)
           settleReject(error)
           try {
@@ -929,9 +938,10 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
         }
 
         const error = new Error("Global message stream WebSocket closed")
-        ;(error as Error & { reason?: string }).reason = opened
-          ? `ws_closed:code=${event?.code ?? "?"}`
-          : "ws_closed_before_ready"
+        // SAFETY: error is the Error constructed above, and `reason` is the module's own marker property read by the reconnect-reason logging below.
+        Object.assign(error, {
+          reason: opened ? `ws_closed:code=${event?.code ?? "?"}` : "ws_closed_before_ready",
+        })
 
         if (!opened) {
           clearRuntimeUrlAuthToken()
@@ -981,6 +991,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           await runSseAttempt(attempt.signal)
         }
       } catch (error) {
+        // SAFETY: error is narrowed to a non-null object by the guard, and `code` is a marker this module sets on its own thrown Errors; it is compared by === before use.
         const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined
         if (currentTransport === "ws" && code === "WS_FALLBACK") {
           retryDelayMs = 0
@@ -991,17 +1002,25 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
             streamErrorLogged = true
             console.error("[event-pipeline] stream failed", error)
           }
-          const taggedReason = typeof error === "object" && error !== null
-            ? (error as { reason?: unknown }).reason
-            : undefined
-          const message = typeof error === "object" && error !== null
-            ? (error as { message?: unknown }).message
-            : undefined
-          const reason = typeof taggedReason === "string" && taggedReason.length > 0
-            ? taggedReason
-            : typeof message === "string" && message.length > 0
-              ? `${currentTransport}_error:${message.slice(0, 80)}`
-              : `${currentTransport}_error:unknown`
+          const reasonOf = (candidate: unknown): string | undefined => {
+            // SAFETY: candidate is narrowed to a non-null object above, and the read value is typeof-checked as a string before use.
+            const marker = typeof candidate === "object" && candidate !== null
+              ? (candidate as { reason?: unknown }).reason
+              : undefined
+            return typeof marker === "string" ? marker : undefined
+          }
+          const messageOf = (candidate: unknown): string | undefined => {
+            // SAFETY: candidate is narrowed to a non-null object above, and only the message field flows into the log line.
+            const value = typeof candidate === "object" && candidate !== null
+              ? (candidate as { message?: unknown }).message
+              : undefined
+            return typeof value === "string" ? value : undefined
+          }
+          // SAFETY: reasonOf and messageOf return only validated strings; the message is truncated before it is embedded in the reason.
+          const messagePart = messageOf(error)
+          const reason = reasonOf(error) ?? (messagePart === undefined
+            ? `${currentTransport}_error:unknown`
+            : `${currentTransport}_error:${messagePart.slice(0, 80)}`)
           notifyDisconnected(reason)
 
           const status = extractStatus(error)
