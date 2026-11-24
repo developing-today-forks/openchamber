@@ -1269,3 +1269,94 @@ describe('APNs .p8 key file bounded read (#1777)', () => {
     expect(config).toBeNull();
   });
 });
+
+describe('apns direct send dead-token cleanup settlement (#2590)', () => {
+  // Fake HTTP/2 session whose only stream answers 410 Unregistered, the
+  // dead-token path whose cleanup write is under test.
+  const make410Http2 = (close, targeted) => ({
+    connect: () => ({
+      on: () => {},
+      close,
+      request: (headers) => {
+        targeted.push(String(headers[':path']).replace('/3/device/', ''));
+        const listeners = {};
+        const req = {
+          on: (event, cb) => { listeners[event] = cb; return req; },
+          setEncoding: () => req,
+          destroy: () => {},
+          end: () => {
+            queueMicrotask(() => {
+              listeners.response?.({ ':status': '410' });
+              listeners.data?.('{"reason":"Unregistered"}');
+              listeners.end?.();
+            });
+          },
+        };
+        return req;
+      },
+    }),
+  });
+
+  it('settles the send and closes the session when the dead-token cleanup write fails', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const fsPromises = createMemoryFs();
+      const close = vi.fn();
+      const targeted = [];
+      const runtime = createApnsRuntime(
+        makeDeps({
+          fsPromises,
+          http2: make410Http2(close, targeted),
+          readSettingsFromDiskMigrated: vi.fn(async () => ({ apnsConfig: APNS_CONFIG })),
+        }),
+      );
+      await runtime.addOrUpdateApnsToken('s', 'tokenDead');
+
+      // The token store becomes unwritable before the send's cleanup runs:
+      // removeApnsTokenFromAllSessions rejects inside the end handler.
+      fsPromises.writeFile.mockImplementation(async () => {
+        const error = new Error('ENOSPC: no space left on device, write');
+        error.code = 'ENOSPC';
+        throw error;
+      });
+
+      const sending = runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'dead-x' });
+      const settled = await Promise.race([
+        sending.then(() => 'settled'),
+        new Promise((resolveRace) => setTimeout(() => resolveRace('hung'), 1000)),
+      ]);
+      expect(settled).toBe('settled');
+      expect(close).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.flat().join(' ')).toContain('ENOSPC');
+
+      // Cleanup failed, so the token stays in the store for the next send.
+      const stored = JSON.parse(await fsPromises.readFile());
+      expect(Object.values(stored.tokensBySession).flat().map((entry) => entry.deviceToken)).toEqual(['tokenDead']);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('still removes the token when the 410 cleanup succeeds', async () => {
+    process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
+    const fsPromises = createMemoryFs();
+    const close = vi.fn();
+    const targeted = [];
+    const runtime = createApnsRuntime(
+      makeDeps({
+        fsPromises,
+        http2: make410Http2(close, targeted),
+        readSettingsFromDiskMigrated: vi.fn(async () => ({ apnsConfig: APNS_CONFIG })),
+      }),
+    );
+    await runtime.addOrUpdateApnsToken('s', 'tokenDead');
+
+    await expect(runtime.sendApnsToAllUiSessions({ title: 't', body: 'b', tag: 'dead-y' })).resolves.toBeUndefined();
+    expect(targeted).toEqual(['tokenDead']);
+    expect(close).toHaveBeenCalled();
+
+    const stored = JSON.parse(await fsPromises.readFile());
+    expect(Object.values(stored.tokensBySession).flat().map((entry) => entry.deviceToken)).toEqual([]);
+  });
+});
