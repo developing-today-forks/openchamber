@@ -296,6 +296,16 @@ const createService = (overrides = {}) => {
 };
 
 describe('OpenChamber control service', () => {
+  it.each(['render.tierChooser', 'render.quotaFallback'])('refuses %s while render is disabled', async (action) => {
+    // Oracle: the render disabled contract also applies through service dispatch.
+    const { service, client } = createService({ isRenderToolEnabled: async () => false });
+    await expect(service.execute(action, {}, '/repo', { contextSessionId: 'ses_1' })).rejects.toMatchObject({
+      message: 'The render tool is turned off in OpenChamber settings',
+      statusCode: 403,
+    });
+    expect(client.model.list).not.toHaveBeenCalled();
+  });
+
   it('omits empty answer messages and forwards nonempty messages unchanged', async () => {
     const { service, client } = createService();
     client.session.list.mockResolvedValue({ data: [{ id: 'ses_1', location: { directory: '/repo' } }] });

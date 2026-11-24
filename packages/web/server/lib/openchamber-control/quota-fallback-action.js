@@ -107,7 +107,10 @@ export const assembleFallbackActions = ({ tiers, catalog, currentTier, currentPr
  * it was. Like the tier chooser, the wait cannot live in this call:
  * the chat draws a page from the render.page call's own input html.
  */
-export const createQuotaFallbackAction = ({ listModels }) => async (input, context = {}) => {
+export const createQuotaFallbackAction = ({ isEnabled, listModels }) => async (input, context = {}) => {
+  if (!await isEnabled()) {
+    throw new OpenChamberControlError('The render tool is turned off in OpenChamber settings', 403);
+  }
   const catalog = await listModels(context.directory);
   const { current, actions } = assembleFallbackActions({
     tiers: input?.tiers,
