@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
-const { readAsarFiles, findPackagedAppContentProblems } = require('./packaged-app-contents.cjs');
+const { readAsarFiles, findPackagedAppContentProblems, noReplacePrebuild } = require('./packaged-app-contents.cjs');
 
 const web = 'node_modules/@openchamber/web';
 const helpers = [
@@ -16,15 +16,31 @@ const helpers = [
   `${web}/build/server/built-in-extensions/registry.json`,
 ];
 
-const completeApp = () => [
-  ...['dist-bundle/entry.mjs', 'dist-bundle/main.mjs', 'dist-bundle/early-startup.mjs', 'preload.mjs', 'browser-panel-preload.cjs', 'package.json'],
-  `${web}/package.json`,
-  `${web}/build/server/index.js`,
-  `${web}/build/server/index.js.map`,
-  `${web}/build/bin/cli.js`,
-].map((filePath) => ({ path: filePath, unpacked: false }))
-  .concat(helpers.map((filePath) => ({ path: filePath, unpacked: true })))
-  .concat(process.platform === 'win32' ? [{ path: `node_modules/7zip-bin/win/${process.arch}/7za.exe`, unpacked: true }] : []);
+const completeApp = (target = {}) => {
+  const platform = target.platform ?? process.platform;
+  const arch = target.arch ?? process.arch;
+  return [
+    ...['dist-bundle/entry.mjs', 'dist-bundle/main.mjs', 'dist-bundle/early-startup.mjs', 'preload.mjs', 'browser-panel-preload.cjs', 'package.json'],
+    `${web}/package.json`,
+    `${web}/build/server/index.js`,
+    `${web}/build/server/index.js.map`,
+    `${web}/build/bin/cli.js`,
+  ].map((filePath) => ({ path: filePath, unpacked: false }))
+    .concat(helpers.map((filePath) => ({ path: filePath, unpacked: true })))
+    .concat([{ path: noReplacePrebuild({ platform, arch }), unpacked: true }])
+    .concat(platform === 'win32' ? [{ path: `node_modules/7zip-bin/win/${arch}/7za.exe`, unpacked: true }] : []);
+};
+
+test('packages require an unpacked no-replace prebuild for the target platform', () => {
+  for (const target of [{ platform: 'linux', arch: 'x64' }, { platform: 'darwin', arch: 'arm64' }, { platform: 'win32', arch: 'x64' }]) {
+    const prebuild = noReplacePrebuild(target);
+    const without = completeApp(target).filter((file) => file.path !== prebuild);
+    assert.deepEqual(findPackagedAppContentProblems(without, target), [`${prebuild} is missing`]);
+    const packed = without.concat([{ path: prebuild, unpacked: false }]);
+    assert.deepEqual(findPackagedAppContentProblems(packed, target), [`${prebuild} must be unpacked from the asar`]);
+    assert.deepEqual(findPackagedAppContentProblems(completeApp(target), target), []);
+  }
+});
 
 const writeAsar = (directory, header) => {
   const json = Buffer.from(JSON.stringify(header), 'utf8');
@@ -46,7 +62,7 @@ test('Windows packages require an unpacked decoder for the target architecture',
   for (const arch of ['x64', 'arm64']) {
     const target = { platform: 'win32', arch };
     const decoder = `node_modules/7zip-bin/win/${arch}/7za.exe`;
-    const files = completeApp().filter((file) => !file.path.startsWith('node_modules/7zip-bin/'));
+    const files = completeApp({ platform: 'win32', arch }).filter((file) => !file.path.startsWith('node_modules/7zip-bin/'));
     assert.deepEqual(findPackagedAppContentProblems(files, target), [`${decoder} is missing`]);
     assert.deepEqual(findPackagedAppContentProblems([...files, { path: decoder, unpacked: false }], target), [`${decoder} must be unpacked from the asar`]);
     assert.deepEqual(findPackagedAppContentProblems([...files, { path: decoder, unpacked: true }], target), []);

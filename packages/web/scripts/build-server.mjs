@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const compiler = path.join(path.dirname(require.resolve('typescript/package.json')), 'bin', 'tsc');
 
 const isTestFile = (name) => /\.(?:test|spec|test-support|fixture)\./.test(name);
-const assetExtensions = new Set(['.json', '.txt', '.cjs']);
+const assetExtensions = new Set(['.json', '.txt', '.cjs', '.node']);
 
 export async function buildServer(outputDirectory = path.join(webRoot, 'build')) {
   assertServerProgramBoundary();

@@ -26,6 +26,10 @@ const REQUIRED_FILES = [
 const RIPGREP_PLATFORM_PACKAGE = /(?:^|\/)node_modules\/@vscode\/ripgrep-[^/]+\//;
 const RIPGREP_BINARY = process.platform === 'win32' ? 'rg.exe' : 'rg';
 
+const noReplacePrebuild = ({ platform = process.platform, arch = process.arch } = {}) => (
+  `${WEB_PACKAGE}/build/server/native/no-replace-rename/prebuilds/${platform}-${arch}/no-replace-rename.node`
+);
+
 const REQUIRED_UNPACKED_FILES = [
   `${WEB_PACKAGE}/build/server/lib/git/credential-helper.js`,
   `${WEB_PACKAGE}/build/server/lib/git/credential-helper-runtime.js`,
@@ -36,11 +40,12 @@ const REQUIRED_UNPACKED_FILES = [
   `${WEB_PACKAGE}/build/server/built-in-extensions/registry.json`,
 ];
 
-const requiredUnpackedFiles = ({ platform = process.platform, arch = process.arch } = {}) => (
-  platform === 'win32'
+const requiredUnpackedFiles = ({ platform = process.platform, arch = process.arch } = {}) => ([
+  ...(platform === 'win32'
     ? [...REQUIRED_UNPACKED_FILES, `node_modules/7zip-bin/win/${arch}/7za.exe`]
-    : REQUIRED_UNPACKED_FILES
-);
+    : REQUIRED_UNPACKED_FILES),
+  noReplacePrebuild({ platform, arch }),
+]);
 
 const readAsarFiles = (asarPath) => {
   const descriptor = fs.openSync(asarPath, 'r');
@@ -112,4 +117,4 @@ const verifyPackagedAppContents = (resourcesPath, target) => {
   }
 };
 
-module.exports = { readAsarFiles, findPackagedAppContentProblems, verifyPackagedAppContents };
+module.exports = { readAsarFiles, findPackagedAppContentProblems, verifyPackagedAppContents, noReplacePrebuild };

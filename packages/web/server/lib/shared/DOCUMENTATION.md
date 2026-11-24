@@ -71,6 +71,23 @@ The caller passes its own rename function, so a store that receives
 the first attempt. Temp-file cleanup stays with the caller, which owns the
 temp path.
 
+`renameWithoutReplace(ops, source, destination, sourceKind)` commits a
+destination name without replacing a racing one (#2375, #2573): link(2) for
+a regular file (on Windows a hard link likewise refuses an existing
+destination), symlink(2) recreated at the destination for a symbolic link,
+and the native no-replace directory rename for a directory
+(`renameDirectoryNoReplace` from `no-replace-dir.ts`: `renameat2` with
+`RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS,
+`MoveFileWithProgressW` without `MOVEFILE_REPLACE_EXISTING` on Windows;
+see `server/native/no-replace-rename/DOCUMENTATION.md`). A rename whose
+destination is the source itself (a case-only rename) keeps a plain rename,
+which replaces a file with itself and destroys nothing. If removing the
+source name fails after the destination is committed, the destination is
+removed again when it still names what this call created, so a failed
+commit leaves the source as the only name. A directory rename without a
+loadable native prebuild throws an `ENOSYS`-coded error instead of falling
+back to check-then-rename.
+
 ## What stays out
 
 These look adjacent but are not the same predicate, so each keeps its private

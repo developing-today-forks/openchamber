@@ -40,8 +40,15 @@ The interval reopens the watcher before checking, so Linux/Windows folder deleti
     - `POST /api/fs/rename` — renames or moves within one workspace root and
       never replaces an existing destination: it returns `409` with
       `reason: 'already-exists'`, except for a case-only rename where the
-      destination is the source itself. The check runs before the rename, so
-      a file created in between can still be replaced. Moving a folder into
+      destination is the source itself. The pre-rename lookup only selects
+      the commit path; the commit itself uses a no-replace primitive
+      (`renameWithoutReplace` in `../shared/atomic-rename.ts`: link(2) for a
+      regular file, symlink(2) for a symbolic link, the native no-replace
+      directory rename for a directory), so a destination created after the
+      lookup surfaces as the same `409` instead of being replaced, and both
+      paths keep their identity. A directory rename without a loadable
+      native prebuild fails closed with `500` (`reason: 'unsupported'`),
+      never falling back to check-then-rename. Moving a folder into
       itself or into one of its subfolders returns `400`; a missing source
       returns `404` with `reason: 'not-found'`.
      - `POST /api/fs/reveal`
