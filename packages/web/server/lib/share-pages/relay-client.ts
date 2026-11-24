@@ -5,6 +5,7 @@ import type { createRelayKeyStore } from '../relay/key-store.js';
 
 import { isEnterpriseMode } from '../enterprise-mode.js';
 import { normalizeRelayUrl, pinnedRelayUrl } from '../relay/service.js';
+import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
 import {
   canonicalPublicJwkString,
   deriveServerId,
@@ -13,6 +14,11 @@ import {
 } from '../relay/signing-key.js';
 
 const MAX_STATE_BATCH = 50;
+// Relay answers are bounded like every other proxied answer (#2634):
+// success bodies parse through the shared 16 MiB cap, error detail is
+// read through a 1 KiB cap and still truncated to 200 chars as before.
+const RELAY_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+const RELAY_ERROR_DETAIL_MAX_BYTES = 1_024;
 
 const shareStateSchema = z.object({
   id: z.string(),
@@ -125,10 +131,11 @@ export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fet
     if (meta) headers['x-openchamber-share'] = meta;
     const response = await fetchImpl(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
+      const bounded = await readBoundedResponseText(response, RELAY_ERROR_DETAIL_MAX_BYTES).catch(() => ({ tooLarge: true as const }));
+      const detail = bounded.tooLarge ? '' : bounded.text.slice(0, 200);
       throw new ShareRelayError(`The relay answered ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
     }
-    return response.json();
+    return readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
   };
 
   const json = (value: JsonValue) => Buffer.from(JSON.stringify(value));
