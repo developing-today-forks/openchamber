@@ -47,8 +47,19 @@ describe('assembleTierOptions', () => {
 });
 
 describe('createTierChooserAction', () => {
+  it('refuses a disabled render tool before reading the catalog', async () => {
+    // Oracle: render.page's disabled error and no catalog access while disabled.
+    const listModels = vi.fn(async () => catalog);
+    const action = createTierChooserAction({ isEnabled: async () => false, listModels });
+    await expect(action({ tiers: [{ tier: 'standard', model: 'claude-sonnet-4-5' }] }, {})).rejects.toMatchObject({
+      message: 'The render tool is turned off in OpenChamber settings',
+      statusCode: 403,
+    });
+    expect(listModels).not.toHaveBeenCalled();
+  });
+
   it('builds the standardized card for render.page and names the follow-up call', async () => {
-    const action = createTierChooserAction({ listModels: async () => catalog });
+    const action = createTierChooserAction({ isEnabled: async () => true, listModels: async () => catalog });
     const result = await action(
       { tiers: [{ tier: 'standard', model: 'claude-sonnet-4-5' }] },
       { sessionId: 's1', callId: 'c1' },
@@ -64,7 +75,7 @@ describe('createTierChooserAction', () => {
   });
 
   it('honors a caller-provided title', async () => {
-    const action = createTierChooserAction({ listModels: async () => catalog });
+    const action = createTierChooserAction({ isEnabled: async () => true, listModels: async () => catalog });
     const result = await action({ title: 'Pick a lane', tiers: [{ tier: 'cheap', model: 'claude-haiku-4-5' }] }, {});
     expect(result.title).toBe('Pick a lane');
     expect(result.html).toContain('Pick a lane');

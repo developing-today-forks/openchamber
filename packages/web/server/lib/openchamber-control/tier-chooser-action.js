@@ -78,7 +78,10 @@ export const assembleTierOptions = ({ tiers, catalog } = {}) => {
  * the only shape in which the card reaches the chat. This action
  * changes no session state either way.
  */
-export const createTierChooserAction = ({ listModels }) => async (input, context = {}) => {
+export const createTierChooserAction = ({ isEnabled, listModels }) => async (input, context = {}) => {
+  if (!await isEnabled()) {
+    throw new OpenChamberControlError('The render tool is turned off in OpenChamber settings', 403);
+  }
   const catalog = await listModels(context.directory);
   const tiers = assembleTierOptions({ tiers: input?.tiers, catalog });
   const title = asNonEmptyString(input?.title) ?? 'Select Execution Tier';

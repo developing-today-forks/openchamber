@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { assembleFallbackActions, createQuotaFallbackAction } from './quota-fallback-action.js';
 
@@ -80,8 +80,19 @@ describe('assembleFallbackActions', () => {
 });
 
 describe('createQuotaFallbackAction', () => {
+  it('refuses a disabled render tool before reading the catalog', async () => {
+    // Oracle: render.page's disabled error and no catalog access while disabled.
+    const listModels = vi.fn(async () => switchCatalog);
+    const action = createQuotaFallbackAction({ isEnabled: async () => false, listModels });
+    await expect(action({ tiers: tiersWithSwitch, currentTier: 'standard' }, {})).rejects.toMatchObject({
+      message: 'The render tool is turned off in OpenChamber settings',
+      statusCode: 403,
+    });
+    expect(listModels).not.toHaveBeenCalled();
+  });
+
   it('builds the quota card for render.page and names the follow-up call', async () => {
-    const action = createQuotaFallbackAction({ listModels: async () => switchCatalog });
+    const action = createQuotaFallbackAction({ isEnabled: async () => true, listModels: async () => switchCatalog });
     const result = await action(
       { tiers: tiersWithSwitch, currentTier: 'standard', message: 'Anthropic quota exhausted for this window' },
       { sessionId: 's1', callId: 'c1' },
