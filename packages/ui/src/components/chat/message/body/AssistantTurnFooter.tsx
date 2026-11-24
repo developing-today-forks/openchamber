@@ -79,7 +79,10 @@ export const AssistantTurnFooter = ({
                                             )}
                                             <span data-fact-model className="truncate">{footerModelName}</span>
                                             {footerModelRef ? (
-                                                <span data-fact-model-ref className="truncate font-mono text-[0.85em] opacity-70">
+                                                // The real model reference is detail the tooltip repeats: it gives
+                                                // way after the agent, so a narrow column keeps the model name
+                                                // readable instead of truncating both to a letter each.
+                                                <span data-fact-model-ref data-fact-priority="2" className="truncate font-mono text-[0.85em] opacity-70">
                                                     {footerModelRef}
                                                 </span>
                                             ) : null}
