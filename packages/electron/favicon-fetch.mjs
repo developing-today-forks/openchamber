@@ -12,7 +12,7 @@ export const FAVICON_FETCH_TIMEOUT_MS = 10_000;
 const timeoutError = () => new Error('Favicon request timed out');
 
 const readBoundedBody = async (response, maxBytes, signal) => {
-  if (!response.body || typeof response.body.getReader !== 'function') {
+  if (!response.body || !(response.body.getReader instanceof Function)) {
     // A fetch response without a readable body has no bytes to bound; the
     // caller's empty-body check rejects it like a zero-length icon.
     return Buffer.alloc(0);

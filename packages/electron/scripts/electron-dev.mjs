@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { configureDevDataDir } from '../dev-data-dir.mjs';
 import { createShellEnvironmentLoader } from '../shell-environment.mjs';
 import { injectedEnvKeys } from '@openchamber/web/server/lib/injected-env.js';
@@ -140,7 +141,8 @@ async function findAvailablePort(preferredPort) {
       server.once('error', reject);
       server.once('listening', () => {
         const address = server.address();
-        const port = typeof address === 'object' && address ? address.port : 0;
+        const parsedAddress = z.object({ port: z.number() }).safeParse(address);
+        const port = parsedAddress.success ? parsedAddress.data.port : 0;
         server.close(() => resolve(port));
       });
       server.listen(0, '127.0.0.1');
@@ -263,7 +265,8 @@ async function main() {
       fs.rmSync(hmrStartFile, { force: true });
       fs.rmSync(`${hmrStartFile}.tmp`, { force: true });
     }
-    process.exit(typeof code === 'number' ? code : 0);
+    const parsedCode = z.number().int().safeParse(code);
+    process.exit(parsedCode.success ? parsedCode.data : 0);
   };
 
   const onChildExit = (label) => (code, signal) => {

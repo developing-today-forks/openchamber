@@ -1,5 +1,6 @@
 
 import { Tray, Menu, nativeImage } from 'electron';
+import { z } from 'zod';
 import { buildTrayMenuTemplate, computeTrayTooltip, trayMenuKey } from './tray-menu.mjs';
 import { normalizeMenuLocale } from './menu-locales.mjs';
 
@@ -132,7 +133,8 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
   };
 
   const update = (rawSnapshot) => {
-    const snapshot = rawSnapshot && typeof rawSnapshot === 'object' ? rawSnapshot : {};
+    const parsedSnapshot = z.record(z.string(), z.unknown()).safeParse(rawSnapshot);
+    const snapshot = parsedSnapshot.success ? parsedSnapshot.data : {};
     lastSnapshot = snapshot;
     const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
     const approvals = Array.isArray(snapshot.approvals) ? snapshot.approvals : [];

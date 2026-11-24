@@ -17,6 +17,7 @@ import {
   readLinuxDesktopEntries,
   resolveLinuxIconFile,
 } from '../linux-app-discovery.mjs';
+import { z } from 'zod';
 
 const assert = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -170,9 +171,11 @@ try {
   assert(appInfos.length === 3, 'installed app info should include matching entries');
   assert(appInfos.every((entry) => Object.hasOwn(entry, 'iconDataUrl')), 'installed app info should include iconDataUrl key');
   const finderInfo = appInfos.find((entry) => entry.name === 'Finder');
-  assert(typeof finderInfo?.iconDataUrl === 'string' && finderInfo.iconDataUrl.startsWith('data:image/png;base64,'), 'Finder/file manager should use system PNG icon data URL');
+  const finderIconUrl = z.string().safeParse(finderInfo?.iconDataUrl);
+  assert(finderIconUrl.success && finderIconUrl.data.startsWith('data:image/png;base64,'), 'Finder/file manager should use system PNG icon data URL');
   const codeInfo = appInfos.find((entry) => entry.name === 'Visual Studio Code');
-  assert(typeof codeInfo?.iconDataUrl === 'string' && codeInfo.iconDataUrl.startsWith('data:image/png;base64,'), 'desktop app should resolve Icon= theme PNG to data URL');
+  const codeIconUrl = z.string().safeParse(codeInfo?.iconDataUrl);
+  assert(codeIconUrl.success && codeIconUrl.data.startsWith('data:image/png;base64,'), 'desktop app should resolve Icon= theme PNG to data URL');
 
   const terminalEmulatorEntry = parseDesktopEntry([
     '[Desktop Entry]',

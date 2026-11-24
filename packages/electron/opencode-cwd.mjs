@@ -1,11 +1,13 @@
+import { z } from 'zod';
+
 export const resolveManagedOpenCodeCwd = ({ env, homedir }) => {
-  const configured = typeof env?.OPENCHAMBER_OPENCODE_CWD === 'string'
-    ? env.OPENCHAMBER_OPENCODE_CWD.trim()
-    : '';
-  if (configured) {
-    return configured;
+  const configured = z.string().safeParse(env?.OPENCHAMBER_OPENCODE_CWD);
+  const trimmedConfigured = configured.success ? configured.data.trim() : '';
+  if (trimmedConfigured) {
+    return trimmedConfigured;
   }
 
-  const home = typeof homedir === 'function' ? homedir() : '';
-  return typeof home === 'string' && home.trim() ? home : process.cwd();
+  const home = homedir instanceof Function ? homedir() : '';
+  const parsedHome = z.string().safeParse(home);
+  return parsedHome.success && parsedHome.data.trim() ? parsedHome.data : process.cwd();
 };
