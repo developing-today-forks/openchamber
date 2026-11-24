@@ -8,14 +8,16 @@
  * submit, and on success the transcript lands in the composer as
  * editable draft text (§6.3) with its provenance shown here.
  *
- * UI strings are plain literals for now: this surface has no locale
- * keys yet, and a missing key would render worse than the literal.
+ * UI strings resolve through the `chat.facadeVoiceCapture` locale keys
+ * (`@/lib/i18n`); errors carry their key on `FacadeTranscriptionError`
+ * and resolve at render time so a locale switch re-renders them.
  */
 
 import React from 'react';
 
 import { Icon } from '@/components/icon/Icon';
 import { useWaitingBlink } from '@/hooks/useDurationTicker';
+import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import {
     DEFAULT_TRANSCRIPTION_MODEL,
@@ -46,6 +48,7 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
     onStart,
     model = DEFAULT_TRANSCRIPTION_MODEL,
 }) => {
+    const { t } = useI18n();
     const capture = useFacadeVoiceCapture({ onInsert, onStart, model });
     const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
@@ -68,13 +71,18 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
     const recordingBlink = useWaitingBlink(state === 'recording');
     const showReview = (state === 'reviewing' || state === 'submitting' || state === 'error') && pendingAudio;
     const showIdleError = (state === 'idle' || state === 'inserted') && error;
+    // A keyed error resolves through the current locale; an unkeyed one
+    // (server-supplied text) renders literally.
+    const errorText = error ? (error.messageKey ? t(error.messageKey, error.messageParams) : error.message) : '';
     const provenance = result?.provenance;
     const provenanceLine = provenance
         ? [
-              provenance.provider ? `provider ${provenance.provider}` : null,
-              provenance.model ? `model ${provenance.model}` : null,
-              provenance.durationSeconds !== undefined ? `duration ${formatClock(provenance.durationSeconds)}` : null,
-              provenance.language ? `language ${provenance.language}` : null,
+              provenance.provider ? t('chat.facadeVoiceCapture.provenance.provider', { value: provenance.provider }) : null,
+              provenance.model ? t('chat.facadeVoiceCapture.provenance.model', { value: provenance.model }) : null,
+              provenance.durationSeconds !== undefined
+                  ? t('chat.facadeVoiceCapture.provenance.duration', { value: formatClock(provenance.durationSeconds) })
+                  : null,
+              provenance.language ? t('chat.facadeVoiceCapture.provenance.language', { value: provenance.language }) : null,
           ]
               .filter(Boolean)
               .join(' · ')
@@ -90,8 +98,8 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                         className={footerIconButtonClass}
                         disabled={disabled}
                         onClick={() => void capture.startRecording()}
-                        title="Record voice input for the opencode transcription façade"
-                        aria-label="Record voice input (transcription façade)"
+                        title={t('chat.facadeVoiceCapture.record.title')}
+                        aria-label={t('chat.facadeVoiceCapture.record.aria')}
                     >
                         <Icon name="mic" className={iconSizeClass} />
                     </button>
@@ -100,8 +108,8 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                         className={footerIconButtonClass}
                         disabled={disabled}
                         onClick={openFilePicker}
-                        title="Attach an audio file for transcription"
-                        aria-label="Attach an audio file for transcription"
+                        title={t('chat.facadeVoiceCapture.attach.title')}
+                        aria-label={t('chat.facadeVoiceCapture.attach.aria')}
                     >
                         <Icon name="file-music" className={iconSizeClass} />
                     </button>
@@ -112,12 +120,15 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                 <div className="flex items-center gap-2" role="status">
                     <span className={cn('inline-block h-2 w-2 rounded-full bg-red-500', recordingBlink)} aria-hidden />
                     <span className="typography-micro text-muted-foreground">
-                        Recording {formatClock(capture.elapsedSeconds)} · cap in {formatClock(recordingSecondsRemaining(capture.elapsedSeconds))}
+                        {t('chat.facadeVoiceCapture.recording.status', {
+                            elapsed: formatClock(capture.elapsedSeconds),
+                            remaining: formatClock(recordingSecondsRemaining(capture.elapsedSeconds)),
+                        })}
                     </span>
-                    <button type="button" className={footerIconButtonClass} onClick={capture.stopRecording} title="Stop and review" aria-label="Stop recording and review">
+                    <button type="button" className={footerIconButtonClass} onClick={capture.stopRecording} title={t('chat.facadeVoiceCapture.stop.title')} aria-label={t('chat.facadeVoiceCapture.stop.aria')}>
                         <Icon name="stop" className={iconSizeClass} />
                     </button>
-                    <button type="button" className={footerIconButtonClass} onClick={capture.cancel} title="Cancel and discard" aria-label="Cancel recording and discard audio">
+                    <button type="button" className={footerIconButtonClass} onClick={capture.cancel} title={t('chat.facadeVoiceCapture.cancel.title')} aria-label={t('chat.facadeVoiceCapture.cancel.aria')}>
                         <Icon name="close" className={iconSizeClass} />
                     </button>
                 </div>
@@ -132,10 +143,10 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                         </span>
                         {state === 'reviewing' ? (
                             <>
-                                <button type="button" className={footerIconButtonClass} onClick={() => void capture.submit()} title="Submit for transcription" aria-label="Submit audio for transcription">
+                                <button type="button" className={footerIconButtonClass} onClick={() => void capture.submit()} title={t('chat.facadeVoiceCapture.submit.title')} aria-label={t('chat.facadeVoiceCapture.submit.aria')}>
                                     <Icon name="check" className={iconSizeClass} />
                                 </button>
-                                <button type="button" className={footerIconButtonClass} onClick={capture.cancel} title="Discard audio" aria-label="Discard audio">
+                                <button type="button" className={footerIconButtonClass} onClick={capture.cancel} title={t('chat.facadeVoiceCapture.discard.title')} aria-label={t('chat.facadeVoiceCapture.discard.aria')}>
                                     <Icon name="delete-bin" className={iconSizeClass} />
                                 </button>
                             </>
@@ -143,10 +154,10 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                         {state === 'submitting' ? <Icon name="loader-4" className={cn(iconSizeClass, 'animate-spin')} /> : null}
                         {state === 'error' ? (
                             <>
-                                <button type="button" className={footerIconButtonClass} onClick={capture.retry} title="Back to review (audio kept)" aria-label="Back to review">
+                                <button type="button" className={footerIconButtonClass} onClick={capture.retry} title={t('chat.facadeVoiceCapture.backToReview.title')} aria-label={t('chat.facadeVoiceCapture.backToReview.aria')}>
                                     <Icon name="play" className={iconSizeClass} />
                                 </button>
-                                <button type="button" className={footerIconButtonClass} onClick={capture.discard} title="Discard audio" aria-label="Discard audio">
+                                <button type="button" className={footerIconButtonClass} onClick={capture.discard} title={t('chat.facadeVoiceCapture.discard.title')} aria-label={t('chat.facadeVoiceCapture.discard.aria')}>
                                     <Icon name="delete-bin" className={iconSizeClass} />
                                 </button>
                             </>
@@ -154,15 +165,15 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
                     </div>
                     <audio controls src={pendingAudio.url} className="h-8 w-full" />
                     {state === 'reviewing' ? (
-                        <p className="typography-micro text-muted-foreground">{preSubmitPrivacyNotice(model)}</p>
+                        <p className="typography-micro text-muted-foreground">{preSubmitPrivacyNotice(model, t)}</p>
                     ) : null}
                     {state === 'submitting' ? (
-                        <p className="typography-micro text-muted-foreground">Transcribing…</p>
+                        <p className="typography-micro text-muted-foreground">{t('chat.facadeVoiceCapture.transcribing')}</p>
                     ) : null}
                     {state === 'error' && error ? (
                         <p className="typography-micro text-destructive" role="alert">
-                            {error.message}
-                            {error.retryable ? ' You can retry — the audio is still held locally.' : ''}
+                            {errorText}
+                            {error.retryable ? ` ${t('chat.facadeVoiceCapture.error.retryable')}` : ''}
                         </p>
                     ) : null}
                 </div>
@@ -170,10 +181,10 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
 
             {showIdleError ? (
                 <p className="typography-micro max-w-xs text-destructive" role="alert">
-                    {error.message}{' '}
+                    {errorText}{' '}
                     {error.code === 'permission_denied' ? (
                         <button type="button" className="underline" onClick={openFilePicker}>
-                            Attach an audio file
+                            {t('chat.facadeVoiceCapture.attachFile.button')}
                         </button>
                     ) : null}
                 </p>
@@ -181,9 +192,11 @@ export const FacadeVoiceCapture: React.FC<FacadeVoiceCaptureProps> = ({
 
             {state === 'inserted' && result ? (
                 <span className="typography-micro text-muted-foreground" role="status">
-                    Transcript inserted as draft{provenanceLine ? ` (${provenanceLine})` : ''}.{' '}
+                    {provenanceLine
+                        ? t('chat.facadeVoiceCapture.inserted.messageWithProvenance', { provenance: provenanceLine })
+                        : t('chat.facadeVoiceCapture.inserted.message')}{' '}
                     <button type="button" className="underline" onClick={capture.discard}>
-                        Done
+                        {t('chat.facadeVoiceCapture.inserted.done')}
                     </button>
                 </span>
             ) : null}

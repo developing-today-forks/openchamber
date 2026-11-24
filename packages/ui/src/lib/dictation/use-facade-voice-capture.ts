@@ -150,6 +150,8 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
                 new FacadeTranscriptionError(
                     'capture_unsupported',
                     'Recording is not available in this runtime. Attach an audio file instead.',
+                    undefined,
+                    { key: 'chat.facadeVoiceCapture.error.captureUnsupported' },
                 ),
             );
             return;
@@ -178,6 +180,10 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
                     denied
                         ? 'Microphone permission was denied. Allow microphone access in the browser or system settings, or attach an audio file instead.'
                         : 'The microphone could not be opened. Attach an audio file instead.',
+                    undefined,
+                    denied
+                        ? { key: 'chat.facadeVoiceCapture.error.permissionDenied' }
+                        : { key: 'chat.facadeVoiceCapture.error.microphoneUnavailable' },
                 ),
             );
             return;
@@ -318,7 +324,9 @@ export const useFacadeVoiceCapture = (options: UseFacadeVoiceCaptureOptions): Fa
             setError(
                 cause instanceof FacadeTranscriptionError
                     ? cause
-                    : new FacadeTranscriptionError('unknown_error', 'Transcription failed unexpectedly.'),
+                    : new FacadeTranscriptionError('unknown_error', 'Transcription failed unexpectedly.', undefined, {
+                          key: 'chat.facadeVoiceCapture.error.unexpected',
+                      }),
             );
             dispatch({ type: 'submit_failed' });
         } finally {

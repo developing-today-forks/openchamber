@@ -14,7 +14,25 @@
  * privacy notice, and §6.3 draft insertion. Capture (getUserMedia /
  * MediaRecorder) and rendering live in `use-facade-voice-capture` and
  * `FacadeVoiceCapture`; everything here is testable without a DOM.
+ *
+ * User-facing strings are English literals here only as the fallback:
+ * each error carries the `chat.facadeVoiceCapture` message key (plus
+ * params) for the component to resolve through `@/lib/i18n`, and
+ * `preSubmitPrivacyNotice` takes the component's `t` when called from
+ * React. Server-supplied error text stays literal — it is not ours to
+ * translate.
  */
+
+import type { I18nKey, I18nParams } from '@/lib/i18n';
+
+/** The `t` a React caller passes in so a pure helper can resolve a key. */
+export type FacadeMessageTranslator = (key: I18nKey, params?: I18nParams) => string;
+
+/** Locale key (plus params) for a client-constructed facade message. */
+export interface FacadeMessageI18n {
+    key: I18nKey;
+    params?: I18nParams;
+}
 
 /** Façade route on the opencode server (design §2.1/§2.2). */
 const TRANSCRIPTION_ENDPOINT_PATH = '/v1/audio/transcriptions';
@@ -118,8 +136,16 @@ export class FacadeTranscriptionError extends Error {
     readonly code: FacadeTranscriptionErrorCode;
     readonly status?: number;
     readonly retryable: boolean;
+    /**
+     * Locale key for this message, resolved by the rendering component
+     * through `@/lib/i18n`. Absent when the message is server-supplied
+     * text, which stays literal; `message` is the English fallback in
+     * both cases, so non-React callers and tests keep working.
+     */
+    readonly messageKey?: I18nKey;
+    readonly messageParams?: I18nParams;
 
-    constructor(code: FacadeTranscriptionErrorCode, message: string, status?: number) {
+    constructor(code: FacadeTranscriptionErrorCode, message: string, status?: number, i18n?: FacadeMessageI18n) {
         super(message);
         this.name = 'FacadeTranscriptionError';
         this.code = code;
@@ -127,6 +153,10 @@ export class FacadeTranscriptionError extends Error {
             this.status = status;
         }
         this.retryable = RETRYABLE_CODES.has(code);
+        if (i18n !== undefined) {
+            this.messageKey = i18n.key;
+            this.messageParams = i18n.params;
+        }
     }
 }
 
@@ -158,18 +188,35 @@ export const isAcceptedAudioMediaType = (mediaType?: string, filename?: string):
  */
 export const validateAudioInput = (info: AudioInputInfo): FacadeTranscriptionError | null => {
     if (!Number.isFinite(info.sizeBytes) || info.sizeBytes <= 0) {
-        return new FacadeTranscriptionError('invalid_audio', 'The audio is empty or could not be read.');
+        return new FacadeTranscriptionError('invalid_audio', 'The audio is empty or could not be read.', undefined, {
+            key: 'chat.facadeVoiceCapture.error.emptyAudio',
+        });
     }
     if (!isAcceptedAudioMediaType(info.mediaType, info.filename)) {
         return new FacadeTranscriptionError(
             'unsupported_media_type',
             `Unsupported audio type${info.mediaType ? ` (${info.mediaType})` : ''}. Accepted containers: wav, mp3, m4a, webm, ogg, flac.`,
+            undefined,
+            info.mediaType
+                ? {
+                      key: 'chat.facadeVoiceCapture.error.unsupportedTypeWithMedia',
+                      params: { mediaType: info.mediaType },
+                  }
+                : { key: 'chat.facadeVoiceCapture.error.unsupportedType' },
         );
     }
     if (info.sizeBytes > MAX_AUDIO_BYTES) {
         return new FacadeTranscriptionError(
             'audio_too_large',
             `Audio is ${(info.sizeBytes / (1024 * 1024)).toFixed(1)} MiB; the limit is 25 MiB.`,
+            undefined,
+            {
+                key: 'chat.facadeVoiceCapture.error.tooLarge',
+                params: {
+                    sizeMiB: (info.sizeBytes / (1024 * 1024)).toFixed(1),
+                    limitMiB: String(MAX_AUDIO_BYTES / (1024 * 1024)),
+                },
+            },
         );
     }
     if (
@@ -180,6 +227,14 @@ export const validateAudioInput = (info: AudioInputInfo): FacadeTranscriptionErr
         return new FacadeTranscriptionError(
             'duration_too_long',
             `Audio is ${Math.round(info.durationSeconds)}s; the limit is ${MAX_AUDIO_DURATION_SECONDS}s per transcription.`,
+            undefined,
+            {
+                key: 'chat.facadeVoiceCapture.error.tooLong',
+                params: {
+                    seconds: String(Math.round(info.durationSeconds)),
+                    limitSeconds: String(MAX_AUDIO_DURATION_SECONDS),
+                },
+            },
         );
     }
     return null;
@@ -199,11 +254,23 @@ export const audioLeavesMachine = (modelRef: string): boolean => {
     return true;
 };
 
-/** §5.3 pre-submit surfacing text for the review step. */
-export const preSubmitPrivacyNotice = (modelRef: string): string =>
-    audioLeavesMachine(modelRef)
-        ? `Submitting sends this audio to the transcription provider for ${modelRef} through the server. Audio leaves this machine, and the provider's retention policy applies to the submitted audio. The server itself retains no audio after the call.`
-        : `Submitting transcribes this audio with the on-device model ${modelRef}. Audio does not leave this machine.`;
+/**
+ * §5.3 pre-submit surfacing text for the review step. The component
+ * passes its `t` so the notice resolves through `@/lib/i18n`; without
+ * it the English text below is the fallback (tests, non-React use).
+ */
+export const preSubmitPrivacyNotice = (modelRef: string, translate?: FacadeMessageTranslator): string => {
+    if (audioLeavesMachine(modelRef)) {
+        return (
+            translate?.('chat.facadeVoiceCapture.privacyNotice.leavesMachine', { model: modelRef }) ??
+            `Submitting sends this audio to the transcription provider for ${modelRef} through the server. Audio leaves this machine, and the provider's retention policy applies to the submitted audio. The server itself retains no audio after the call.`
+        );
+    }
+    return (
+        translate?.('chat.facadeVoiceCapture.privacyNotice.onDevice', { model: modelRef }) ??
+        `Submitting transcribes this audio with the on-device model ${modelRef}. Audio does not leave this machine.`
+    );
+};
 
 export interface TranscriptSegment {
     text: string;
@@ -256,6 +323,8 @@ export const parseTranscriptionEnvelope = (data: unknown): TranscriptionResult =
         throw new FacadeTranscriptionError(
             'invalid_response',
             'The transcription response did not carry transcript text.',
+            undefined,
+            { key: 'chat.facadeVoiceCapture.error.invalidResponse' },
         );
     }
     const language = optionalString(data.language);
@@ -335,10 +404,15 @@ export const parseFacadeError = (status: number, data: unknown): FacadeTranscrip
     const bodyMessage = optionalString(error?.message);
     if (bodyCode && KNOWN_ERROR_CODES.has(bodyCode)) {
         // 413 carries audio_too_large when the cap is detected from headers (§2.4).
+        // A server-supplied message stays literal (no key); only the
+        // generated fallback resolves through i18n.
         return new FacadeTranscriptionError(
             bodyCode as FacadeTranscriptionErrorCode,
             bodyMessage ?? `Transcription failed (${bodyCode}).`,
             status,
+            bodyMessage === undefined
+                ? { key: 'chat.facadeVoiceCapture.error.failedWithCode', params: { code: bodyCode } }
+                : undefined,
         );
     }
     const byStatus: FacadeTranscriptionErrorCode =
@@ -355,7 +429,14 @@ export const parseFacadeError = (status: number, data: unknown): FacadeTranscrip
                     : status === 400
                       ? 'invalid_audio'
                       : 'unknown_error';
-    return new FacadeTranscriptionError(byStatus, bodyMessage ?? `Transcription failed (HTTP ${status}).`, status);
+    return new FacadeTranscriptionError(
+        byStatus,
+        bodyMessage ?? `Transcription failed (HTTP ${status}).`,
+        status,
+        bodyMessage === undefined
+            ? { key: 'chat.facadeVoiceCapture.error.failedWithStatus', params: { status: String(status) } }
+            : undefined,
+    );
 };
 
 interface TranscriptionRequestOptions {
@@ -461,6 +542,13 @@ export const transcribeViaFacade = async (input: TranscribeViaFacadeInput): Prom
             timedOut
                 ? `The transcription request did not finish within ${Math.round(deadlineMs / 1000)} seconds. You can retry or discard the recording.`
                 : 'The transcription request was aborted before it finished. You can retry or discard the recording.',
+            undefined,
+            timedOut
+                ? {
+                      key: 'chat.facadeVoiceCapture.error.timeout',
+                      params: { seconds: String(Math.round(deadlineMs / 1000)) },
+                  }
+                : { key: 'chat.facadeVoiceCapture.error.aborted' },
         );
     const aborted = new Promise<never>((_resolve, reject) => {
         if (controller.signal.aborted) {
@@ -492,6 +580,10 @@ export const transcribeViaFacade = async (input: TranscribeViaFacadeInput): Prom
             throw new FacadeTranscriptionError(
                 'network_error',
                 cause instanceof Error ? `Could not reach the transcription server: ${cause.message}` : 'Could not reach the transcription server.',
+                undefined,
+                cause instanceof Error
+                    ? { key: 'chat.facadeVoiceCapture.error.networkWithCause', params: { cause: cause.message } }
+                    : { key: 'chat.facadeVoiceCapture.error.network' },
             );
         }
         const data: unknown = await response.json().catch(() => undefined);
