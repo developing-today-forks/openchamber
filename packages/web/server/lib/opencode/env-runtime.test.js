@@ -117,6 +117,8 @@ const createRuntime = (settings, options = {}) => {
     readSettingsFromDiskMigrated: async () => settings,
     spawnSync: options.spawnSync,
     homedir: options.homedir,
+    // The real account home would make a suite depend on who runs it.
+    accountHomedir: options.accountHomedir ?? (() => process.env.HOME ?? null),
     isExecutable: options.isExecutable,
     wellKnownOpencodePaths: options.wellKnownOpencodePaths,
     providedLoginShellEnvSnapshot: options.providedLoginShellEnvSnapshot,
@@ -302,6 +304,37 @@ describe('OpenCode env runtime', () => {
       runtime.applyLoginShellEnvSnapshot();
       expect(process.env.XDG_DATA_HOME).toBe(isolatedDataHome);
       expect(process.env.OPENCODE_DB).toBeUndefined();
+    } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+    }
+  });
+
+  it('treats a caller HOME away from the account home as isolated even when the shell inherited it', () => {
+    // The leak this guards: HOME moved to a temp dir, the login shell inherits
+    // that HOME (so caller and shell agree), and a system-wide profile still
+    // exports the account's absolute OPENCODE_DB.
+    const isolatedHome = createTempDir('openchamber-moved-home-');
+    const keys = ['HOME', 'OPENCODE_DB', 'OPENCODE_CONFIG_DIR'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    process.env.HOME = isolatedHome;
+    delete process.env.OPENCODE_DB;
+    delete process.env.OPENCODE_CONFIG_DIR;
+    const { runtime, state } = createRuntime({}, { accountHomedir: () => '/home/test-user' });
+    state.cachedLoginShellEnvSnapshot = {
+      PATH: '/usr/bin',
+      HOME: isolatedHome,
+      OPENCODE_DB: '/home/test-user/.local/share/opencode/opencode.db',
+      OPENCODE_CONFIG_DIR: '/home/test-user/.config/opencode',
+    };
+
+    try {
+      runtime.applyLoginShellEnvSnapshot();
+      expect(process.env.HOME).toBe(isolatedHome);
+      expect(process.env.OPENCODE_DB).toBeUndefined();
+      expect(process.env.OPENCODE_CONFIG_DIR).toBeUndefined();
     } finally {
       for (const key of keys) {
         if (previous[key] === undefined) delete process.env[key];

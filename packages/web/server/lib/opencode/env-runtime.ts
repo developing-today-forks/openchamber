@@ -29,6 +29,8 @@ export interface OpenCodeEnvDependencies {
   spawnSync?: (command: string, args: string[], options: SpawnSyncOptionsWithStringEncoding) => OpenCodeEnvProbeResult;
   providedLoginShellEnvSnapshot?: () => NodeJS.ProcessEnv | null | undefined;
   homedir?: () => string;
+  /** The account's own home directory (the passwd entry), whatever HOME says. */
+  accountHomedir?: () => string | null;
   wellKnownOpencodePaths?: string[];
   readPinnedOpencodeBinary?: () => string | null;
   isExecutable?: (filePath: string) => boolean;
@@ -94,6 +96,13 @@ export const createOpenCodeEnvRuntime = (deps: OpenCodeEnvDependencies) => {
     ? deps.providedLoginShellEnvSnapshot
     : () => undefined;
   const resolveHomeDir = deps.homedir ?? (() => os.homedir());
+  const resolveAccountHomeDir = deps.accountHomedir ?? (() => {
+    try {
+      return os.userInfo().homedir;
+    } catch {
+      return null;
+    }
+  });
   const wellKnownOpencodePaths = deps.wellKnownOpencodePaths !== undefined
     ? deps.wellKnownOpencodePaths
     : WELL_KNOWN_OPENCODE_PATHS;
@@ -333,7 +342,17 @@ export const createOpenCodeEnvRuntime = (deps: OpenCodeEnvDependencies) => {
       return;
     }
 
-    const callerIsolatedLaunch = ISOLATION_ENV_KEYS.some((key) => {
+    // A caller that moved HOME away from the account's home isolated the
+    // launch even when the shell agrees with it: a login shell inherits HOME,
+    // so the comparison below cannot see that move, while a system-wide
+    // profile (nix-darwin's environment.variables, /etc/profile) can still
+    // export an absolute OPENCODE_DB into the account's real database.
+    const callerHome = process.env.HOME;
+    const accountHome = resolveAccountHomeDir();
+    const callerMovedHome = isString(callerHome) && callerHome.length > 0
+      && isString(accountHome) && accountHome.length > 0
+      && normalizeDirectoryPath(callerHome) !== normalizeDirectoryPath(accountHome);
+    const callerIsolatedLaunch = callerMovedHome || ISOLATION_ENV_KEYS.some((key) => {
       const callerValue = process.env[key];
       const shellValue = snapshot[key];
       return isString(callerValue) && callerValue.length > 0

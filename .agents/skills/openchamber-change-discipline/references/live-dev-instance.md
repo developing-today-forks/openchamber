@@ -17,6 +17,8 @@ OPENCHAMBER_HMR_UI_PORT=<ui> OPENCHAMBER_HMR_API_PORT=<api> bun run dev
 
 That folder is the OpenCode the desktop app bundles, at the version this checkout pins: stage it once with `bun run --cwd packages/electron prepare:opencode-server`. `OPENCODE_BINARY=<a CLI>` instead runs a CLI you name.
 
+Also set `OPENCODE_DB=$D/data/opencode/opencode.db` yourself, and read the `[OpenCode] database:` line in the dev log before anything else: it must name `D`. A machine can export an absolute `OPENCODE_DB` from a system-wide profile (nix-darwin's `environment.variables`), and the server copies login-shell variables the caller did not set; the server now leaves path-bearing variables out when `HOME` differs from the account's home, but a variable you set yourself is the one that cannot leak.
+
 The variables go because a shell opened inside the desktop app (an agent's, the integrated terminal) inherits the app's server env: the LAN UI password, `OPENCHAMBER_RUNTIME=desktop`, `OPENCHAMBER_DIST_DIR`, the managed OpenCode's `OPENCODE_*`, with their names recorded in `OPENCHAMBER_INJECTED_ENV`. `bun run dev` drops every recorded name, an inline override included, so while that record survives, `OPENCODE_CONFIG=/tmp/x.json bun run dev` silently writes the user's real `opencode.json`. Never print the password variable.
 
 Spawn it detached and keep its process group. Before the first write, `GET /api/session?directory=<the real checkout>` on the API port must return an empty list; anything else means the instance is not isolated, so stop.
