@@ -7,7 +7,7 @@ import type { Message, Part, Session } from '@/lib/opencode/model';
 import { getSafeStorage } from '@/stores/utils/safeStorage';
 import { recordSessionTimestampEvents, resetSessionActivityTimestamps } from '@/sync/session-activity-timestamps';
 import { SessionTimestamps } from '@/components/session/sidebar/sessions/SessionTimestamps';
-import { EntryTimes } from './EntryTimes';
+import { EntryTimes, partShowsOwnTimes } from './EntryTimes';
 import { I18nProvider } from '@/lib/i18n';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { SessionRunDuration } from '@/components/session/sidebar/sessions/SessionRunDuration';
@@ -51,6 +51,42 @@ test('a finished shell command shows its recorded start and end', async () => {
   expect(timeCount()).toBe(2);
   expect(text()).toContain('Started');
   expect(text()).toContain('Ended');
+});
+
+test('an end on the start day shows its time only, with the full date in its title', async () => {
+  const start = new Date(2026, 10, 24, 5, 38, 34).getTime();
+  const end = new Date(2026, 10, 24, 5, 38, 51).getTime();
+  const part: Part = {
+    id: 'call', sessionID: 's', messageID: 'a', type: 'tool', callID: 'call', tool: 'shell',
+    state: { status: 'completed', input: { command: 'ls' }, output: '', time: { start, end } },
+  };
+  await act(async () => render(<EntryTimes part={part} />));
+  const [started, ended] = Array.from(document.querySelectorAll('time'));
+  expect(started?.textContent).toContain('24');
+  expect(ended?.textContent).not.toContain('24');
+  expect(ended?.textContent).toContain('38:51');
+  expect(ended?.getAttribute('title')).toContain('24');
+});
+
+test('an end on a later day keeps its date', async () => {
+  const start = new Date(2026, 10, 24, 23, 59, 50).getTime();
+  const end = new Date(2026, 10, 25, 0, 0, 10).getTime();
+  const part: Part = {
+    id: 'call', sessionID: 's', messageID: 'a', type: 'tool', callID: 'call', tool: 'shell',
+    state: { status: 'completed', input: { command: 'ls' }, output: '', time: { start, end } },
+  };
+  await act(async () => render(<EntryTimes part={part} />));
+  const ended = document.querySelectorAll('time')[1];
+  expect(ended?.textContent).toContain('25');
+  expect(ended?.hasAttribute('title')).toBe(false);
+});
+
+test('text, thinking and tool parts carry their own times; files and agents do not', () => {
+  const base = { id: 'p', sessionID: 's', messageID: 'a' };
+  expect(partShowsOwnTimes({ ...base, type: 'text', text: 'hi' })).toBe(true);
+  expect(partShowsOwnTimes({ ...base, type: 'reasoning', text: '' })).toBe(true);
+  expect(partShowsOwnTimes({ ...base, type: 'tool', callID: 'c', tool: 'shell', state: { status: 'pending', input: {} } } as Part)).toBe(true);
+  expect(partShowsOwnTimes({ ...base, type: 'file', mime: 'text/plain', url: 'file:///x' } as Part)).toBe(false);
 });
 
 test('running thinking shows its start and no invented end', async () => {

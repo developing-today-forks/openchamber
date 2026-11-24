@@ -1,5 +1,5 @@
 import React from 'react';
-import { EntryTimes } from './message/EntryTimes';
+import { EntryTimes, partShowsOwnTimes } from './message/EntryTimes';
 import { MessageSliceContext } from './message/messageSliceContext';
 import { modelVariantNames } from '@/lib/modelVariants';
 import { findCatalogModel, type Message, type Part } from '@/lib/opencode/model';
@@ -624,7 +624,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 ref={messageContainerRef}
             >
                 <div className="chat-message-column relative">
-                    <EntryTimes message={message.info} />
+                    {isUser || !visibleParts.some(partShowsOwnTimes) ? <EntryTimes message={message.info} /> : null}
                     {isUser ? (
                         visibleParts.length === 0 ? null : (
                             <FadeInOnReveal

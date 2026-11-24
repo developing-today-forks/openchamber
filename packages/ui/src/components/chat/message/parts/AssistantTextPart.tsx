@@ -102,7 +102,8 @@ const AssistantTextPart: React.FC<AssistantTextPartProps> = ({
             key={part.id || `${messageId}-text`}
             data-streaming-reply={isStreaming && part.type === 'text' ? '' : undefined}
         >
-            <EntryTimes part={part} running={isStreaming} />
+            {/* A long answer renders as several slices of one part; its times head the first only. */}
+            {range?.start ? null : <EntryTimes part={part} running={isStreaming} />}
             <MarkdownRenderer
                 content={displayTextContent}
                 part={part}

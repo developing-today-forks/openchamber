@@ -1227,6 +1227,8 @@ Terminals an agent starts with the pty tool are indexed by `persistent-ptys.ts` 
 
 Nothing is guessed. A session this client never saw has no input or output time, and the sidebar says it is unavailable. `time.idle` counts as activity, never as completed output, because a failed or stopped turn sets it too. OpenCode stores no times for a text item and none for older reasoning items, so a part read from history carries an empty `displayTime` and its entry reads unavailable unless the live stream recorded it earlier.
 
+In the transcript (`components/chat/message/EntryTimes.tsx`) every entry's line reads `Started: <date and time> Ended: <time>`: an end on the start's day drops the date, which its tooltip keeps. An assistant step whose parts show their own times (text, thinking, tool calls: `partShowsOwnTimes`) shows no line of its own; its first part's line marks where it began, and a step of one tool call used to print the same line twice.
+
 The record is persisted per runtime in local storage (`oc.session-timestamps.v1:<runtime>`), at most once every 2 s and on page hide, merged with what another window wrote. A malformed value reads as no record and deletes nothing. A deleted session leaves the record. Streamed deltas publish `byId` (rows) without `sortById` (the sidebar order), so a long reply does not rebuild the sidebar per flush; the order catches up at the next structural event or write.
 
 ### Why a turn with no known start shows no duration and not the time since this client looked

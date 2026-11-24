@@ -3,7 +3,23 @@ import type { Message, Part } from '@/lib/opencode/model';
 import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { formatActivityTimestamp } from '@/lib/activityTimestampFormat';
+import { formatTimeForPreference } from '@/lib/timeFormat';
 import { readRecordedEntrySpan, spanFromPart, useSessionActivityTimestampsStore } from '@/sync/session-activity-timestamps';
+
+const sameLocalDay = (left: number, right: number): boolean => {
+  const a = new Date(left);
+  const b = new Date(right);
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+};
+
+/**
+ * Parts that show their own start and end in the transcript. An assistant
+ * step made of them leaves its message-level line out: it repeated the first
+ * part's times, word for word when the step held one tool call.
+ */
+export const partShowsOwnTimes = (part: Part): boolean => (
+  part.type === 'text' || part.type === 'reasoning' || part.type === 'tool'
+);
 
 export const EntryTimes: React.FC<{ message?: Message; part?: Part; running?: boolean }> = ({ message, part, running = false }) => {
   const { t, locale } = useI18n();
@@ -31,8 +47,12 @@ export const EntryTimes: React.FC<{ message?: Message; part?: Part; running?: bo
     if (at === undefined || !Number.isFinite(at) || at <= 0 || (ending && start !== undefined && at < start)) {
       return ending && inProgress ? t('activityTime.running') : t('activityTime.unavailable');
     }
-    const formatted = formatActivityTimestamp(at, preference);
-    return <time dateTime={new Date(at).toISOString()}>{formatted}</time>;
+    const full = formatActivityTimestamp(at, preference);
+    // An end on the start's day shows its time only; the date is in the line already.
+    const shown = ending && start !== undefined && start > 0 && sameLocalDay(start, at)
+      ? formatTimeForPreference(at, preference, { precision: 'second' })
+      : full;
+    return <time dateTime={new Date(at).toISOString()} title={shown === full ? undefined : full}>{shown}</time>;
   };
   return <div className="flex min-w-0 flex-wrap items-center gap-x-3 typography-micro text-muted-foreground tabular-nums" data-entry-times={part?.id ?? message?.id}>
     <span>{t('activityTime.start')}: {value(start, false)}</span>
