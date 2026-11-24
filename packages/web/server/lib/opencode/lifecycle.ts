@@ -828,12 +828,13 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   syncStore(() => loadManagedStore());
 
   // Ownership for action paths comes from the store (#82, #2423): a pid
-  // is ours only when a non-closed store generation names it. A store
-  // generation is its own identity — binary, fingerprint and started_at
-  // were recorded at spawn — so signal-0 liveness verifies it and `ps`
-  // is never consulted: a recycled pid must never be adopted or
-  // signalled on a bare number, and no v1 record can establish ownership
-  // now that the pair is retired.
+  // is a signalling candidate only when a non-closed store generation
+  // names it. Store membership alone never authorises a signal: a stale
+  // generation can outlive its process, and a recycled pid must never be
+  // adopted or signalled on a bare number (#2618). Signal-0 liveness
+  // keeps the reaper and the read path cheap; every signal goes through
+  // verifyRecordedOpenCodePidIdentity first, and no v1 record can
+  // establish ownership now that the pair is retired.
   const isOwnedOpenCodePid = (pid: number) => {
     if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 0) return false;
     const store = readManagedOpenCodeStore(managedPaths.storePath);
@@ -862,7 +863,48 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     }
   };
 
+  // Identity verification for the signalling path (#2618): a recorded
+  // pid can be recycled onto an unrelated process after the recorded
+  // OpenCode dies — the store reaper only closes generations whose pid is
+  // gone, so a recycled pid keeps its generation open indefinitely.
+  // Before any signal, read the live command and require the recorded
+  // port plus a binary identity: either the orphan reaper's
+  // opencode + serve + port check, or the command naming the recorded
+  // binary (basename, so a realpath'd nix bin link and a copied fixture
+  // binary both match). Anything unverifiable (no non-closed generation,
+  // dead pid, failed ps, empty output, command mismatch) fails closed:
+  // not-owned for signalling purposes.
+  const verifyRecordedOpenCodePidIdentity = async (pid: number): Promise<boolean> => {
+    if (process.platform === 'win32' || !Number.isInteger(pid) || pid <= 0) return false;
+    const generation = generationForPid(readManagedOpenCodeStore(managedPaths.storePath) ?? createEmptyManagedOpenCodeStore(), pid);
+    if (!generation || !isPidAlive(pid)) return false;
+    const command = await readRecordedProcessCommand(pid);
+    if (!command) return false;
+    if (commandIdentifiesOurServer(command, { pid, port: generation.port })) return true;
+    // A managed launch need not be named "opencode" (a wrapper, or a
+    // launch-spec binary), so the recorded binary is the second identity
+    // token. The port must still match exactly.
+    const recordedBase = (generation.binary.split('/').pop() ?? generation.binary).toLowerCase();
+    const portMatch = command.match(/--port(?:=|\s+)(\d+)/);
+    const portMatches = Boolean(portMatch) && Number.parseInt(portMatch?.[1] ?? '', 10) === generation.port;
+    if (!portMatches || !recordedBase) return false;
+    return command
+      .split(/\s+/)
+      .some((token) => (token.split('/').pop() ?? token).toLowerCase() === recordedBase);
+  };
+
   const terminateRecordedOpenCodeProcess = async (pid: number) => {
+    // A recycled pid must never be signalled (#2618): verify the live
+    // process is still the recorded OpenCode before sending anything. A
+    // mismatch (or an unverifiable command) treats the generation as
+    // pid-gone — close it instead of signalling — mirroring the
+    // managed-servers read's fail-closed identity check above. Every
+    // signalling site funnels through here (close, adopted-server close,
+    // startup replace), so this one gate covers them all.
+    if (!(await verifyRecordedOpenCodePidIdentity(pid))) {
+      closeGenerationForPid(pid);
+      return;
+    }
     const signalGroup = (signal: NodeJS.Signals) => {
       try {
         process.kill(-pid, signal);

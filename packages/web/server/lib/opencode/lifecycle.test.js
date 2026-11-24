@@ -2069,6 +2069,45 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     expect(current.binary).toBe('/opt/other/opencode');
   });
 
+  // A recorded pid can be recycled onto an unrelated process after the
+  // recorded OpenCode dies (#2618): signal-0 liveness still holds and the
+  // store reaper leaves the generation open, so the close path must verify
+  // the live identity before signalling. The test runner's own pid stands
+  // in for the recycled process; its command names no OpenCode server, so
+  // adopting and then closing it must send no signal and must close the
+  // generation as pid-gone instead.
+  it('never signals a recycled pid on the close path (#2618)', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const { dataDir } = await startFirstRuntime(process.pid);
+    const recorded = readCurrent(dataDir);
+    expect(recorded.pid).toBe(process.pid);
+    spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
+    globalThis.fetch = vi.fn(async () => Response.json({}));
+    // Recycled: the live process at the recorded pid is unrelated.
+    recordedProcessCommand = 'sleep 30\n';
+
+    const realKill = process.kill.bind(process);
+    const signals = [];
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (signal === undefined || signal === 0) return realKill(pid, 0);
+      signals.push({ pid, signal });
+      return true;
+    });
+    try {
+      const second = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode') });
+      const adopted = await second.startOpenCode();
+      expect(adopted.pid).toBe(recorded.pid);
+
+      await adopted.close();
+
+      expect(signals.filter(({ pid }) => pid === recorded.pid || pid === -recorded.pid)).toEqual([]);
+      const generation = (readStore(dataDir)?.generations ?? []).find((entry) => entry.pid === recorded.pid);
+      expect(generation?.state).toBe('closed');
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
   // Two OpenChamber servers on one data dir (the desktop app and `openchamber
   // serve`) share the managed store. The recorded OpenCode may be
   // the other server's; it must never be adopted, handed off from or drained.
