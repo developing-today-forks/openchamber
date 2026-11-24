@@ -46,6 +46,7 @@ function createSdk(events: StreamPayload[], streamFinished: () => void, keepaliv
         onActivity?.()
       }
       for (const payload of events) {
+        // SAFETY: every payload in the array was constructed in this file as a complete wire event or as a bridge frame with type and properties. The pipeline classifies each payload before use, and the malformed frame tests below show bad shapes are dropped.
         yield payload as OpenCodeEvent
       }
       streamFinished()
@@ -153,6 +154,7 @@ describe("createEventPipeline", () => {
   test("bridges the host's turn start onto this device's clock", async () => {
     const hostNow = Date.now() + 3_600_000
     const before = Date.now()
+    // SAFETY: this raw bridge frame carries the fields the session status bridge reads: sessionID, status, timestamp, and turnStartedAt. The expectations below check the rebased turn start it produces.
     const { events } = await collect(
       [{ type: "openchamber:session-status", properties: { sessionID: "ses_1", status: "busy", timestamp: hostNow, turnStartedAt: hostNow - 1_200_000 } as never }],
       1,
@@ -165,6 +167,7 @@ describe("createEventPipeline", () => {
   })
 
   test("keeps the start of a turn that began in the same flush as its next step", async () => {
+    // SAFETY: the literal spreads base, which carries id, created, and location, and its data carries sessionID, the field the pipeline reads for a session.execution.started event.
     const { events } = await collect(
       [
         { ...base, type: "session.execution.started", data: { sessionID: "ses_1" } } as OpenCodeEvent,
@@ -178,6 +181,7 @@ describe("createEventPipeline", () => {
   })
 
   test("bridges openchamber archive announcements into session patches", async () => {
+    // SAFETY: this raw bridge frame carries sessionID and archivedAt, the fields the archive bridge reads. The expectation below checks the session patch it produces.
     const { events } = await collect(
       [{ type: "openchamber:session-archived", properties: { sessionID: "ses_1", archivedAt: 42 } as never }],
       1,
@@ -186,6 +190,7 @@ describe("createEventPipeline", () => {
   })
 
   test("bridges openchamber metadata announcements into session patches", async () => {
+    // SAFETY: this raw bridge frame carries sessionID and metadata, the fields the metadata bridge reads. The expectation below checks the session patch it produces.
     const { events } = await collect(
       [{ type: "openchamber:session-metadata", properties: { sessionID: "ses_1", metadata: { pinned: true } } as never }],
       1,
@@ -194,6 +199,7 @@ describe("createEventPipeline", () => {
   })
 
   test("passes OpenChamber notification and auto-accept frames through typed", async () => {
+    // SAFETY: the second raw bridge frame carries sessions, modes, and revision, the fields the auto-accept bridge reads. The expectations below check the typed event it produces.
     const { events } = await collect(
       [
         { type: "openchamber:notification", properties: { kind: "agent-complete", sessionId: "ses_1", title: "Done" } },
@@ -206,6 +212,7 @@ describe("createEventPipeline", () => {
   })
 
   test("passes the server's waiting-page announcements through typed", async () => {
+    // SAFETY: the first raw bridge frame carries sessionID, directory, and a page with id and title, the fields the page-waiting bridge reads. The expectations below check the typed event it produces.
     const { events } = await collect(
       [
         { type: "openchamber:page-waiting", properties: { sessionID: "ses_1", directory: "/repo", page: { id: "call_1", title: "Pick a layout" } } as never },
@@ -257,6 +264,7 @@ describe("createEventPipeline", () => {
     const streamFinished = new Promise<void>((resolve) => { resolveStreamFinished = resolve })
     const delivered: SyncEvent[] = []
     const announced: Array<{ spaceId: string; status: string; wasReady: boolean }> = []
+    // SAFETY: the first frame is a complete space-stream frame with spaceId, status, and wasReady, the fields the announcement handler reads. The second frame carries a malformed spaceId on purpose, and the expectations below show the handler drops it.
     const pipeline = createEventPipeline({
       sdk: createSdk([
         { type: "openchamber:space-stream", properties: { spaceId: "a1b2c3d4e5f6", status: "connected", wasReady: false, timestamp: 1 } as never },
@@ -283,6 +291,7 @@ describe("createEventPipeline", () => {
     const streamFinished = new Promise<void>((resolve) => { resolveStreamFinished = resolve })
     const delivered: SyncEvent[] = []
     const steps: Array<{ spaceId: string; step: string; failure: { code: string; message: string } | null }> = []
+    // SAFETY: the first two frames are complete space-progress frames with spaceId, step, and failure, the fields the progress handler reads. The third frame carries an unknown step on purpose, and the expectations below show the handler drops it.
     const pipeline = createEventPipeline({
       sdk: createSdk([
         { type: "openchamber:space-progress", properties: { spaceId: "a1b2c3d4e5f6", step: "creating", failure: null, timestamp: 1 } as never },
@@ -313,6 +322,7 @@ describe("createEventPipeline", () => {
     const streamFinished = new Promise<void>((resolve) => { resolveStreamFinished = resolve })
     const delivered: SyncEvent[] = []
     const moved: string[] = []
+    // SAFETY: the first frame is a complete space-setup frame with the spaceId the setup handler reads. The second frame carries a malformed spaceId on purpose, and the expectations below show the handler drops it.
     const pipeline = createEventPipeline({
       sdk: createSdk([
         { type: "openchamber:space-setup", properties: { spaceId: "a1b2c3d4e5f6", timestamp: 1 } as never },
