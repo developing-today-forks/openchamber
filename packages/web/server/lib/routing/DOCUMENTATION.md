@@ -681,6 +681,23 @@ The text goes to the same classification provider as the rest of the routing
 request, so enterprise mode already covers it. The OpenCode `plan_info` pool
 `purpose` is a separate record in OpenCode's plan store and is not read here.
 
+## Model-choice notes
+
+The routing request's state carries the user's summarized model-choice
+notes (#147, `../model-choices/DOCUMENTATION.md`) when there are any:
+`choiceNotes`, one note per line, read by the runtime through its
+`readChoiceNotes` option from the model-choices service, which caps them
+for this prompt and returns none while recording is off. The notes are
+state context, never criteria: a note describes a model the user picks,
+and criteria describe the kind of request a category is for. One line
+(`CHOICE_NOTES_INSTRUCTIONS`) is appended to the routing instructions
+only when notes ride along; with none, the request is the one built
+before the feed, unchanged. Enterprise mode never sends them: the
+classification endpoint there is an administrator's crossing, and the
+notes are the user's own recorded habits. A read that fails routes
+without them, the way a failed history read does. The safety-net and
+probe requests never carry them.
+
 ## Pool waits and order
 
 OpenCode applies `health.firstTokenTimeoutMs` (and `attempts`, `hedgeAfterMs`)

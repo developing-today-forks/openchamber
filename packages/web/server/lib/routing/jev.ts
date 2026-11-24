@@ -1,6 +1,7 @@
 import type { JsonObject } from '../shared/json-values.js';
 import { z } from 'zod';
 import {
+  CHOICE_NOTES_INSTRUCTIONS,
   JEV_LINGER_MS,
   JEV_TIMEOUT_MS,
   ROUTING_INSTRUCTIONS,
@@ -74,13 +75,33 @@ const categoryCriteria = (category: Pick<RoutingCategory, 'id' | 'description'> 
   return `${category.description}\n\nRuns on the model pool "${poolID}": ${notes.join('\n')}`;
 };
 
-/** `pools` is the `experimental.model_routes` map (`model-routes.js` `readModelRoutes`). */
-export const buildRoutingRequest = ({ categories, history, request, pools = {} }: { categories: (Pick<RoutingCategory, 'id' | 'description'> & { model?: { providerID?: string; modelID?: string } | null })[]; history: HistoryEntry[]; request: string; pools?: JsonObject }): JevRequest => {
+/**
+ * `pools` is the `experimental.model_routes` map (`model-routes.js` `readModelRoutes`).
+ * `choiceNotes` is the user's summarized model-choice notes (#147), already
+ * capped by the model-choices module: they ride in the state as context, one
+ * per line, never in a category's criteria, which describe the kind of
+ * request rather than a model. No notes (or only blank ones) leaves the
+ * request exactly as it was before the feed.
+ */
+export const buildRoutingRequest = ({ categories, history, request, pools = {}, choiceNotes = [] }: { categories: (Pick<RoutingCategory, 'id' | 'description'> & { model?: { providerID?: string; modelID?: string } | null })[]; history: HistoryEntry[]; request: string; pools?: JsonObject; choiceNotes?: string[] }): JevRequest => {
   const criteria: Record<string, string> = {};
   for (const category of categories) criteria[category.id] = categoryCriteria(category, pools);
+  const notes = choiceNotes.map((text) => text.trim()).filter(Boolean);
+  if (notes.length === 0) {
+    return {
+      state: { history, request },
+      questions: { category: { type: 'choice', instructions: ROUTING_INSTRUCTIONS, criteria } },
+    };
+  }
   return {
-    state: { history, request },
-    questions: { category: { type: 'choice', instructions: ROUTING_INSTRUCTIONS, criteria } },
+    state: { history, request, choiceNotes: notes.join('\n') },
+    questions: {
+      category: {
+        type: 'choice',
+        instructions: `${ROUTING_INSTRUCTIONS}\n${CHOICE_NOTES_INSTRUCTIONS}`,
+        criteria,
+      },
+    },
   };
 };
 

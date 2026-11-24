@@ -6,7 +6,7 @@ import {
   createJevClient,
   toGeminiDecisionsRequest,
 } from './jev.js';
-import { SAFETY_CRITERIA, SAFETY_INSTRUCTIONS } from './defaults.js';
+import { CHOICE_NOTES_INSTRUCTIONS, ROUTING_INSTRUCTIONS, SAFETY_CRITERIA, SAFETY_INSTRUCTIONS } from './defaults.js';
 import { classifierEndpoint } from './classifier.js';
 import { buildTurnEndRequest } from '../session-work/questions.js';
 import { buildJevAuditRequest } from '../session-goal/audit.js';
@@ -95,6 +95,46 @@ describe('jev client timeout', () => {
   it('reports an HTTP error before the timeout as it is', async () => {
     const fetchImpl = async () => new Response('', { status: 401 });
     await expect(client(fetchImpl).ask({}, ENDPOINT)).rejects.toMatchObject({ status: 401 });
+  });
+});
+
+describe('routing request model-choice notes (#147)', () => {
+  const categories = [{ id: 'trivial', description: 'Easy.' }, { id: 'hard', description: 'Hard.' }];
+  const history = [{ role: 'user', text: 'earlier' }];
+  // The request as it was built before the feed: the oracle for every
+  // no-notes state below.
+  const plainRequest = {
+    state: { history, request: 'fix it' },
+    questions: {
+      category: {
+        type: 'choice',
+        instructions: ROUTING_INSTRUCTIONS,
+        criteria: { trivial: 'Easy.', hard: 'Hard.' },
+      },
+    },
+  };
+
+  it('carries the notes in the state and names them in the instructions', () => {
+    const notes = ['picks low effort on claude-opus for goal specs (7 of 9 times)', 'picks high effort on gpt-6-astra for chat messages (3 of 4 times)'];
+    const request = buildRoutingRequest({ categories, history, request: 'fix it', choiceNotes: notes });
+    expect(request.state).toEqual({ history, request: 'fix it', choiceNotes: notes.join('\n') });
+    expect(request.questions.category.instructions).toBe(`${ROUTING_INSTRUCTIONS}\n${CHOICE_NOTES_INSTRUCTIONS}`);
+    // The criteria stay the category descriptions; a note describes a
+    // model, never the kind of request a category is for.
+    expect(request.questions.category.criteria).toEqual({ trivial: 'Easy.', hard: 'Hard.' });
+  });
+
+  it('is the pre-change request when there are no notes', () => {
+    expect(buildRoutingRequest({ categories, history, request: 'fix it' })).toEqual(plainRequest);
+    expect(buildRoutingRequest({ categories, history, request: 'fix it', choiceNotes: [] })).toEqual(plainRequest);
+    expect(buildRoutingRequest({ categories, history, request: 'fix it', choiceNotes: ['  ', ''] })).toEqual(plainRequest);
+  });
+
+  it('keeps the notes inside the state on the Google Decisions shape', () => {
+    const notes = ['picks low effort on claude-opus for goal specs (7 of 9 times)'];
+    const body = toGeminiDecisionsRequest(buildRoutingRequest({ categories, history, request: 'fix it', choiceNotes: notes }));
+    expect(JSON.parse(body.input)).toEqual({ history, request: 'fix it', choiceNotes: notes[0] });
+    expect(Object.keys(body.questions.category).sort()).toEqual(['criteria', 'instructions', 'type']);
   });
 });
 
