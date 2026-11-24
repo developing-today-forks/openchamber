@@ -4,58 +4,60 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { useRouter } from '@openchamber/ui/hooks/useRouter';
 import { navigateFromNotification } from '@openchamber/ui/lib/router/notificationNavigation';
+import type { Session } from '@openchamber/ui/lib/opencode/model';
+import { useGlobalSessionsStore, type LoadResult } from '@openchamber/ui/stores/useGlobalSessionsStore';
+import { useProjectsStore } from '@openchamber/ui/stores/useProjectsStore';
+import { useUIStore } from '@openchamber/ui/stores/useUIStore';
+import { useDirectoryStore } from '@openchamber/ui/stores/useDirectoryStore';
 import { useSessionUIStore } from '@openchamber/ui/sync/session-ui-store';
 
-const { loadSessions } = vi.hoisted(() => ({ loadSessions: vi.fn() }));
+const session = (id: string, directory: string): Session => ({
+  id, projectID: 'project', directory, title: id,
+  cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+  time: { created: 1, updated: 2 },
+});
 
-vi.mock('@openchamber/ui/stores/useGlobalSessionsStore', () => ({
-  ensureGlobalSessionsLoaded: loadSessions,
-  resolveGlobalSessionDirectory: (session: { directory: string }) => session.directory,
-  useGlobalSessionsStore: { getState: () => ({ entityById: new Map() }) },
-}));
-vi.mock('@openchamber/ui/sync/session-ui-store', async () => {
-  const { create } = await import('zustand');
-  return {
-    useSessionUIStore: create((set) => ({
-      currentSessionId: 'ses_A',
-      currentSessionDirectory: '/project',
-      getDirectoryForSession: () => '/project',
-      setCurrentSession: (id: string, directory: string) => set({
-        currentSessionId: id, currentSessionDirectory: directory,
-      }),
-    })),
-  };
-});
-vi.mock('@openchamber/ui/stores/useUIStore', async () => {
-  const { create } = await import('zustand');
-  return {
-    useUIStore: create((set) => ({
-      isSettingsDialogOpen: false,
-      settingsPage: 'home',
-      setSettingsDialogOpen: (open: boolean) => set({ isSettingsDialogOpen: open }),
-      setSettingsPage: (page: string) => set({ settingsPage: page }),
-      navigateToDiff: vi.fn(),
-    })),
-  };
-});
-vi.mock('@openchamber/ui/stores/useDirectoryStore', () => ({
-  useDirectoryStore: { getState: () => ({ currentDirectory: '/project' }) },
-}));
-vi.mock('@openchamber/ui/lib/settings/metadata', () => ({ resolveSettingsSlug: (slug: string) => slug }));
+const knownSessions: LoadResult = {
+  activeSessions: [session('ses_A', '/project'), session('ses_B', '/project'), session('ses_C', '/project')],
+  archivedSessions: [],
+};
+
+const publishSnapshot = (snapshot: LoadResult): LoadResult => {
+  useGlobalSessionsStore.setState({
+    activeSessions: snapshot.activeSessions,
+    archivedSessions: snapshot.archivedSessions,
+    entityById: new Map([...snapshot.activeSessions, ...snapshot.archivedSessions].map((entry) => [entry.id, entry])),
+    hasLoaded: true,
+    status: 'ready',
+  });
+  return snapshot;
+};
+
+let loadImpl: () => Promise<LoadResult> = () => Promise.resolve(knownSessions);
+const loadSessions = (): Promise<LoadResult> => loadImpl().then(publishSnapshot);
 
 let root: Root;
 let host: HTMLDivElement;
 
 function Router() {
-  useRouter();
+  useRouter({ loadSessions });
   return <div>Mounted app</div>;
 }
 
 beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   window.history.replaceState({}, '', '/?session=ses_A');
-  useSessionUIStore.setState({ currentSessionId: 'ses_A', currentSessionDirectory: '/project' });
-  loadSessions.mockReset().mockResolvedValue({ activeSessions: [], archivedSessions: [] });
+  loadImpl = () => Promise.resolve(knownSessions);
+  useProjectsStore.setState({
+    projects: [
+      { id: 'project', path: '/project' },
+      { id: 'other-project', path: '/other-project' },
+    ],
+  });
+  publishSnapshot(knownSessions);
+  useUIStore.setState({ isSettingsDialogOpen: false, settingsPage: 'home' });
+  useDirectoryStore.setState({ currentDirectory: '/project' });
+  useSessionUIStore.getState().setCurrentSession('ses_A', '/project');
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
@@ -74,11 +76,11 @@ test('notification navigation opens B through the session-link owner and keeps t
   const documentBefore = window.document;
   const assign = vi.spyOn(window.location, 'assign');
   const pushState = vi.spyOn(window.history, 'pushState');
-  let finishLoad!: (snapshot: unknown) => void;
-  loadSessions.mockImplementationOnce(() => {
+  let finishLoad!: (snapshot: LoadResult) => void;
+  loadImpl = () => {
     expect(window.location.search).toBe('?session=ses_B');
-    return new Promise((resolve) => { finishLoad = resolve; });
-  });
+    return new Promise<LoadResult>((resolve) => { finishLoad = resolve; });
+  };
 
   expect(navigateFromNotification('/?session=ses_B')).toBe(true);
   expect(useSessionUIStore.getState().currentSessionId).toBe('ses_B');
@@ -87,7 +89,8 @@ test('notification navigation opens B through the session-link owner and keeps t
   expect(window.location.search).toBe('?session=ses_B');
 
   await act(async () => finishLoad({
-    activeSessions: [{ id: 'ses_B', directory: '/other-project' }], archivedSessions: [],
+    activeSessions: [session('ses_A', '/project'), session('ses_B', '/other-project'), session('ses_C', '/project')],
+    archivedSessions: [],
   }));
   expect(useSessionUIStore.getState().currentSessionDirectory).toBe('/other-project');
   expect(window.document).toBe(documentBefore);
@@ -101,13 +104,14 @@ test('notification navigation opens B through the session-link owner and keeps t
 });
 
 test('startup declines notification navigation until the initial route finishes', async () => {
-  let finishLoad!: () => void;
-  loadSessions.mockImplementationOnce(() => new Promise<void>((resolve) => { finishLoad = resolve; }));
+  let finishLoad!: (snapshot: LoadResult) => void;
+  loadImpl = () => new Promise<LoadResult>((resolve) => { finishLoad = resolve; });
   await act(async () => root.render(<Router />));
   expect(navigateFromNotification('/?session=ses_B')).toBe(false);
   expect(window.location.search).toBe('?session=ses_A');
   expect(useSessionUIStore.getState().currentSessionId).toBe('ses_A');
-  await act(async () => finishLoad());
+  loadImpl = () => Promise.resolve(knownSessions);
+  await act(async () => finishLoad(knownSessions));
   expect(navigateFromNotification('/?session=ses_B')).toBe(true);
   await act(async () => {});
   expect(useSessionUIStore.getState().currentSessionId).toBe('ses_B');

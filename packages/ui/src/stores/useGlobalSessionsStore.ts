@@ -34,7 +34,7 @@ export { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory } from './
 
 type GlobalSessionsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
-type LoadResult = {
+export type LoadResult = {
   activeSessions: Session[];
   archivedSessions: Session[];
 };
