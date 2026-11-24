@@ -24,6 +24,7 @@ import { createContextWindowController } from './context-window-controller.mjs';
 import { attachWindowEvents, isNativeWindowVisible } from './window-events.mjs';
 import { createTrayController, createTrayLocaleRouter } from './tray.mjs';
 import { buildDockMenuTemplate, buildUnreadJumpList, isJumpListSessionId } from './dock-menu.mjs';
+import { settleQuitConfirmation } from './quit-confirmation.mjs';
 import { createSessionLinkGate } from './session-link-gate.mjs';
 import { startDeepLinkHostActivation } from './deep-link-host-activation.mjs';
 import { applyDevDockIdentity, applyDockBadge } from './dev-dock-identity.mjs';
@@ -531,6 +532,7 @@ const performConfirmedQuit = async ({ relaunch = false } = {}) => {
   if (state.quitInProgress) return;
   state.quitInProgress = true;
 
+  closeAllDevTunnels();
   try {
     await prepareForQuit();
   } catch (error) {
@@ -579,12 +581,11 @@ const requestQuitWithConfirmation = async () => {
       defaultId: 1,
       cancelId: 1,
     });
-    state.quitConfirmationPending = false;
-    if (result.response === 0) {
+    if (settleQuitConfirmation(state, result.response) === 'confirmed') {
       performConfirmedQuit();
     }
   } catch (error) {
-    state.quitConfirmationPending = false;
+    settleQuitConfirmation(state, undefined);
     log.warn('[electron] quit confirmation dialog failed:', error);
   }
 };
@@ -5713,17 +5714,22 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', (event) => {
   state.quitRequested = true;
-  closeAllDevTunnels();
 
   if (state.installingUpdate) {
+    closeAllDevTunnels();
     return;
   }
 
   if (process.platform === 'darwin' && !state.quitConfirmed) {
+    // The quit is only a request until the user confirms it: leave the dev
+    // tunnels up so a cancelled confirmation keeps them alive (#2581).
+    // performConfirmedQuit closes them once the quit is real.
     event.preventDefault();
     void requestQuitWithConfirmation();
     return;
   }
+
+  closeAllDevTunnels();
 
   if (!state.backgroundShutdownComplete) {
     event.preventDefault();
