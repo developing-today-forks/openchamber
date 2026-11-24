@@ -271,7 +271,11 @@ export const parseTranscriptionEnvelope = (data: unknown): TranscriptionResult =
                   return [];
               }
               const speaker = optionalString(segment.speaker);
-              return [{ text: segment.text, start, end, ...(speaker ? { speaker } : {}) }];
+              const transcriptSegment: TranscriptSegment = { text: segment.text, start, end };
+              if (speaker) {
+                  transcriptSegment.speaker = speaker;
+              }
+              return [transcriptSegment];
           })
         : undefined;
     const words: TranscriptWord[] | undefined = Array.isArray(data.words)
@@ -286,32 +290,53 @@ export const parseTranscriptionEnvelope = (data: unknown): TranscriptionResult =
               }
               const speaker = optionalString(word.speaker);
               const confidence = optionalNumber(word.confidence);
-              return [
-                  {
-                      word: word.word,
-                      start,
-                      end,
-                      ...(speaker ? { speaker } : {}),
-                      ...(confidence !== undefined ? { confidence } : {}),
-                  },
-              ];
+              const transcriptWord: TranscriptWord = {
+                  word: word.word,
+                  start,
+                  end,
+              };
+              if (speaker) {
+                  transcriptWord.speaker = speaker;
+              }
+              if (confidence !== undefined) {
+                  transcriptWord.confidence = confidence;
+              }
+              return [transcriptWord];
           })
         : undefined;
     const providerMetadata = isRecord(data.provider_metadata) ? data.provider_metadata : undefined;
-    const provenance: TranscriptProvenance = {
-        ...(optionalString(providerMetadata?.provider) ? { provider: optionalString(providerMetadata?.provider) } : {}),
-        ...(optionalString(providerMetadata?.model) ? { model: optionalString(providerMetadata?.model) } : {}),
-        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
-        ...(language ? { language } : {}),
-    };
-    return {
+    const provider = optionalString(providerMetadata?.provider);
+    const model = optionalString(providerMetadata?.model);
+    const provenance: TranscriptProvenance = {};
+    if (provider) {
+        provenance.provider = provider;
+    }
+    if (model) {
+        provenance.model = model;
+    }
+    if (durationSeconds !== undefined) {
+        provenance.durationSeconds = durationSeconds;
+    }
+    if (language) {
+        provenance.language = language;
+    }
+    const result: TranscriptionResult = {
         text: data.text,
-        ...(language ? { language } : {}),
-        ...(durationSeconds !== undefined ? { durationSeconds } : {}),
-        ...(segments ? { segments } : {}),
-        ...(words ? { words } : {}),
         provenance,
     };
+    if (language) {
+        result.language = language;
+    }
+    if (durationSeconds !== undefined) {
+        result.durationSeconds = durationSeconds;
+    }
+    if (segments) {
+        result.segments = segments;
+    }
+    if (words) {
+        result.words = words;
+    }
+    return result;
 };
 
 const KNOWN_ERROR_CODES: ReadonlySet<string> = new Set([

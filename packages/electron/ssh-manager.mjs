@@ -584,8 +584,8 @@ export class ElectronSshManager {
       SSH_ASKPASS_REQUIRE: 'force',
       SSH_ASKPASS: auth.askpassPath,
       DISPLAY: process.env.DISPLAY || '1',
-      ...(auth.sshPassword ? { OPENCHAMBER_SSH_ASKPASS_VALUE: auth.sshPassword.trim() } : {}),
     };
+    if (auth.sshPassword) env.OPENCHAMBER_SSH_ASKPASS_VALUE = auth.sshPassword.trim();
     if (userAskpass && userAskpass !== auth.askpassPath) env.OPENCHAMBER_SSH_ASKPASS_FALLBACK = userAskpass;
     return env;
   }
@@ -991,26 +991,20 @@ export class ElectronSshManager {
 
   sanitizeStoredSecret(secret) {
     if (!secret || typeof secret !== 'object') return undefined;
-    return {
-      enabled: Boolean(secret.enabled),
-      store: secret.store === 'settings' ? 'settings' : 'never',
-      ...(typeof secret.value === 'string' && secret.value.trim() ? { value: secret.value } : {}),
-    };
+    const sanitized = { enabled: Boolean(secret.enabled), store: secret.store === 'settings' ? 'settings' : 'never' };
+    if (typeof secret.value === 'string' && secret.value.trim()) sanitized.value = secret.value;
+    return sanitized;
   }
 
   sanitizeForward(forward) {
     const id = typeof forward?.id === 'string' ? forward.id.trim() : '';
     if (!id) return null;
     const type = forward?.type === 'remote' || forward?.type === 'dynamic' ? forward.type : 'local';
-    const normalized = {
-      id,
-      enabled: forward?.enabled !== false,
-      type,
-      ...(forward?.localHost ? { localHost: sanitizeBindHost(forward.localHost) } : {}),
-      ...(validPort(forward?.localPort) !== null ? { localPort: Number(forward.localPort) } : {}),
-      ...(forward?.remoteHost ? { remoteHost: String(forward.remoteHost).trim() || '127.0.0.1' } : {}),
-      ...(validPort(forward?.remotePort) !== null ? { remotePort: Number(forward.remotePort) } : {}),
-    };
+    const normalized = { id, enabled: forward?.enabled !== false, type };
+    if (forward?.localHost) normalized.localHost = sanitizeBindHost(forward.localHost);
+    if (validPort(forward?.localPort) !== null) normalized.localPort = Number(forward.localPort);
+    if (forward?.remoteHost) normalized.remoteHost = String(forward.remoteHost).trim() || '127.0.0.1';
+    if (validPort(forward?.remotePort) !== null) normalized.remotePort = Number(forward.remotePort);
 
     if (type === 'local' || type === 'remote') {
       if (!normalized.localPort || !normalized.remotePort) return null;
@@ -1041,34 +1035,37 @@ export class ElectronSshManager {
           .filter((forward) => forward && !seen.has(forward.id) && seen.add(forward.id))
       : [];
 
-    return {
+    const remoteOpenchamber = {
+      mode: instance?.remoteOpenchamber?.mode === 'external' ? 'external' : 'managed',
+      keepRunning: instance?.remoteOpenchamber?.keepRunning !== false,
+      installMethod: ['auto', 'npm', 'bun'].includes(instance?.remoteOpenchamber?.installMethod)
+        ? instance.remoteOpenchamber.installMethod
+        : 'auto',
+      bindHost: instance?.remoteOpenchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
+      uploadBundleOverSsh: Boolean(instance?.remoteOpenchamber?.uploadBundleOverSsh),
+    };
+    if (validPort(instance?.remoteOpenchamber?.preferredPort) !== null) remoteOpenchamber.preferredPort = Number(instance.remoteOpenchamber.preferredPort);
+    const localForward = { bindHost: sanitizeBindHost(instance?.localForward?.bindHost) };
+    if (validPort(instance?.localForward?.preferredLocalPort) !== null) localForward.preferredLocalPort = Number(instance.localForward.preferredLocalPort);
+    const auth = {};
+    const sshPassword = this.sanitizeStoredSecret(instance?.auth?.sshPassword);
+    if (sshPassword) auth.sshPassword = sshPassword;
+    const openchamberPassword = this.sanitizeStoredSecret(instance?.auth?.openchamberPassword);
+    if (openchamberPassword) auth.openchamberPassword = openchamberPassword;
+    const sanitized = {
       id,
-      ...(typeof instance?.nickname === 'string' && instance.nickname.trim() ? { nickname: instance.nickname.trim() } : {}),
       sshCommand,
       sshParsed: parsed,
       connectionTimeoutSec: Number.isFinite(instance?.connectionTimeoutSec) && Number(instance.connectionTimeoutSec) > 0
         ? Number(instance.connectionTimeoutSec)
         : DEFAULT_CONNECTION_TIMEOUT_SEC,
-      remoteOpenchamber: {
-        mode: instance?.remoteOpenchamber?.mode === 'external' ? 'external' : 'managed',
-        keepRunning: instance?.remoteOpenchamber?.keepRunning !== false,
-        ...(validPort(instance?.remoteOpenchamber?.preferredPort) !== null ? { preferredPort: Number(instance.remoteOpenchamber.preferredPort) } : {}),
-        installMethod: ['auto', 'npm', 'bun'].includes(instance?.remoteOpenchamber?.installMethod)
-          ? instance.remoteOpenchamber.installMethod
-          : 'auto',
-        bindHost: instance?.remoteOpenchamber?.bindHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
-        uploadBundleOverSsh: Boolean(instance?.remoteOpenchamber?.uploadBundleOverSsh),
-      },
-      localForward: {
-        bindHost: sanitizeBindHost(instance?.localForward?.bindHost),
-        ...(validPort(instance?.localForward?.preferredLocalPort) !== null ? { preferredLocalPort: Number(instance.localForward.preferredLocalPort) } : {}),
-      },
-      auth: {
-        ...(this.sanitizeStoredSecret(instance?.auth?.sshPassword) ? { sshPassword: this.sanitizeStoredSecret(instance.auth.sshPassword) } : {}),
-        ...(this.sanitizeStoredSecret(instance?.auth?.openchamberPassword) ? { openchamberPassword: this.sanitizeStoredSecret(instance.auth.openchamberPassword) } : {}),
-      },
+      remoteOpenchamber,
+      localForward,
+      auth,
       portForwards,
     };
+    if (typeof instance?.nickname === 'string' && instance.nickname.trim()) sanitized.nickname = instance.nickname.trim();
+    return sanitized;
   }
 
   async updateHostUrl(instanceId, label, localUrl) {
@@ -1086,7 +1083,9 @@ export class ElectronSshManager {
       existing.apiUrl = localUrl;
       if (token) existing.clientToken = token;
     } else {
-      hosts.push({ id: instanceId, label, url: localUrl, apiUrl: localUrl, ...(token ? { clientToken: token } : {}) });
+      const host = { id: instanceId, label, url: localUrl, apiUrl: localUrl };
+      if (token) host.clientToken = token;
+      hosts.push(host);
     }
     root.desktopHosts = hosts;
     await writeJsonRoot(this.settingsFilePath, root);
