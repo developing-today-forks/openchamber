@@ -135,6 +135,7 @@ describe("global session status index", () => {
     } as SyncEvent)
     const active = activeSessionIds()
 
+    // SAFETY: the literal is a complete session.deleted event. sessionID is the only property the reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.deleted",
       properties: { sessionID: "session-a" },

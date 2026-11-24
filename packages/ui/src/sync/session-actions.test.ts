@@ -783,6 +783,7 @@ describe("moveSessionToDirectory", () => {
   test("keeps the move the session.moved event already applied", async () => {
     // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const message = { id: "message-a", sessionID: "session-a", role: "user", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, title, and directory.
     const requested = { id: "session-a", title: "Before", directory: "/source" } as Session
     const source = createStore({}, {
       // SAFETY: test fixture; the spread of the requested record above overrides title and directory, the fields the move reconciles.

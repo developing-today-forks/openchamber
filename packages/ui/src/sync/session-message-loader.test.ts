@@ -808,8 +808,10 @@ const createHistoryServer = (sessionID: string) => {
     for (let index = 0; index < count; index += 1) {
       const position = records.length
       const record = createRecord(sessionID, `msg_${String(position).padStart(5, "0")}`, position + 1)
-      // SAFETY: record.info comes from createRecord above, so the spread carries the full fixture shape and only role and time change.
-      if (position % promptEvery !== 0) record.info = { ...record.info, role: "assistant", time: { created: position + 1, completed: position + 1 } } as Message
+      if (position % promptEvery !== 0) {
+        // SAFETY: record.info comes from createRecord above, so the spread carries the full fixture shape and only role and time change.
+        record.info = { ...record.info, role: "assistant", time: { created: position + 1, completed: position + 1 } } as Message
+      }
       records.push(record)
     }
   }
