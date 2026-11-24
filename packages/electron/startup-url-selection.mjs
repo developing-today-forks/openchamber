@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 export const resolveStartupUrlProbePlan = ({ development, packagedUi, skipLocalServer }) => ({
   probeHmrApi: development === true && packagedUi !== true && skipLocalServer !== true,
   probeHmrUi: development === true && packagedUi !== true,
@@ -37,10 +39,11 @@ const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
  * manager for the same user. Returns its origin, or null for any other target.
  */
 export const resolveAttachedLocalServerUrl = ({ skipLocalServer, serverUrl }) => {
-  if (skipLocalServer !== true || typeof serverUrl !== 'string' || !serverUrl.trim()) return null;
+  const parsedServerUrl = z.string().safeParse(serverUrl);
+  if (skipLocalServer !== true || !parsedServerUrl.success || !parsedServerUrl.data.trim()) return null;
   let parsed;
   try {
-    parsed = new URL(serverUrl.trim());
+    parsed = new URL(parsedServerUrl.data.trim());
   } catch {
     return null;
   }

@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { z } from 'zod';
 
 import { resolveBunExecutable } from '../../../scripts/lib/bun-executable.mjs';
 
@@ -196,7 +197,7 @@ function resolveInstallCommands(env, bunResolver = resolveBunExecutable) {
       const parsed = JSON.parse(env.OPENCHAMBER_ELECTRON_INSTALL_COMMANDS);
       if (
         Array.isArray(parsed) &&
-        parsed.every((command) => Array.isArray(command) && typeof command[0] === 'string')
+        parsed.every((command) => Array.isArray(command) && z.string().safeParse(command[0]).success)
       ) {
         return normalize(parsed);
       }

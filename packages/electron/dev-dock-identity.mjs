@@ -22,7 +22,7 @@ export const applyDockBadge = (app, unreadCount) => {
     app.dock?.setBadge(badge.text);
     return;
   }
-  if (typeof app.setBadgeCount === 'function') {
+  if (app.setBadgeCount instanceof Function) {
     app.setBadgeCount(badge.count);
   }
 };

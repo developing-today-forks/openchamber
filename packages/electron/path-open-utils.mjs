@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 
+import { z } from 'zod';
+
 const accessErrorMessage = (label, targetPath, error) => {
   if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
     return `${label} does not exist: ${targetPath}`;
@@ -13,7 +15,8 @@ const accessErrorMessage = (label, targetPath, error) => {
 };
 
 const normalizeRequiredPath = (rawPath, label = 'Path') => {
-  const targetPath = typeof rawPath === 'string' ? rawPath.trim() : '';
+  const parsedPath = z.string().safeParse(rawPath);
+  const targetPath = parsedPath.success ? parsedPath.data.trim() : '';
   if (!targetPath) {
     throw new Error(`${label} is required`);
   }

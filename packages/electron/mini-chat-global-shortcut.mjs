@@ -1,4 +1,6 @@
 
+import { z } from 'zod';
+
 export const MINI_CHAT_GLOBAL_SHORTCUT_SETTING_KEY = 'desktopMiniChatGlobalShortcut';
 
 const MODIFIER_TO_ACCELERATOR = {
@@ -51,8 +53,9 @@ for (let index = 1; index <= 24; index += 1) {
 }
 
 export function convertShortcutComboToAccelerator(combo) {
-  if (typeof combo !== 'string') return null;
-  const trimmed = combo.trim();
+  const parsedCombo = z.string().safeParse(combo);
+  if (!parsedCombo.success) return null;
+  const trimmed = parsedCombo.data.trim();
   if (trimmed === '' || trimmed === '__unassigned__') return null;
   if (/\s/.test(trimmed)) return null;
   const parts = trimmed.toLowerCase().split('+').map((part) => part.trim()).filter(Boolean);
@@ -79,8 +82,9 @@ export function convertShortcutComboToAccelerator(combo) {
 }
 
 export function normalizeStoredShortcutCombo(value) {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
+  const parsedValue = z.string().safeParse(value);
+  if (!parsedValue.success) return null;
+  const trimmed = parsedValue.data.trim();
   return trimmed === '' || trimmed === '__unassigned__' ? null : trimmed;
 }
 
