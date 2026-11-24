@@ -66,6 +66,27 @@ describe('share relay client', () => {
     expect(states).toHaveLength(120);
   });
 
+  it('bounds an oversized success body instead of parsing it unbounded', async () => {
+    const oversized = JSON.stringify({ states: [], pad: 'x'.repeat(17 * 1024 * 1024) });
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response(oversized, { status: 200 }),
+    });
+    // The callers' existing empty behavior: an unparseable/oversized
+    // states answer contributes no states, and nothing throws.
+    await expect(client.states('https://relay.test', ['a'])).resolves.toEqual([]);
+  });
+
+  it('bounds an oversized error body instead of buffering it for the detail', async () => {
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response(`refused:${'E'.repeat(5000)}`, { status: 502 }),
+    });
+    const error = await client.close('https://relay.test', 'a').catch((caught) => caught);
+    expect(error).toMatchObject({ status: 502 });
+    expect(error.message).toBe('The relay answered 502');
+  });
+
   it('carries the relay status on a refusal', async () => {
     const client = createShareRelayClient({
       getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
