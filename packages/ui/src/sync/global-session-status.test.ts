@@ -68,6 +68,7 @@ describe("global session status index", () => {
   })
 
   test("preserves full retry status details from live events", () => {
+    // SAFETY: the literal is a complete session.status event. Its status carries the full retry detail (attempt, message) the reducer stores verbatim, as the expectation below checks.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: {
@@ -84,12 +85,14 @@ describe("global session status index", () => {
   })
 
   test("keeps active membership stable across active status detail and directory updates", () => {
+    // SAFETY: the literal is a complete session.status event. The type tag, sessionID, and busy status are the full set of fields the status reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "busy" } },
     } as SyncEvent)
     const before = activeSessionIds()
 
+    // SAFETY: the literal is a complete session.status event. Its status carries the full retry detail (attempt, message) the reducer reads.
     applyGlobalSessionStatusEvent("/other-repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "retry", attempt: 2, message: "waiting" } },
@@ -99,12 +102,14 @@ describe("global session status index", () => {
   })
 
   test("replaces active membership only when a session becomes idle or active", () => {
+    // SAFETY: the literal is a complete session.status event. The type tag, sessionID, and busy status are the full set of fields the status reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "busy" } },
     } as SyncEvent)
     const active = activeSessionIds()
 
+    // SAFETY: the literal is a complete session.idle event. sessionID is the only property the reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.idle",
       properties: { sessionID: "session-a" },
@@ -113,6 +118,7 @@ describe("global session status index", () => {
     expect(idle).not.toBe(active)
     expect(idle?.has("session-a")).toBe(false)
 
+    // SAFETY: the literal is a complete session.status event. The type tag, sessionID, and busy status are the full set of fields the status reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "busy" } },
@@ -140,18 +146,21 @@ describe("global session status index", () => {
   })
 
   test("promotes on active and settled lifecycle edges only", () => {
+    // SAFETY: the literal is a complete session.status event. The type tag, sessionID, and busy status are the full set of fields the status reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "busy" } },
     } as SyncEvent)
     const busyRank = useSessionOrderingStore.getState().rankById.get("session-a")
 
+    // SAFETY: the literal is a complete session.status event. Its status carries the full retry detail (attempt, message, next) the reducer reads.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "retry", attempt: 1, message: "wait", next: 1 } },
     } as SyncEvent)
     expect(useSessionOrderingStore.getState().rankById.get("session-a")).toBe(busyRank)
 
+    // SAFETY: the literal is a complete session.idle event. sessionID is the only property the reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.idle",
       properties: { sessionID: "session-a" },
@@ -159,6 +168,7 @@ describe("global session status index", () => {
     const idleRank = useSessionOrderingStore.getState().rankById.get("session-a")
     expect(idleRank).toBeGreaterThan(busyRank ?? 0)
 
+    // SAFETY: the literal is a complete session.error event. sessionID is the only property the reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.error",
       properties: { sessionID: "session-a" },
@@ -206,6 +216,7 @@ describe("global session status index", () => {
   })
 
   test("clears active membership when a runtime reset replaces status state", () => {
+    // SAFETY: the literal is a complete session.status event. The type tag, sessionID, and busy status are the full set of fields the status reducer reads for this variant.
     applyGlobalSessionStatusEvent("/repo", {
       type: "session.status",
       properties: { sessionID: "session-a", status: { type: "busy" } },
@@ -231,6 +242,7 @@ describe("global session status index", () => {
     const unsubscribeStatus = useGlobalSessionStatusStore.subscribe(() => { statusPublications += 1 })
     const unsubscribeOrdering = useSessionOrderingStore.subscribe(() => { orderingPublications += 1 })
     const unsubscribeTiming = useSessionActivityTimingStore.subscribe(() => { timingPublications += 1 })
+    // SAFETY: each generated literal is a complete session.status event. It carries sessionID, a busy status, and the turnStart the timing store reads.
     const events = Array.from({ length: 1_000 }, (_, index) => ({
       type: "session.status",
       properties: { sessionID: `session-${index}`, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
@@ -248,6 +260,7 @@ describe("global session status index", () => {
   })
 
   test("keeps lifecycle event order inside a batch", () => {
+    // SAFETY: both literals are complete events of their variants. The first is session.status with sessionID and a busy status, the second is session.deleted with sessionID, and the reducer reads only these fields.
     applyGlobalSessionStatusEvents("/repo", [
       {
         type: "session.status",
@@ -295,6 +308,7 @@ describe("background subagent keeps its parent's turn open", () => {
     type: "session.status",
     properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
   })
+  // SAFETY: the literal is a complete session.idle event. sessionID is the only property the reducer reads for this variant.
   const idle = (sessionID: string): SyncEvent => ({ type: "session.idle", properties: { sessionID } } as SyncEvent)
   const timing = () => useSessionActivityTimingStore.getState()
 
@@ -375,6 +389,7 @@ describe("a background command keeps its session's turn open", () => {
     type: "session.status",
     properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
   })
+  // SAFETY: the literal is a complete session.idle event. sessionID is the only property the reducer reads for this variant.
   const idle = (sessionID: string): SyncEvent => ({ type: "session.idle", properties: { sessionID } } as SyncEvent)
   const started: SyncEvent = {
     type: "shell.started",
@@ -548,6 +563,7 @@ describe("a pull request watch keeps its session's turn open", () => {
     type: "session.status",
     properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
   })
+  // SAFETY: the literal is a complete session.idle event. sessionID is the only property the reducer reads for this variant.
   const idle = (sessionID: string): SyncEvent => ({ type: "session.idle", properties: { sessionID } } as SyncEvent)
   const watch = {
     sessionID: "session", directory: "/repo", url: "https://example.test/pr/1", number: 1, title: "PR", status: "pending" as const, startedAt: 1,
