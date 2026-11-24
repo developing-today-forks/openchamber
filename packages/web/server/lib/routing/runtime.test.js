@@ -279,7 +279,9 @@ describe('resolveAutoSelection', () => {
 
   it('never sends the choice notes in enterprise mode', async () => {
     const readChoiceNotes = vi.fn(async () => ['picks low effort on claude-opus for goal specs (7 of 9 times)']);
-    const { runtime, jev } = makeRuntime({ enterprise: true, readChoiceNotes, answers: { category: { choice: 'hard', confidence: 0.97 } } });
+    // Enterprise routing runs only on the administrator's pinned endpoint.
+    const pinned = { url: 'https://jev.company.test/v1/systemone', model: 'jev-latest', key: 'org-secret' };
+    const { runtime, jev } = makeRuntime({ enterprise: true, pinned, classifierSource: 'typesafe', readChoiceNotes, answers: { category: { choice: 'hard', confidence: 0.97 } } });
     const resolved = await runtime.resolveAutoSelection(send());
     expect(resolved.decision.reason).toBe('routed');
     expect(readChoiceNotes).not.toHaveBeenCalled();
