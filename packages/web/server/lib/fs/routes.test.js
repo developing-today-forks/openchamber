@@ -4192,6 +4192,77 @@ describe('fs exec output cap (#737)', () => {
   });
 });
 
+describe('fs exec bounds (#2583)', () => {
+  const createQuickSpawn = () => {
+    const spawn = vi.fn(() => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+    return { spawn };
+  };
+
+  it('rejects a commands array over the per-request cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const handler = registerExec({ spawn });
+    const commands = Array.from({ length: 33 }, (_, i) => `echo ${i}`);
+
+    const res = await callExec(handler, { commands, cwd: '/repo' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toContain('Too many commands');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a commands array at the per-request cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const handler = registerExec({ spawn });
+    const commands = Array.from({ length: 32 }, (_, i) => `echo ${i}`);
+
+    const res = await callExec(handler, { commands, cwd: '/repo' });
+
+    expect(res.statusCode).not.toBe(400);
+    expect(spawn).toHaveBeenCalledTimes(32);
+  });
+
+  it('evicts the oldest retained jobs past the job cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const { app, getRoute } = createRouteRegistry();
+    registerFsRoutes(app, {
+      os: { homedir: () => '/home/user' },
+      path,
+      fsPromises: {
+        realpath: async (targetPath) => targetPath,
+        stat: async () => ({ isDirectory: () => true }),
+      },
+      spawn,
+      crypto: { randomUUID: (() => { let n = 0; return () => `job-${n++}`; })() },
+      normalizeDirectoryPath: (p) => p,
+      resolveProjectDirectory: async () => ({ directory: '/repo' }),
+      buildAugmentedPath: () => '/usr/bin',
+      resolveGitBinaryForSpawn: () => 'git',
+      openchamberUserConfigRoot: '/home/user/.config',
+    });
+    const postExec = getRoute('POST', '/api/fs/exec');
+    const getExec = getRoute('GET', '/api/fs/exec/:jobId');
+
+    for (let i = 0; i < 257; i += 1) {
+      await callExec(postExec, { commands: ['true'], cwd: '/repo' });
+    }
+
+    const oldest = createMockResponse();
+    await getExec({ params: { jobId: 'job-0' } }, oldest);
+    const newest = createMockResponse();
+    await getExec({ params: { jobId: 'job-256' } }, newest);
+
+    expect(oldest.statusCode).toBe(404);
+    expect(newest.statusCode).toBe(200);
+  });
+});
+
 describe('fs exec UTF-8 chunk boundaries (#1567)', () => {
   const createChunkSpawn = ({ stdoutChunks = [], stderrChunks = [] } = {}) => {
     const kills = [];
