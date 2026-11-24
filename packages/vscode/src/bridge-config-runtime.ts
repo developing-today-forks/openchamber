@@ -69,6 +69,7 @@ import {
   getWebSearchSource,
   type SnippetScope,
 } from './opencodeConfig';
+import type { JsonObject } from './opencodeConfig';
 import { compactionUpdateSchema, parseWebSearchSelection, skillSwitchRequestSchema } from './opencode-config-v2';
 import {
   getSkillsCatalogSourceItems,
@@ -319,7 +320,7 @@ export async function handleConfigBridgeMessage(
       if (normalizedMethod === 'POST') {
         const scopeValue = body?.scope as string | undefined;
         const scope: AgentScope | undefined = scopeValue === 'project' ? AGENT_SCOPE.PROJECT : scopeValue === 'user' ? AGENT_SCOPE.USER : undefined;
-        const created = createAgent(agentName, (body || {}) as Record<string, unknown>, workingDirectory, scope);
+        const created = createAgent(agentName, (body || {}) as JsonObject, workingDirectory, scope);
         return {
           id,
           type,
@@ -329,7 +330,7 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'PATCH') {
-        const updated = updateAgent(agentName, (body || {}) as Record<string, unknown>, workingDirectory);
+        const updated = updateAgent(agentName, (body || {}) as JsonObject, workingDirectory);
         return {
           id,
           type,
@@ -388,7 +389,7 @@ export async function handleConfigBridgeMessage(
       if (normalizedMethod === 'POST') {
         const scopeValue = body?.scope as string | undefined;
         const scope: CommandScope | undefined = scopeValue === 'project' ? COMMAND_SCOPE.PROJECT : scopeValue === 'user' ? COMMAND_SCOPE.USER : undefined;
-        createCommand(commandName, (body || {}) as Record<string, unknown>, workingDirectory, scope);
+        createCommand(commandName, (body || {}) as JsonObject, workingDirectory, scope);
         return {
           id,
           type,
@@ -398,7 +399,7 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'PATCH') {
-        updateCommand(commandName, (body || {}) as Record<string, unknown>, workingDirectory);
+        updateCommand(commandName, (body || {}) as JsonObject, workingDirectory);
         return {
           id,
           type,
@@ -495,7 +496,7 @@ export async function handleConfigBridgeMessage(
 
       if (normalizedMethod === 'POST') {
         const scope = body?.scope as 'user' | 'project' | undefined;
-        const created = createMcpConfig(mcpName, (body || {}) as Record<string, unknown>, workingDirectory, scope);
+        const created = createMcpConfig(mcpName, (body || {}) as JsonObject, workingDirectory, scope);
         return {
           id,
           type,
@@ -505,7 +506,7 @@ export async function handleConfigBridgeMessage(
       }
 
       if (normalizedMethod === 'PATCH') {
-        const updated = updateMcpConfig(mcpName, (body || {}) as Record<string, unknown>, workingDirectory);
+        const updated = updateMcpConfig(mcpName, (body || {}) as JsonObject, workingDirectory);
         return {
           id,
           type,
@@ -725,12 +726,12 @@ export async function handleConfigBridgeMessage(
 
       if (normalizedMethod === 'POST') {
         const scope = body?.scope === 'project' ? 'project' : 'global';
-        const snippet = createSnippet(snippetName, (body || {}) as Record<string, unknown>, workingDirectory, scope as SnippetScope);
+        const snippet = createSnippet(snippetName, (body || {}) as JsonObject, workingDirectory, scope as SnippetScope);
         return { id, type, success: true, data: { success: true, snippet } };
       }
 
       if (normalizedMethod === 'PATCH') {
-        const snippet = updateSnippet(snippetName, (body || {}) as Record<string, unknown>, workingDirectory);
+        const snippet = updateSnippet(snippetName, (body || {}) as JsonObject, workingDirectory);
         return { id, type, success: true, data: { success: true, snippet } };
       }
 
@@ -790,7 +791,7 @@ export async function handleConfigBridgeMessage(
         const sourceValue = body?.source as string | undefined;
         const scope: SkillScope | undefined = scopeValue === 'project' ? SKILL_SCOPE.PROJECT : scopeValue === 'user' ? SKILL_SCOPE.USER : undefined;
         const normalizedSource = sourceValue === 'agents' ? 'agents' : 'opencode';
-        createSkill(skillName, { ...(body || {}), source: normalizedSource } as Record<string, unknown>, workingDirectory, scope);
+        createSkill(skillName, { ...(body || {}), source: normalizedSource } as JsonObject, workingDirectory, scope);
         return {
           id,
           type,
@@ -818,7 +819,7 @@ export async function handleConfigBridgeMessage(
           };
         }
 
-        updateSkill(skillName, (body || {}) as Record<string, unknown>, workingDirectory);
+        updateSkill(skillName, (body || {}) as JsonObject, workingDirectory);
         return {
           id,
           type,
