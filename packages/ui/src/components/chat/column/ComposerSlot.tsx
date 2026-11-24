@@ -13,7 +13,6 @@ import { registerFloatingPanelClearanceReader } from '@/components/chat/composer
 import ScrollToBottomButton from '../components/ScrollToBottomButton';
 import { StatusRowContainer } from '../StatusRowContainer';
 import { ChatInput } from '../ChatInput';
-import CurrentModelIndicator from '../CurrentModelIndicator';
 import { PermissionDock } from '../PermissionDock';
 import { FormDock } from '../FormDock';
 import { MessageSelectionBar } from '../messageSelection/MessageSelectionBar';
@@ -192,9 +191,6 @@ export const ComposerSlot: React.FC<{
             />
         ) : (
             <>
-                {!isMobile ? (
-                    <CurrentModelIndicator sessionId={currentSessionId} directory={directory} />
-                ) : null}
                 <ChatInput
                     active={active}
                     scrollToBottom={scrollToBottomOnSend}

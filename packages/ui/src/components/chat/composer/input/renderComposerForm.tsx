@@ -55,6 +55,7 @@ import { LargeTextPasteChoice } from '../../composer/ui/LargeTextPasteChoice';
 import { FormDock } from '@/components/chat/FormDock';
 import { PermissionDock } from '@/components/chat/PermissionDock';
 import { MessageSelectionBar } from '@/components/chat/messageSelection/MessageSelectionBar';
+import CurrentModelIndicator from '@/components/chat/CurrentModelIndicator';
 import type { ChatInputProps } from './chatInputProps';
 import { renderDraftTitle } from './ComposerDraftTitle';
 import { MAX_MOBILE_COMPOSER_LINES, MAX_VISIBLE_COMPOSER_LINES, MOBILE_COMPOSER_BOUND_GAP_PX } from './composerInputLimits';
@@ -230,6 +231,17 @@ export function renderComposerForm({
                 </div>
             ) : null}
             <div className={cn('chat-input-column relative overflow-visible', isComposerExpanded && 'flex flex-1 min-h-0 flex-col')}>
+                {!isMobile && !isBtwActive && !mobileCommentActive && !messageSelectionActive ? (
+                    // Its own line above the composer box: beside the box it
+                    // took part in the slot's row layout and, wrapping, shrank
+                    // the input to a sliver at narrow widths. The phone shows
+                    // it in the model and agent row instead.
+                    <CurrentModelIndicator
+                        sessionId={currentSessionId}
+                        directory={currentSessionDirectoryForSync ?? currentDirectory}
+                        className="mb-1"
+                    />
+                ) : null}
                 {!mobileCommentActive ? (<>
                 <ComposerDraftTargets
                             isVSCode={isVSCode}

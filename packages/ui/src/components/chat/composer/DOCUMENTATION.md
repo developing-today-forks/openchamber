@@ -1853,6 +1853,22 @@ status colors by level as the one exception. Colored labels sit at `opacity`
 `--status-*-text` colors are used because `color-mix` and Tailwind `/NN`
 alpha break on old Android WebViews.
 
+## Current model line
+
+`CurrentModelIndicator` (the real `provider/model#variant` of the last turn, its
+pool and a pinned member, with the pool-pick menu) is its own line at the top of
+the composer column on desktop, above the draft targets and the box, and in the
+model and agent row of the phone composer. It is hidden while a side question,
+a mobile comment or a message selection owns the composer.
+
+### Why the current-model line sits in the composer column and not beside it
+
+It used to be a sibling of the composer in the slot, which is a flex row: the
+line took width from the input box, and at narrow widths it wrapped to one
+letter per line while the box shrank to a sliver. In the column it takes one
+line of height at most widths and never any of the box's width. Long
+references still wrap rather than truncate, so the whole id stays readable.
+
 ## Other sessions as context
 
 Another session, or one message of it, is mentioned in the text itself: as
