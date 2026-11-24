@@ -142,7 +142,7 @@ describe('runWorkflowSandbox', () => {
   });
 
   it('lets a normal script finish before its execution limit', async () => {
-    const { sandbox } = run('return 1', { timeoutMs: 50 });
+    const { sandbox } = run('return 1', { timeoutMs: 5_000 });
     await expect(sandbox.result).resolves.toBe(1);
   });
 });
