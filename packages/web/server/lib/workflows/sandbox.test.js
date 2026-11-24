@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { runWorkflowSandbox } from './sandbox.js';
 
-const run = (body, { args, onAgent = async ({ prompt }) => `answer to ${prompt}` } = {}) => {
+const run = (body, { args, timeoutMs, onAgent = async ({ prompt }) => `answer to ${prompt}` } = {}) => {
   const phases = [];
   const logs = [];
   const calls = [];
@@ -10,6 +10,7 @@ const run = (body, { args, onAgent = async ({ prompt }) => `answer to ${prompt}`
     body,
     args,
     filename: 'test.workflow.js',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
     onAgent: (call) => {
       calls.push(call);
       return onAgent(call);
@@ -133,5 +134,15 @@ describe('runWorkflowSandbox', () => {
     const { sandbox } = run('while (true) {}');
     sandbox.terminate();
     await expect(sandbox.result).rejects.toMatchObject({ stopped: true });
+  });
+
+  it('automatically fails a script that exceeds its execution limit', async () => {
+    const { sandbox } = run('while (true) {}', { timeoutMs: 50 });
+    await expect(sandbox.result).rejects.toThrow('Workflow execution timed out after 0.05 seconds');
+  });
+
+  it('lets a normal script finish before its execution limit', async () => {
+    const { sandbox } = run('return 1', { timeoutMs: 50 });
+    await expect(sandbox.result).resolves.toBe(1);
   });
 });

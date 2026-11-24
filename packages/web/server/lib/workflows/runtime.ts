@@ -10,6 +10,7 @@ import { findSchemaContradiction, parseJsonAnswer, validateJsonSchema } from './
 import { createLimiter } from './limiter.js';
 import { readWorkflowProcessStart } from './process-owner.js';
 import { runWorkflowSandbox } from './sandbox.js';
+import { WORKFLOW_EXECUTION_TIMEOUT_MS } from './sandbox.js';
 import { WorkflowScriptError, parseWorkflowScript, plannedPhases } from './script.js';
 import { isWorkflowRunId } from './store.js';
 import type { WorkflowRun, WorkflowAgent } from './store.js';
@@ -144,6 +145,7 @@ export const createWorkflowRuntime = ({
   sleep = (duration) => new Promise((resolve) => setTimeout(resolve, duration)),
   maxConcurrentAgents = MAX_CONCURRENT_AGENTS,
   maxAgentsPerRun = MAX_AGENTS_PER_RUN,
+  sandboxTimeoutMs = WORKFLOW_EXECUTION_TIMEOUT_MS,
   pid = process.pid,
   isProcessAlive = isPidAlive,
   readProcessStart = readWorkflowProcessStart,
@@ -478,6 +480,7 @@ export const createWorkflowRuntime = ({
         body,
         args: run.args,
         filename: `${run.name}.workflow.js`,
+        timeoutMs: sandboxTimeoutMs,
         onAgent: (call) => {
           const running = runAgent(run, execution, call);
           execution.inflight.add(running);

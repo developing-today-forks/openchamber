@@ -595,6 +595,18 @@ describe('workflow runtime', () => {
     expect((await act('workflow.status', { runId: waiting.runId })).state).toBe('awaiting-approval');
   });
 
+  it('fails a run whose script exceeds its execution limit, interrupting agents and freeing the run', async () => {
+    const agents = fakeAgentSessions({ hang: ['hold'] });
+    const { runtime, act, finished } = await setup(agents, { sandboxTimeoutMs: 50 });
+    const { runId } = await act('workflow.run', { script: script("const pending = agent('hold'); while (true) {}") });
+    await runtime.approve({ runId });
+    const status = await finished(runId);
+    expect(status.state).toBe('failed');
+    expect(status.error).toContain('Workflow execution timed out');
+    expect(agents.interrupted).toEqual(['ses_agent1']);
+    await expect(runtime.approve({ runId })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
   it('publishes no run when the first save of a run started without approval fails', async () => {
     const disk = diskFault();
     disk.beforeRename = async () => { throw new Error('disk unavailable'); };
