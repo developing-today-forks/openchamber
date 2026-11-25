@@ -82,6 +82,7 @@ import {
   renameBranch,
   unstageFiles,
   applyHunk,
+  writeTempPatchFile,
   getDiff,
   getPathDiff,
   getPathDiffs,
@@ -9319,5 +9320,52 @@ describe.runIf(canRunGit())('getRangeFileVersions', () => {
     const commit = await getCommitFileDiff(directory, hash, 'new.xlsx', true, 'old.xlsx');
     expect(commit.original).toBe(dataUrl);
     fs.rmSync(repository, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// writeTempPatchFile (hunk patch staging hardening, #2622)
+// ---------------------------------------------------------------------------
+
+describe('writeTempPatchFile', () => {
+  let stagingDir;
+  let previousTmpDir;
+
+  beforeEach(async () => {
+    stagingDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'openchamber-hunk-staging-'));
+    previousTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = stagingDir;
+  });
+
+  afterEach(async () => {
+    if (previousTmpDir === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = previousTmpDir;
+    }
+    await fs.promises.rm(stagingDir, { recursive: true, force: true });
+  });
+
+  it('stages the patch with owner-only permissions', async () => {
+    if (process.platform === 'win32') return;
+    const tmpPath = await writeTempPatchFile('patch body');
+    const stats = await fs.promises.stat(tmpPath);
+    expect(stats.mode & 0o777).toBe(0o600);
+    await expect(fs.promises.readFile(tmpPath, 'utf8')).resolves.toBe('patch body');
+  });
+
+  it('fails instead of overwriting a pre-existing entry at the target name', async () => {
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1700000000000);
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const targetName = `openchamber-hunk-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`;
+      const targetPath = path.join(stagingDir, targetName);
+      await fs.promises.writeFile(targetPath, 'sentinel', 'utf8');
+      await expect(writeTempPatchFile('patch body')).rejects.toThrow();
+      await expect(fs.promises.readFile(targetPath, 'utf8')).resolves.toBe('sentinel');
+    } finally {
+      nowSpy.mockRestore();
+      randomSpy.mockRestore();
+    }
   });
 });
