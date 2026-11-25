@@ -35,6 +35,7 @@ import { settingsHintsI18n } from './settings-hints.i18n';
 import { usageStatsI18n } from './usage-stats.i18n';
 import { webSearchI18n } from './websearch.i18n';
 import { sessionWarmingI18n } from './session-warming.i18n';
+import { facadeVoiceCaptureI18n } from './facade-voice-capture.i18n';
 import { continueWithModelI18n } from './continue-with-model.i18n';
 import { connectionHeartbeatI18n } from './connection-heartbeat.i18n';
 import { compactionSettingsI18n } from './compaction-settings.i18n';
@@ -240,6 +241,7 @@ export const dict: Record<I18nKey, string> = {
   ...usageStatsI18n.ja,
   ...webSearchI18n.ja,
   ...sessionWarmingI18n.ja,
+  ...facadeVoiceCaptureI18n.ja,
   ...continueWithModelI18n.ja,
   ...isolatedSpacesI18n.ja,
   ...sourceBoardI18n.ja,

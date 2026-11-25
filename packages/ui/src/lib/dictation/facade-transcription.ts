@@ -16,6 +16,8 @@
  * `FacadeVoiceCapture`; everything here is testable without a DOM.
  */
 
+import type { I18nKey, I18nParams } from '@/lib/i18n';
+
 /** Façade route on the opencode server (design §2.1/§2.2). */
 const TRANSCRIPTION_ENDPOINT_PATH = '/v1/audio/transcriptions';
 
@@ -118,13 +120,24 @@ export class FacadeTranscriptionError extends Error {
     readonly code: FacadeTranscriptionErrorCode;
     readonly status?: number;
     readonly retryable: boolean;
+    readonly messageKey?: I18nKey;
+    readonly messageParams?: I18nParams;
 
-    constructor(code: FacadeTranscriptionErrorCode, message: string, status?: number) {
+    constructor(
+        code: FacadeTranscriptionErrorCode,
+        message: string,
+        status?: number,
+        localization?: { key: I18nKey; params?: I18nParams },
+    ) {
         super(message);
         this.name = 'FacadeTranscriptionError';
         this.code = code;
         if (status !== undefined) {
             this.status = status;
+        }
+        if (localization) {
+            this.messageKey = localization.key;
+            this.messageParams = localization.params;
         }
         this.retryable = RETRYABLE_CODES.has(code);
     }
@@ -158,18 +171,30 @@ export const isAcceptedAudioMediaType = (mediaType?: string, filename?: string):
  */
 export const validateAudioInput = (info: AudioInputInfo): FacadeTranscriptionError | null => {
     if (!Number.isFinite(info.sizeBytes) || info.sizeBytes <= 0) {
-        return new FacadeTranscriptionError('invalid_audio', 'The audio is empty or could not be read.');
+        return new FacadeTranscriptionError(
+            'invalid_audio',
+            'The audio is empty or could not be read.',
+            undefined,
+            { key: 'chat.facadeVoiceCapture.error.emptyAudio' },
+        );
     }
     if (!isAcceptedAudioMediaType(info.mediaType, info.filename)) {
         return new FacadeTranscriptionError(
             'unsupported_media_type',
             `Unsupported audio type${info.mediaType ? ` (${info.mediaType})` : ''}. Accepted containers: wav, mp3, m4a, webm, ogg, flac.`,
+            undefined,
+            {
+                key: 'chat.facadeVoiceCapture.error.unsupportedAudio',
+                params: { mediaType: info.mediaType ? ` (${info.mediaType})` : '' },
+            },
         );
     }
     if (info.sizeBytes > MAX_AUDIO_BYTES) {
         return new FacadeTranscriptionError(
             'audio_too_large',
             `Audio is ${(info.sizeBytes / (1024 * 1024)).toFixed(1)} MiB; the limit is 25 MiB.`,
+            undefined,
+            { key: 'chat.facadeVoiceCapture.error.audioTooLarge', params: { size: (info.sizeBytes / (1024 * 1024)).toFixed(1) } },
         );
     }
     if (
@@ -180,31 +205,17 @@ export const validateAudioInput = (info: AudioInputInfo): FacadeTranscriptionErr
         return new FacadeTranscriptionError(
             'duration_too_long',
             `Audio is ${Math.round(info.durationSeconds)}s; the limit is ${MAX_AUDIO_DURATION_SECONDS}s per transcription.`,
+            undefined,
+            {
+                key: 'chat.facadeVoiceCapture.error.durationTooLong',
+                params: { duration: Math.round(info.durationSeconds), limit: MAX_AUDIO_DURATION_SECONDS },
+            },
         );
     }
     return null;
 };
 
-/**
- * §5.3: whether submitting audio for this model ref sends audio off this
- * machine. The registry server-side is the source of truth; every
- * phase-1 registration is a hosted HTTP backend (`audio_leaves_machine:
- * true`), and a `native-local` backend is the only path that can promise
- * otherwise — no such registration exists yet, so an unrecognized ref is
- * surfaced as leaving the machine rather than implying a privacy
- * property the UI cannot verify.
- */
-export const audioLeavesMachine = (modelRef: string): boolean => {
-    void modelRef;
-    return true;
-};
-
 /** §5.3 pre-submit surfacing text for the review step. */
-export const preSubmitPrivacyNotice = (modelRef: string): string =>
-    audioLeavesMachine(modelRef)
-        ? `Submitting sends this audio to the transcription provider for ${modelRef} through the server. Audio leaves this machine, and the provider's retention policy applies to the submitted audio. The server itself retains no audio after the call.`
-        : `Submitting transcribes this audio with the on-device model ${modelRef}. Audio does not leave this machine.`;
-
 export interface TranscriptSegment {
     text: string;
     start: number;
@@ -256,6 +267,8 @@ export const parseTranscriptionEnvelope = (data: unknown): TranscriptionResult =
         throw new FacadeTranscriptionError(
             'invalid_response',
             'The transcription response did not carry transcript text.',
+            undefined,
+            { key: 'chat.facadeVoiceCapture.error.invalidResponse' },
         );
     }
     const language = optionalString(data.language);
@@ -364,6 +377,9 @@ export const parseFacadeError = (status: number, data: unknown): FacadeTranscrip
             bodyCode as FacadeTranscriptionErrorCode,
             bodyMessage ?? `Transcription failed (${bodyCode}).`,
             status,
+            bodyMessage
+                ? { key: 'chat.facadeVoiceCapture.error.serverDetail', params: { reason: bodyCode, detail: bodyMessage } }
+                : { key: 'chat.facadeVoiceCapture.error.requestFailed', params: { code: bodyCode } },
         );
     }
     const byStatus: FacadeTranscriptionErrorCode =
@@ -380,7 +396,14 @@ export const parseFacadeError = (status: number, data: unknown): FacadeTranscrip
                     : status === 400
                       ? 'invalid_audio'
                       : 'unknown_error';
-    return new FacadeTranscriptionError(byStatus, bodyMessage ?? `Transcription failed (HTTP ${status}).`, status);
+    return new FacadeTranscriptionError(
+        byStatus,
+        bodyMessage ?? `Transcription failed (HTTP ${status}).`,
+        status,
+        bodyMessage
+            ? { key: 'chat.facadeVoiceCapture.error.serverDetail', params: { reason: `HTTP ${status}`, detail: bodyMessage } }
+            : { key: 'chat.facadeVoiceCapture.error.httpFailed', params: { status } },
+    );
 };
 
 interface TranscriptionRequestOptions {
@@ -486,6 +509,10 @@ export const transcribeViaFacade = async (input: TranscribeViaFacadeInput): Prom
             timedOut
                 ? `The transcription request did not finish within ${Math.round(deadlineMs / 1000)} seconds. You can retry or discard the recording.`
                 : 'The transcription request was aborted before it finished. You can retry or discard the recording.',
+            undefined,
+            timedOut
+                ? { key: 'chat.facadeVoiceCapture.error.timeout', params: { seconds: Math.round(deadlineMs / 1000) } }
+                : { key: 'chat.facadeVoiceCapture.error.aborted' },
         );
     const aborted = new Promise<never>((_resolve, reject) => {
         if (controller.signal.aborted) {
@@ -517,6 +544,10 @@ export const transcribeViaFacade = async (input: TranscribeViaFacadeInput): Prom
             throw new FacadeTranscriptionError(
                 'network_error',
                 cause instanceof Error ? `Could not reach the transcription server: ${cause.message}` : 'Could not reach the transcription server.',
+                undefined,
+                cause instanceof Error
+                    ? { key: 'chat.facadeVoiceCapture.error.network', params: { reason: cause.message } }
+                    : { key: 'chat.facadeVoiceCapture.error.networkUnknown' },
             );
         }
         const data: unknown = await response.json().catch(() => undefined);

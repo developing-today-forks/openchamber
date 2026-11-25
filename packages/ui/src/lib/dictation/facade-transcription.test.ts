@@ -4,7 +4,6 @@ import {
     FACADE_TRANSCRIPTION_DEADLINE_MS,
     FacadeTranscriptionError,
     MAX_AUDIO_BYTES,
-    audioLeavesMachine,
     buildTranscriptionFormData,
     buildTranscriptionUrl,
     canCancelCapture,
@@ -13,7 +12,6 @@ import {
     isAcceptedAudioMediaType,
     parseFacadeError,
     parseTranscriptionEnvelope,
-    preSubmitPrivacyNotice,
     recordingDurationSeconds,
     recordingSecondsRemaining,
     transcribeViaFacade,
@@ -58,11 +56,14 @@ describe('validateAudioInput (§5.2 caps)', () => {
     test('rejects empty audio as invalid_audio', () => {
         const error = validateAudioInput({ sizeBytes: 0, mediaType: 'audio/webm' });
         expect(error?.code).toBe('invalid_audio');
+        expect(error?.messageKey).toBe('chat.facadeVoiceCapture.error.emptyAudio');
     });
 
     test('rejects an unaccepted container as unsupported_media_type', () => {
         const error = validateAudioInput({ sizeBytes: 1024, mediaType: 'video/mp4', filename: 'clip.mp4' });
         expect(error?.code).toBe('unsupported_media_type');
+        expect(error?.messageKey).toBe('chat.facadeVoiceCapture.error.unsupportedAudio');
+        expect(error?.messageParams).toEqual({ mediaType: ' (video/mp4)' });
     });
 
     test('falls back to the file extension when no media type is reported', () => {
@@ -80,20 +81,6 @@ describe('validateAudioInput (§5.2 caps)', () => {
         const error = validateAudioInput({ sizeBytes: 1024, mediaType: 'audio/wav', durationSeconds: 601 });
         expect(error?.code).toBe('duration_too_long');
         expect(validateAudioInput({ sizeBytes: 1024, mediaType: 'audio/wav', durationSeconds: 600 })).toBeNull();
-    });
-});
-
-describe('audioLeavesMachine / preSubmitPrivacyNotice (§5.3)', () => {
-    test('every phase-1 registered ref is hosted, so audio leaves the machine', () => {
-        expect(audioLeavesMachine('openai/whisper-1')).toBe(true);
-        expect(audioLeavesMachine('deepgram/nova-3')).toBe(true);
-    });
-
-    test('the notice names the model and the retention consequence before submit', () => {
-        const notice = preSubmitPrivacyNotice('openai/whisper-1');
-        expect(notice).toContain('openai/whisper-1');
-        expect(notice).toContain('Audio leaves this machine');
-        expect(notice).toContain('retention policy');
     });
 });
 
@@ -141,6 +128,8 @@ describe('parseFacadeError (§2.4)', () => {
         const error = parseFacadeError(404, { error: { message: 'no such model', type: 'invalid_request_error', code: 'model_not_found' } });
         expect(error.code).toBe('model_not_found');
         expect(error.message).toBe('no such model');
+        expect(error.messageKey).toBe('chat.facadeVoiceCapture.error.serverDetail');
+        expect(error.messageParams).toEqual({ reason: 'model_not_found', detail: 'no such model' });
         expect(error.status).toBe(404);
         expect(error.retryable).toBe(false);
     });
@@ -152,6 +141,10 @@ describe('parseFacadeError (§2.4)', () => {
         expect(parseFacadeError(429, {}).retryable).toBe(true);
         expect(parseFacadeError(502, {}).code).toBe('upstream_failure');
         expect(parseFacadeError(400, {}).code).toBe('invalid_audio');
+
+        const message = parseFacadeError(401, { error: { message: 'Sign in again' } });
+        expect(message.messageKey).toBe('chat.facadeVoiceCapture.error.serverDetail');
+        expect(message.messageParams).toEqual({ reason: 'HTTP 401', detail: 'Sign in again' });
     });
 
     test('preserves a quota code from the body', () => {
