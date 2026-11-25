@@ -11,6 +11,7 @@ import { sessionMenuHintsI18n } from './session-menu-hints.i18n';
 import { sessionErrorRecoveryI18n } from './session-error-recovery.i18n';
 import { sidebarLayoutI18n } from './sidebar-layout.i18n';
 import { activityTimesI18n } from './activity-times.i18n';
+import { sessionHoverCardI18n } from './session-hover-card.i18n';
 import { projectKnowledgeI18n } from './project-knowledge.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 import { routingI18n } from './routing.i18n';
@@ -227,6 +228,7 @@ export const dict: Record<I18nKey, string> = {
   ...sessionErrorRecoveryI18n.ja,
   ...sidebarLayoutI18n.ja,
   ...activityTimesI18n.ja,
+  ...sessionHoverCardI18n.ja,
   ...projectKnowledgeI18n.ja,
   ...linearPanelI18n.ja,
   ...routingI18n.ja,

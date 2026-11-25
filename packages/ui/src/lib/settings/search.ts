@@ -13,6 +13,7 @@ import { OPENCHAMBER_TOOLS_SEARCH_ITEMS } from './search-openchamber-tools';
 import { CHAT_SENDING_SEARCH_ITEMS } from './search-chat-sending';
 import { SESSION_DEFAULTS_SEARCH_ITEMS } from './search-session-defaults';
 import { VOICE_SEARCH_ITEMS } from './search-voice';
+import { SESSION_ASSIST_SEARCH_ITEMS } from './search-session-assist';
 
 type SettingsSearchTitle =
   | { titleKey: I18nKey; titleParams?: I18nParams; literalTitle?: never }
@@ -377,24 +378,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     titleKey: 'settings.openchamber.visual.section.messageStreamTransport',
     keywords: ['streaming', 'sse', 'websocket'],
   },
-  {
-    id: 'chat.session-recap',
-    page: 'chat',
-    titleKey: 'settings.openchamber.visual.field.sessionRecap',
-    keywords: ['recap', 'assist', 'small model', 'summary'],
-  },
-  {
-    id: 'chat.session-assistance',
-    page: 'chat',
-    titleKey: 'settings.openchamber.visual.section.sessionAssistance',
-    keywords: ['recap', 'suggestion', 'subagent'],
-  },
-  {
-    id: 'chat.session-suggestion',
-    page: 'chat',
-    titleKey: 'settings.openchamber.visual.field.sessionSuggestion',
-    keywords: ['suggestion', 'assist', 'small model', 'follow up'],
-  },
+  ...SESSION_ASSIST_SEARCH_ITEMS,
   {
     id: 'chat.session-review-offer',
     page: 'chat',

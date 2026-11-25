@@ -400,7 +400,8 @@ archive/delete, the menu. Pin/unpin lives in the menu only. Touch layouts (`alwa
 keep Track / Done in the menu. At rest a row in work shows a grey check only
 while Jev's done hint is current (`isDoneSuggested`); the composer shows the
 same hint as a top row (`components/chat/SessionDoneHintRow.tsx`). The
-whole-row tooltip shows the current recap, in both views. The mobile
+whole-row hover card shows the current summary or recap, in both views
+(*Session hover card*). The mobile
 sheet (`apps/MobileSessionsSheet.tsx`) mirrors it: an "In work" section under
 Chats lists the sessions in work, which stay in their project buckets and
 the timeline as well, and Track / Done is a swipe action on top-level
@@ -601,13 +602,28 @@ submenus (not in VS Code), then Collapse all / Expand all.
 
 ## Session times
 
-The display menu's Session times submenu (`shell/SessionTimestampSortMenu.tsx`) holds this window's choices, kept in `useSessionDisplayStore.sessionTimes` and `sessionTimestampSort` (local, not synced). By default the row looks as it did: its recorded times (created, last input, last completed output, last activity; `sync/session-activity-timestamps.ts`) and the last run's length sit in the whole-row hover card. In the row puts the chosen fields under the row; Hidden shows none. Sorting by a time keeps pins first and subsessions under their parent; sessions without that time go last in both directions.
+The display menu's Session times submenu (`shell/SessionTimestampSortMenu.tsx`) holds this window's choices, kept in `useSessionDisplayStore.sessionTimes` and `sessionTimestampSort` (local, not synced). By default the row looks as it did: its recorded times (created, last input, last completed output, last activity; `sync/session-activity-timestamps.ts`) and the last run's length sit in the whole-row hover card, each as how long ago and when ("5m ago · Nov 24, 05:36", `formatActivityStamp` in `lib/activityTimestampFormat.ts`, the time format preference and locale applied, redrawn every minute while the card is open). With the times In the row or Hidden, the card still shows the last activity that way. In the row puts the chosen fields under the row; Hidden shows none. Sorting by a time keeps pins first and subsessions under their parent; sessions without that time go last in both directions.
 
 Two duration choices are off by default. Last run time when idle replaces an idle row's date with the time from its last prompt to its last activity. Counting from the last prompt makes a running row's counter span auto-continues, goal continuations and background waits, which record no new prompt. Either one falls back to the existing readout when no prompt was recorded. A row already counts while its session idles on a running subagent or background command (`useSessionTurnActivity`).
 
 ### Why the times wait in the hover card by default
 
 Four extra lines on every row doubled its height and changed every list's rhythm. The hover card already carries the row's details, so the default view stays as it was and the denser modes are a choice.
+
+## Session hover card
+
+The whole-row card (`sessions/SessionHoverCard.tsx`, opened by `hooks/useSessionHoverCard.ts`) shows the title, project and branch on one line, the ref links, the times, and the session's summary (Done, To do, Stopped at) or its recap while no summary exists. Without a current summary it offers Summarize, and after 2.5 seconds open it asks by itself once per turn unless Settings → Chat turned that off (`sessionHoverSummaryEnabled`); the summary appears in the open card when its metadata event arrives. How the last request went (running, empty, failed, no Small Model) lives in `lib/sessionSummaryRequest.ts`, keyed by the session and its `time.idle`, so a new turn clears it; the summary itself only ever comes from the session metadata. The route and its outcomes are in `packages/web/server/lib/session-assist/DOCUMENTATION.md`.
+
+- **When it opens** (`sessions/sessionHoverCardDwell.ts`): after the mouse rests on the row for 800 ms without moving more than 4 px, with no button or modifier held and not over a mark or button that has its own tooltip. Keyboard focus that shows a focus ring opens it at once. A press (click, shift- or ctrl-click, the start of a drag) closes it and keeps it shut until the pointer leaves the row. Leaving the row, a scroll of the list, a key press, a resize or the window losing focus closes it at once; leaving through the card's edge, level with it, gives the pointer 350 ms to reach the card, and leaving the card closes it. Touch never opens it; phones, VS Code, multi-select mode, renaming and an open row menu have no card.
+- **Where it opens** (`sessions/sessionHoverCardPlacement.ts`): beside the box marked `data-session-list-bounds` (the sidebar), never over it. The line's end side is tried first (right, or left in right-to-left), then the other side, each needing the full 320 px; failing both, it opens at the roomier side's width if that is at least 220 px, else not at all. The geometry is physical, so a sidebar on the right and RTL need no special case, and Base UI's own flip is off so it cannot move the card back over the list.
+
+### Why the card no longer shares the sidebar's tooltip timing
+
+The sidebar's tooltip group opens after 400 ms and hands an open tooltip to the next trigger at once, so moving down the list to pick a session, or shift-clicking a range, opened a card on every row crossed. The card now runs its own rest timer, off the shared group; the marks keep the group's quick timing.
+
+### Why the card skips rather than overlaps on narrow windows
+
+Overlapping the list hides the rows the user is choosing between, which is the problem the card caused. A card shrunk to under 220 px wraps every time and reads worse than none; the row itself still shows the title and time.
 
 ## Search
 
@@ -818,7 +834,7 @@ matching and ordering. Search does not fetch sessions or broaden list membership
 - Pins and folder assignments are not pruned from the first startup snapshot or from optimistic mutations. Confirmed local deletion and routed external deletion clean immediately; a later authoritative omission after an established baseline covers missed external delete events.
 - Pending-permission/question row badges ride in the meta cluster at the row's end with the time and status, and fade with it on hover or while the row menu is open, except on non-VS Code always-visible-actions rows, which reserve permanent padding and keep the cluster shown. VS Code hover-reveals its actions over the row's right edge even under `alwaysShowActions`, so its cluster keeps fading.
 - Hover-revealed actions on session rows, worktree headers and project headers cross-fade over the row's end (the right, or the left in a right-to-left layout); they do not re-lay the row out. What they cover (date, branch, badges, indicators) fades with opacity, and the title or label's tail fades away under them through the `oc-actions-mask` utility (`index.css`): the row's text line is an `@container`, `--oc-actions-reserve` says how far the actions reach in from its end edge, `--oc-actions-inset` how far the masked text starts from its start edge. A title whose own direction differs from the interface (`dir="auto"`) starts under the actions, so it takes `padding-inline-start` of the reserve instead of the fade. Change a reserve whenever an action's size, count or offset changes. Only permanently shown actions (`alwaysShowActions`) take layout room.
-- Tooltips that list PRs or issues (session rows, timeline PR badges, worktree headers) render them as links through `sessions/SidebarRefLinks.tsx`. The PR badge and header tooltips close 750 ms after the pointer leaves, so the pointer can travel in; the whole-row tooltip closes at once and relies on the popup staying open while the pointer heads into it. The row and header action buttons sit in their own `TooltipProvider`: the pointer crosses them on the way, and a same-group tooltip would replace the open one at once. Every row but VS Code's has the whole-row tooltip, opening to the right (title, time, project, branch, links, recap); every other tooltip on a row, a header's folder name included, opens above its element (`sessions/RowMarkTooltip.tsx` for status marks), so it never covers the neighbouring marks and actions. A session menu item that opens a submenu explains itself only while disabled: the hint would cover the open submenu.
+- Tooltips that list PRs or issues (session rows, timeline PR badges, worktree headers) render them as links through `sessions/SidebarRefLinks.tsx`. The PR badge and header tooltips close 750 ms after the pointer leaves, so the pointer can travel in; the whole-row hover card follows the rules in *Session hover card* below. The row and header action buttons sit in their own `TooltipProvider`: the pointer crosses them on the way, and a same-group tooltip would replace the open one at once. Every desktop row but VS Code's has the whole-row hover card; every other tooltip on a row, a header's folder name included, opens above its element (`sessions/RowMarkTooltip.tsx` for status marks), so it never covers the neighbouring marks and actions. A session menu item that opens a submenu explains itself only while disabled: the hint would cover the open submenu.
 
 
 ## Project action indicators

@@ -91,6 +91,7 @@ export const createInitialUIState = (): Pick<UIStore,
   | 'showReasoningTraces'
   | 'streamingAutoFollowEnabled'
   | 'sessionRecapEnabled'
+  | 'sessionHoverSummaryEnabled'
   | 'sessionSuggestionEnabled'
   | 'sessionWorkEnabled'
   | 'continueWithModelMode'
@@ -343,6 +344,7 @@ export const createInitialUIState = (): Pick<UIStore,
   showReasoningTraces: true,
   streamingAutoFollowEnabled: true,
   sessionRecapEnabled: true,
+  sessionHoverSummaryEnabled: true,
   sessionSuggestionEnabled: true,
   sessionWorkEnabled: true,
   continueWithModelMode: 'stop',

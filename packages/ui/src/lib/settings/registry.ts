@@ -575,6 +575,7 @@ export const SETTINGS_REGISTRY = {
   providerOrder: field({ scope: 'profile', parse: parseStringSet, ui: uiStore('providerOrder', (v) => useUIStore.getState().setProviderOrder(v)) }),
 
   sessionRecapEnabled: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('sessionRecapEnabled', (v) => useUIStore.getState().setSessionRecapEnabled(v)) }),
+  sessionHoverSummaryEnabled: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('sessionHoverSummaryEnabled', (v) => useUIStore.getState().setSessionHoverSummaryEnabled(v)) }),
   sessionSuggestionEnabled: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('sessionSuggestionEnabled', (v) => useUIStore.getState().setSessionSuggestionEnabled(v)) }),
   sessionWorkEnabled: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('sessionWorkEnabled', (v) => useUIStore.getState().setSessionWorkEnabled(v)) }),
   continueWithModelMode: field({ scope: 'profile', parse: parseOneOf(CONTINUE_WORK_MODES), ui: uiStore('continueWithModelMode', (v) => useUIStore.getState().setContinueWithModelMode(v)) }),

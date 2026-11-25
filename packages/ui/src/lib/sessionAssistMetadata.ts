@@ -1,34 +1,30 @@
+import { z } from 'zod';
 import type { Session } from '@/lib/opencode/model';
 
-export interface SessionAssistPayload {
-  recap: string;
-  suggestion: string;
-  forMessageID: string;
-  generatedAt: number;
-}
+const trimmedText = z.string().trim().catch('');
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const summarySchema = z.object({
+  done: z.string().trim().min(1),
+  left: trimmedText,
+  stoppedAt: trimmedText,
+});
+
+const assistSchema = z.object({
+  recap: trimmedText,
+  suggestion: trimmedText,
+  summary: summarySchema.nullable().catch(null),
+  forMessageID: z.string().catch(''),
+  generatedAt: z.number().catch(0),
+});
+
+const assistMetadataSchema = z.object({ openchamber: z.object({ assist: assistSchema }) });
+
+export type SessionAssistPayload = z.infer<typeof assistSchema>;
 
 function getSessionAssist(session: Session | null | undefined): SessionAssistPayload | null {
-  const metadata = (session as { metadata?: unknown } | null | undefined)?.metadata;
-  if (!isRecord(metadata)) return null;
-  const namespace = metadata.openchamber;
-  if (!isRecord(namespace)) return null;
-  const assist = namespace.assist;
-  if (!isRecord(assist)) return null;
-
-  const recap = typeof assist.recap === 'string' ? assist.recap.trim() : '';
-  const suggestion = typeof assist.suggestion === 'string' ? assist.suggestion.trim() : '';
-  const forMessageID = typeof assist.forMessageID === 'string' ? assist.forMessageID : '';
-  if (!forMessageID || (!recap && !suggestion)) return null;
-
-  return {
-    recap,
-    suggestion,
-    forMessageID,
-    generatedAt: typeof assist.generatedAt === 'number' ? assist.generatedAt : 0,
-  };
+  const assist = assistMetadataSchema.safeParse(session?.metadata).data?.openchamber.assist;
+  if (!assist?.forMessageID || (!assist.recap && !assist.suggestion && !assist.summary)) return null;
+  return assist;
 }
 
 export function getCurrentSessionAssist(session: Session | null | undefined): SessionAssistPayload | null {

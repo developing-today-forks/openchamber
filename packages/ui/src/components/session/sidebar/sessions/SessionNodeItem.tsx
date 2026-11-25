@@ -1,7 +1,7 @@
 import { DirectoryActionIndicator } from './DirectoryActionIndicator';
 import { useSessionTurnActivity } from '@/sync/global-session-status';
 import { SessionRunDuration } from './SessionRunDuration';
-import { SessionTimestamps } from './SessionTimestamps';
+import { SessionHoverCard } from './SessionHoverCard';
 import { getSessionActivityTime } from '@/sync/session-ordering';
 import React from 'react';
 import { SessionActivityIndicator } from '@/components/session/SessionActivityIndicator';
@@ -53,13 +53,13 @@ import { hasTreeSlotContext, isMixedZoneContext, isMultiLineTimelineContext, typ
 import { SessionTimelineRowBody } from './SessionTimelineRowBody';
 import { sessionTreeRowPaddingLeft } from './sessionTreeGeometry';
 import { FileTreeChevron } from '@/components/views/files/FileTreeRowParts';
-import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLabel, normalizePath, renderHighlightedText } from '../utils';
+import { formatProjectLabel, formatSessionCompactDateLabel, normalizePath, renderHighlightedText } from '../utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useOpenTrackerItem } from '@/components/sourceBoard/openTrackerItem';
 import { RowMarkTooltip } from './RowMarkTooltip';
 import { SessionMenuItemHint } from '../../SessionMenuItemHint';
 import { SIDEBAR_REF_TOOLTIP_CLOSE_DELAY_MS, SidebarRefLinks } from './SidebarRefLinks';
-import { useScrollDismissedTooltip } from './useScrollDismissedTooltip';
+import { useSessionHoverCard } from '@/hooks/useSessionHoverCard';
 import { refTintStyle } from '@/lib/source-control/prVisualState';
 import { useSessionRefLines } from './useSessionRefLines';
 import { useSessionUnread } from '@/sync/session-unread';
@@ -69,7 +69,6 @@ import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore'
 import { useI18n } from '@/lib/i18n';
 import { useShiftKeyHeld } from '@/hooks/useShiftKeyHeld';
 import { getSessionGoal } from '@/lib/sessionGoalMetadata';
-import { getCurrentSessionAssist } from '@/lib/sessionAssistMetadata';
 import { isDoneSuggested, isSessionInWork } from '@/lib/sessionWorkMetadata';
 import { setSessionWorkState } from '@/sync/session-actions';
 import { useSessionWarmingStore, useSessionWarmUntil } from '@/stores/useSessionWarmingStore';
@@ -353,7 +352,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const showOpenInEditorAction = isVSCode;
   const showQuickArchiveAction = !archivedBucket && !mobileVariant;
   const sessionWorkEnabled = useUIStore((state) => state.sessionWorkEnabled);
-  const sessionRecapEnabled = useUIStore((state) => state.sessionRecapEnabled);
   // Track / Done belongs to top-level project sessions: Chats are plain
   // conversations, never work. Touch layouts keep their actions permanently
   // visible, where an icon on every row would be noise: there it lives in the
@@ -382,7 +380,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const pendingRenameSelectRef = React.useRef(false);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const formRef = React.useRef<HTMLFormElement>(null);
-  const rowTooltip = useScrollDismissedTooltip();
 
   const session = node.session;
   const resolvedSession = session;
@@ -593,7 +590,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   // The last conversation, as the list orders by: a rename or a metadata
   // write must not make an old session read as just used.
   const sessionTimestamp = getSessionActivityTime(resolvedSession) || Date.now();
-  const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
   const sessionCompactUpdatedLabel = formatSessionCompactDateLabel(sessionTimestamp);
   const {
     isMenuOpen,
@@ -617,6 +613,7 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
     },
   });
   const isSessionMenuOpen = isMenuOpen || isContextMenuOpen;
+  const hoverCard = useSessionHoverCard(!isVSCode && !mobileVariant && !isEditing && !selectionModeEnabled && !isSessionMenuOpen);
   const multiRunKey = React.useMemo(() => getMultiRunIdentity(resolvedSession)?.key ?? null, [resolvedSession]);
 
   const descendantCount = React.useMemo(() => (exportTree ? collectNodeDescendantIds(exportTree).length : 0), [collectNodeDescendantIds, exportTree]);
@@ -1533,11 +1530,6 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
   const actionIconSizeClass = alwaysShowActions ? 'h-3.5 w-3.5' : isTimelineRow && !isOneLineTimelineRow ? 'h-3 w-3' : 'h-2.5 w-2.5';
   const checkIconSizeClass = alwaysShowActions ? 'h-4 w-4' : isTimelineRow && !isOneLineTimelineRow ? 'h-3.5 w-3.5' : 'h-3 w-3';
 
-  // The recap of the last turn, for the whole-row tooltip, under the same
-  // freshness rule the chat uses.
-  const currentRecap = sessionRecapEnabled && !isStreaming
-    ? getCurrentSessionAssist(resolvedSession)?.recap || null
-    : null;
   // Jev thinks the work looks finished: a quiet check next to the row until a
   // new turn starts or the user closes it.
   const doneHintLabel = t('sessions.sidebar.session.work.doneSuggested');
@@ -1735,11 +1727,13 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           <ContextMenu.Trigger
             render={
               <div
+                ref={hoverCard.rowRef}
                 data-session-row={session.id}
                 data-session-scope={selectionScopeKey ?? ''}
                 data-session-archived={archivedBucket ? '1' : '0'}
                 aria-current={isActive ? 'page' : undefined}
                 onClick={handleRowBackgroundClick}
+                {...hoverCard.rowHandlers}
                 // List rows have no gutter: their content sits 10px in.
                 // Rows with the tree slot use the file tree geometry: 12px per
                 // level from an 8px edge, then the slot and a 6px gap.
@@ -1758,85 +1752,77 @@ function SessionNodeItemComponent(props: SessionNodeItemProps): React.ReactNode 
           >
           {treeSlot}
           <div className="flex min-w-0 flex-1 items-center">
-            {(
-              <Tooltip actionsRef={rowTooltip.actionsRef} onOpenChange={rowTooltip.onOpenChange}>
-                {/* Rows without a tooltip keep the trigger inert: an open
-                    but empty row tooltip would block the marks' own. It
-                    closes as soon as the pointer leaves the row; a pointer
-                    heading for its links still reaches them, as the popup
-                    stays open along the way. */}
-                <TooltipTrigger asChild closeDelay={0} disabled={isVSCode}>
-                  {/* A button by role only: the body holds the PR badge, a
-                      real button, and HTML does not nest buttons. */}
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    data-session-row-main=""
-                    onKeyDown={(event) => {
-                      if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
-                      event.preventDefault();
-                      event.currentTarget.click();
-                    }}
+              {/* A button by role only: the body holds the PR badge, a
+                  real button, and HTML does not nest buttons. */}
+              <div
+                role="button"
+                tabIndex={0}
+                data-session-row-main=""
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+                  event.preventDefault();
+                  event.currentTarget.click();
+                }}
 	                    aria-pressed={selectionModeEnabled ? isRowSelected : undefined}
 	                    onPointerDown={handleRowPointerDown}
  	                    onPointerUp={handleRowPointerEnd}
  	                    onPointerCancel={handleRowPointerEnd}
-                    onPointerEnter={handleRowPointerEnter}
-                    onPointerLeave={handleRowHoverEnd}
-                    onFocus={handleRowFocus}
-                    onBlur={handleRowHoverEnd}
+                onPointerEnter={handleRowPointerEnter}
+                onPointerLeave={handleRowHoverEnd}
+                onFocus={(event) => {
+                  handleRowFocus();
+                  hoverCard.focusHandlers.onFocus(event);
+                }}
+                onBlur={(event) => {
+                  handleRowHoverEnd();
+                  hoverCard.focusHandlers.onBlur(event);
+                }}
  	                    onMouseDown={handleRowMouseDown}
  	                    onClick={(event) => handleRowSelect(event)}
-                    onDoubleClick={(e) => {
-                      e.stopPropagation();
-                      handleSessionDoubleClick(session.id, sessionTitle);
-                    }}
-                    className={cn(
-                      'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground select-none',
+                onDoubleClick={(e) => {
+                  e.stopPropagation();
+                  handleSessionDoubleClick(session.id, sessionTitle);
+                }}
+                className={cn(
+                  'flex min-w-0 flex-1 cursor-pointer flex-col gap-0 overflow-hidden text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring text-foreground select-none',
 	                      isTouchPressed && 'bg-interactive-hover/70',
-                      // Hover-revealed actions overlay the body, which keeps
-                      // its width; only permanent actions take room.
-                      isTimelineRow || !alwaysShowActions
-                        ? undefined
-                        : (isVSCode ? vscodeAlwaysActionPaddingClass : alwaysActionPaddingClass),
-                    )}
-                  >
-                    {rowBody}
-                  </div>
-                </TooltipTrigger>
-                {/* VS Code already shows project context via workspace headers, so
-                    the per-row metadata tooltip is redundant noise there. */}
-                {!isVSCode ? (
-                <TooltipContent side="right" sideOffset={8} className="max-w-xs text-start">
-                  <div className="flex min-w-44 flex-col gap-1.5 text-start text-xs">
-                    <div className="flex items-center justify-between gap-3">
-                      <span dir="auto" className="oc-ui-start-align min-w-0 truncate font-medium text-foreground">{sessionTitle}</span>
-                      <span className="flex-shrink-0 text-muted-foreground" title={sessionUpdatedLabel}>{sessionCompactUpdatedLabel}</span>
-                    </div>
-                    {tooltipProjectLabel ? (
-                      <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                        <Icon name="folder" className="h-3 w-3 flex-shrink-0" />
-                        <span className="min-w-0 truncate">{tooltipProjectLabel}</span>
-                      </div>
-                    ) : null}
-                    {tooltipBranchLabel ? (
-                      <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                        {branchInSpace
-                          ? <Icon name="box-3" className="h-3 w-3 flex-shrink-0" aria-hidden={false} role="img" aria-label={t('sessions.sidebar.group.space')} />
-                          : <Icon name="git-branch" className={cn('h-3 w-3 flex-shrink-0', branchPrIconColor && 'oc-ref-tint')} style={branchPrIconColor ? refTintStyle(branchPrIconColor) : undefined} />}
-                        <span className="min-w-0 truncate">{tooltipBranchLabel}</span>
-                      </div>
-                    ) : null}
-                    {refLines.length > 0 ? <SidebarRefLinks items={refLines} directory={trackerDirectory} /> : null}
-                    <SessionTimestamps session={resolvedSession} placement="hover" />
-                    {currentRecap ? (
-                      <p className="min-w-0 line-clamp-4 text-muted-foreground">{currentRecap}</p>
-                    ) : null}
-                  </div>
+                  // Hover-revealed actions overlay the body, which keeps
+                  // its width; only permanent actions take room.
+                  isTimelineRow || !alwaysShowActions
+                    ? undefined
+                    : (isVSCode ? vscodeAlwaysActionPaddingClass : alwaysActionPaddingClass),
+                )}
+              >
+                {rowBody}
+              </div>
+            {hoverCard.placement ? (
+              <Tooltip open onOpenChange={hoverCard.onOpenChange}>
+                <TooltipContent
+                  anchor={hoverCard.rowRef}
+                  side={hoverCard.placement.side}
+                  sideOffset={hoverCard.placement.sideOffset}
+                  align="start"
+                  collisionAvoidance={{ side: 'none', align: 'shift', fallbackAxisSide: 'none' }}
+                  className="px-2.5 py-1.5 text-start text-pretty"
+                  style={{ maxWidth: hoverCard.placement.maxWidth }}
+                  data-session-hover-card=""
+                  {...hoverCard.cardHandlers}
+                >
+                  <SessionHoverCard
+                    session={resolvedSession}
+                    title={sessionTitle}
+                    activityAt={sessionTimestamp}
+                    projectLabel={tooltipProjectLabel}
+                    branchLabel={tooltipBranchLabel}
+                    branchInSpace={branchInSpace}
+                    branchPrIconColor={branchPrIconColor}
+                    links={refLines.length > 0 ? <SidebarRefLinks items={refLines} directory={trackerDirectory} /> : null}
+                    isStreaming={isStreaming}
+                    summaryDirectory={!archivedBucket && !isSubtaskSession ? sessionDirectory ?? null : null}
+                  />
                 </TooltipContent>
-                ) : null}
               </Tooltip>
-            )}
+            ) : null}
           </div>
 
           {streamingIndicator && !mobileVariant && !isTimelineRow ? (

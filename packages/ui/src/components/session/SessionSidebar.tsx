@@ -626,14 +626,17 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   }, [isVSCode, worktreeRefreshDependencies]);
 
   return (
-    // One shared tooltip provider for the whole sidebar, matching the opencode
-    // sidebar feel: 400ms before the first tooltip opens, instant close on
-    // leave, and grouping — moving between rows within 600ms hands the tooltip
-    // over to the next row without replaying the open delay or exit/enter
-    // animation.
+    // One shared tooltip provider for the sidebar's marks and buttons,
+    // matching the opencode sidebar feel: 400ms before the first tooltip
+    // opens, instant close on leave, and grouping: moving between them
+    // within 300ms hands the tooltip over without replaying the open delay
+    // or exit/enter animation. The whole-row hover card keeps its own,
+    // slower timing (`sessions/sessionHoverCardDwell.ts`).
     <TooltipProvider delay={400} closeDelay={0} timeout={300}>
     <div
       ref={sessionSearchContainerRef}
+      // A row's hover card opens beside this box, never over it.
+      data-session-list-bounds=""
       className={cn(
         'relative flex h-full flex-col text-foreground overflow-x-hidden',
         mobileVariant ? '' : 'bg-transparent',

@@ -3,6 +3,7 @@
 import { registerGoalSpecJobRoutes } from '../session-goal/spec-jobs.js';
 import { registerDeviceSettingsRoutes } from '../device-settings/routes.js';
 import { registerModelChoiceRoutes } from '../model-choices/routes.js';
+import { registerSessionAssistRoutes } from '../session-assist/routes.js';
 import { registerModelPoolRoutes, type ModelPoolRouteDependencies } from '../routing/model-pool-routes.js';
 import type { registerSourceControlRoutes } from '../source-control/routes.js';
 import type { registerGuestRoutes } from '../guests/routes.js';
@@ -13,18 +14,21 @@ export type ForkFeatureRouteDependencies = ModelPoolRouteDependencies & {
   deviceSettingsStore?: Parameters<typeof registerDeviceSettingsRoutes>[1]['store'] | null;
   modelChoiceService?: Parameters<typeof registerModelChoiceRoutes>[1]['modelChoiceService'] | null;
   goalSpecJobRuntime?: Parameters<typeof registerGoalSpecJobRoutes>[1] | null;
+  sessionAssistRuntime?: Parameters<typeof registerSessionAssistRoutes>[1]['sessionAssistRuntime'] | null;
 };
 
 export const registerForkFeatureRoutes = (app: Application, {
   deviceSettingsStore = null,
   modelChoiceService = null,
   goalSpecJobRuntime = null,
+  sessionAssistRuntime = null,
   ...modelPools
 }: ForkFeatureRouteDependencies) => {
   if (goalSpecJobRuntime) registerGoalSpecJobRoutes(app, goalSpecJobRuntime);
   registerModelPoolRoutes(app, modelPools);
   if (deviceSettingsStore) registerDeviceSettingsRoutes(app, { store: deviceSettingsStore });
   if (modelChoiceService) registerModelChoiceRoutes(app, { modelChoiceService });
+  if (sessionAssistRuntime) registerSessionAssistRoutes(app, { sessionAssistRuntime });
 };
 
 /**

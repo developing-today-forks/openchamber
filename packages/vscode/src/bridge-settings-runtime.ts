@@ -405,6 +405,10 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
     delete restChanges.sessionSuggestionEnabled;
   }
 
+  if ('sessionHoverSummaryEnabled' in restChanges && typeof restChanges.sessionHoverSummaryEnabled !== 'boolean') {
+    delete restChanges.sessionHoverSummaryEnabled;
+  }
+
   if ('sessionWorkEnabled' in restChanges && typeof restChanges.sessionWorkEnabled !== 'boolean') {
     delete restChanges.sessionWorkEnabled;
   }

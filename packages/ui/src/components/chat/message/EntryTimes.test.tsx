@@ -6,7 +6,7 @@ import { Window } from 'happy-dom';
 import type { Message, Part, Session } from '@/lib/opencode/model';
 import { getSafeStorage } from '@/stores/utils/safeStorage';
 import { recordSessionTimestampEvents, resetSessionActivityTimestamps } from '@/sync/session-activity-timestamps';
-import { SessionTimestamps } from '@/components/session/sidebar/sessions/SessionTimestamps';
+import { SessionHoverTimes, SessionTimestamps } from '@/components/session/sidebar/sessions/SessionTimestamps';
 import { EntryTimes } from './EntryTimes';
 import { I18nProvider } from '@/lib/i18n';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
@@ -81,10 +81,10 @@ test('a sidebar row labels all four session times and says which are unavailable
     time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
   };
   // Default: the row stays as it was; the times wait in the hover card.
-  await act(async () => render(<SessionTimestamps session={session} placement="row" />));
+  await act(async () => render(<SessionTimestamps session={session} />));
   expect(text()).toBe('');
   useSessionDisplayStore.getState().setSessionTimes({ display: 'inline' });
-  await act(async () => render(<SessionTimestamps session={session} placement="row" />));
+  await act(async () => render(<SessionTimestamps session={session} />));
   for (const label of ['Created', 'Last input', 'Last completed output', 'Last activity']) expect(text()).toContain(label);
   expect(text().match(/Unavailable/g)?.length).toBe(2);
 
@@ -94,18 +94,24 @@ test('a sidebar row labels all four session times and says which are unavailable
   expect(text().match(/Unavailable/g)?.length).toBe(1);
 });
 
-test('hidden fields leave the row, and the hover copy follows the hover mode only', async () => {
+test('hidden fields leave the row; the hover card shows the chosen times in hover mode, else the last activity', async () => {
   const session: Session = {
     id: 's2', projectID: 'p', directory: '/repo', title: 'Session', cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     time: { created: 1_700_000_000_000, updated: 1_700_000_000_000 },
   };
   useSessionDisplayStore.getState().setSessionTimes({ display: 'inline', fields: ['created'] });
-  await act(async () => render(<SessionTimestamps session={session} placement="row" />));
+  await act(async () => render(<SessionTimestamps session={session} />));
   expect(text()).toContain('Created');
   expect(text()).not.toContain('Last input');
-  await act(async () => render(<SessionTimestamps session={session} placement="hover" />));
-  expect(text()).toBe('');
+  await act(async () => render(<SessionHoverTimes session={session} activityAt={1_700_000_000_000} />));
+  expect(text()).toContain('Last activity');
+  expect(text()).not.toContain('Created');
+  expect(text()).toContain(' ago · ');
+  useSessionDisplayStore.getState().setSessionTimes({ display: 'hover', fields: ['created'] });
+  await act(async () => render(<SessionHoverTimes session={session} activityAt={1_700_000_000_000} />));
+  expect(text()).toContain('Created');
+  expect(text()).not.toContain('Last activity');
   useSessionDisplayStore.getState().setSessionTimes({ display: 'hover', fields: ['created', 'input', 'output', 'activity'] });
 });
 

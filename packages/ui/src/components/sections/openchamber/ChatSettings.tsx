@@ -39,6 +39,7 @@ import { MessageSearchSettings } from './MessageSearchSettings';
 import { ModelChoiceSettings } from './ModelChoiceSettings';
 import { SessionGoalCheckerField, SessionGoalLengthFields, SessionGoalMaxTurnsField } from './SessionGoalCheckerField';
 import { SessionGoalWriterFields } from './SessionGoalWriterFields';
+import { SessionRecapFields } from './SessionRecapFields';
 import { chatSettingsTabAnchors, useChatSettingsTabStore, type ChatSettingsTab } from './chatSettingsTabs';
 
 type ChipOption<T extends string> = { id: T; labelKey: I18nKey };
@@ -662,8 +663,6 @@ const AssistanceTab: React.FC = () => {
   const isVSCode = isVSCodeRuntime();
   const draftStartersVisible = useUIStore((state) => state.draftStartersVisible);
   const setDraftStartersVisible = useUIStore((state) => state.setDraftStartersVisible);
-  const sessionRecapEnabled = useUIStore((state) => state.sessionRecapEnabled);
-  const setSessionRecapEnabled = useUIStore((state) => state.setSessionRecapEnabled);
   const sessionSuggestionEnabled = useUIStore((state) => state.sessionSuggestionEnabled);
   const setSessionSuggestionEnabled = useUIStore((state) => state.setSessionSuggestionEnabled);
   const sessionReviewOfferEnabled = useUIStore((state) => state.sessionReviewOfferEnabled);
@@ -693,13 +692,7 @@ const AssistanceTab: React.FC = () => {
           ariaLabel={t('settings.openchamber.visual.field.draftStartersVisibleAria')}
           settingsItem="chat.draft-starters-visible"
         />
-        <SettingsCheckboxRow
-          checked={sessionRecapEnabled}
-          onChange={setSessionRecapEnabled}
-          label={t('settings.openchamber.visual.field.sessionRecap')}
-          ariaLabel={t('settings.openchamber.visual.field.sessionRecapAria')}
-          settingsItem="chat.session-recap"
-        />
+        <SessionRecapFields />
         <SettingsCheckboxRow
           checked={sessionSuggestionEnabled}
           onChange={setSessionSuggestionEnabled}

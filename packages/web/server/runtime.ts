@@ -3228,7 +3228,7 @@ async function main(options: WebUiServerOptions = {}) {
     permissionAutoAcceptRuntime,
     worktreeBootstrapStore,
     messageQueueRuntime,
-    goalSpecJobRuntime,
+    goalSpecJobRuntime, sessionAssistRuntime,
     autoReviewRuntime,
     prWatchRuntime,
     extensionWaitsRuntime,

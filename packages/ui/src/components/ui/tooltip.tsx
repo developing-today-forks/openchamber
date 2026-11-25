@@ -258,6 +258,7 @@ type ContentProps = React.ComponentProps<typeof BaseTooltip.Popup> & {
   align?: "start" | "center" | "end";
   showArrow?: boolean;
   anchor?: React.ComponentProps<typeof BaseTooltip.Positioner>["anchor"];
+  collisionAvoidance?: React.ComponentProps<typeof BaseTooltip.Positioner>["collisionAvoidance"];
   surface?: "label" | "card";
 };
 
@@ -270,13 +271,14 @@ function TooltipContent({
   style,
   showArrow = false,
   anchor,
+  collisionAvoidance,
   surface = "label",
   ...props
 }: ContentProps) {
   return (
     <TooltipPartBoundary>
       <BaseTooltip.Portal>
-        <BaseTooltip.Positioner sideOffset={sideOffset} side={side} align={align} anchor={anchor} className="z-50">
+        <BaseTooltip.Positioner sideOffset={sideOffset} side={side} align={align} anchor={anchor} collisionAvoidance={collisionAvoidance} className="z-50">
           <BaseTooltip.Popup
             data-slot="tooltip-content"
             className={cn(

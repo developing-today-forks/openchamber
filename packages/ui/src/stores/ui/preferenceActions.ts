@@ -13,6 +13,7 @@ export const createPreferenceActions: UIStoreSlice<
   | 'setShowReasoningTraces'
   | 'setStreamingAutoFollowEnabled'
   | 'setSessionRecapEnabled'
+  | 'setSessionHoverSummaryEnabled'
   | 'setSessionSuggestionEnabled'
   | 'setSessionWorkEnabled'
   | 'setContinueWithModelMode'
@@ -136,6 +137,10 @@ export const createPreferenceActions: UIStoreSlice<
 
   setSessionRecapEnabled: (value) => {
     set({ sessionRecapEnabled: value });
+  },
+
+  setSessionHoverSummaryEnabled: (value) => {
+    set({ sessionHoverSummaryEnabled: value });
   },
 
   setSessionSuggestionEnabled: (value) => {

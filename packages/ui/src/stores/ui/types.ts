@@ -216,6 +216,7 @@ export interface UIStore {
   showReasoningTraces: boolean;
   streamingAutoFollowEnabled: boolean;
   sessionRecapEnabled: boolean;
+  sessionHoverSummaryEnabled: boolean;
   sessionSuggestionEnabled: boolean;
   sessionWorkEnabled: boolean;
   /** What "Continue with another model" does by default with the session's running shell commands and subagents. */
@@ -523,6 +524,7 @@ export interface UIStore {
   setShowReasoningTraces: (value: boolean) => void;
   setStreamingAutoFollowEnabled: (value: boolean) => void;
   setSessionRecapEnabled: (value: boolean) => void;
+  setSessionHoverSummaryEnabled: (value: boolean) => void;
   setSessionSuggestionEnabled: (value: boolean) => void;
   setSessionWorkEnabled: (value: boolean) => void;
   setContinueWithModelMode: (value: ContinueWorkMode) => void;

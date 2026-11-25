@@ -2,6 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { OpenCode } from '@opencode/client';
+import { z } from 'zod';
 import { readMergedSettingsSync } from '../settings/settings-files.js';
 import { isString } from '../shared/guards.js';
 import { sessionParentId } from '../session-lineage.js';
@@ -12,12 +13,36 @@ import type { createSessionLineage } from '../session-lineage.js';
 import type { TurnEndInput } from '../session-work/runtime.js';
 import type { describeSmallModel, generateSmallModelText } from '../small-model/index.js';
 
+export interface SessionAssistSummary {
+  done: string;
+  left: string;
+  stoppedAt: string;
+}
+
 export interface SessionAssist {
   recap: string;
   suggestion: string;
+  // `null` deletes a summary left by an earlier write: the metadata store
+  // merges objects key by key, so an omitted key would keep the old one.
+  summary: SessionAssistSummary | null;
   forMessageID: string;
   generatedAt: number;
 }
+
+export type SummarizeRefusal = 'disabled' | 'busy' | 'child' | 'archived' | 'reverted' | 'not-found' | 'no-model' | 'local-model' | 'unavailable';
+
+/** What one on-demand summary request came to. */
+export type SummarizeOutcome =
+  | { status: 'written' }
+  | { status: 'fresh' }
+  | { status: 'empty' }
+  | { status: 'refused'; reason: SummarizeRefusal }
+  | { status: 'cooldown'; retryAfterMs: number }
+  | { status: 'capacity' }
+  | { status: 'cancelled' }
+  | { status: 'failed'; reason: string };
+
+export type SummarizeTrigger = 'manual' | 'hover';
 
 export interface SessionAssistOptions {
   buildOpenCodeUrl: (route: string, query: string) => string;
@@ -33,6 +58,9 @@ export interface SessionAssistOptions {
   evaluateTurn?: ((input: TurnEndInput) => Promise<AssistTargets | null>) | null;
   lineage?: Pick<ReturnType<typeof createSessionLineage>, 'remember' | 'isChild'> | null;
   onPendingChange?: (change: { sessionId: string; directory: string | undefined; pending: boolean }) => void;
+  getHoverSummaryEnabled?: () => boolean;
+  summaryCooldownMs?: number;
+  maxConcurrentSummaries?: number;
 }
 
 export interface AssistEvent {
@@ -87,9 +115,21 @@ const getSessionAssistTargets = () => {
   };
 };
 
+const getHoverSummarySetting = () =>
+  readMergedSettingsSync({ fs, path, settingsFilePath: OPENCHAMBER_SETTINGS_FILE }).sessionHoverSummaryEnabled !== false;
+
 const IDLE_QUIET_MS = 60_000;
 const RECAP_CHAR_LIMIT = 320;
 const SUGGESTION_CHAR_LIMIT = 500;
+const SUMMARY_FIELD_CHAR_LIMIT = 200;
+// A failed or empty on-demand run is not retried for this long, so a card
+// left open (or hovered again and again) cannot turn into a stream of model
+// calls for a session the model cannot summarize. A written summary needs no
+// cooldown: the next request answers `fresh` from the stored one.
+const SUMMARY_COOLDOWN_MS = 30_000;
+// On-demand runs across all sessions at once; hovering down a list must not
+// fan out one model call per row.
+const MAX_CONCURRENT_SUMMARIES = 2;
 
 // A plain slice at the cap can land between the halves of a surrogate pair,
 // leaving a lone high surrogate that is persisted to the session metadata
@@ -165,6 +205,30 @@ const extractUserMessage = (payload: AssistEvent | null | undefined) => {
   };
 };
 
+const summaryField = z.string().transform((text) => clipPairSafe(text.trim(), SUMMARY_FIELD_CHAR_LIMIT)).catch('');
+const generatedSummarySchema = z.object({ done: summaryField, left: summaryField, stoppedAt: summaryField });
+
+// What an earlier write left in the session's metadata: enough to tell a
+// current summary and to keep a suggestion written for the same answer.
+const storedAssistSchema = z.object({
+  openchamber: z.object({
+    assist: z.object({
+      recap: z.string().catch(''),
+      suggestion: z.string().catch(''),
+      forMessageID: z.string().catch(''),
+      generatedAt: z.number().catch(0),
+      summary: z.object({ done: z.string().trim().min(1), left: z.string().catch(''), stoppedAt: z.string().catch('') }).nullable().catch(null),
+    }),
+  }),
+});
+
+const sessionNotFoundSchema = z.union([
+  z.object({ _tag: z.literal('SessionNotFoundError') }),
+  z.object({ statusCode: z.literal(404) }),
+]);
+
+const COOLDOWN_STATUSES = new Set<SummarizeOutcome['status']>(['empty', 'failed']);
+
 export const createSessionAssistRuntime = ({
   buildOpenCodeUrl,
   getOpenCodeAuthHeaders,
@@ -176,13 +240,18 @@ export const createSessionAssistRuntime = ({
   evaluateTurn = null,
   lineage = null,
   onPendingChange = () => {},
+  getHoverSummaryEnabled = getHoverSummarySetting,
+  summaryCooldownMs = SUMMARY_COOLDOWN_MS,
+  maxConcurrentSummaries = MAX_CONCURRENT_SUMMARIES,
 }: SessionAssistOptions) => {
   const timers = new Map<string, { timer: ReturnType<typeof setTimeout>; armedAt: number }>();
   const gates = new Map<string, { armedAt: number }>();
-  const inflight = new Map<string, { controller: AbortController; armedAt: number }>();
+  const inflight = new Map<string, { controller: AbortController; armedAt: number; done: Promise<unknown> }>();
   const ready = new Map<string, PendingRun>();
   const persisted = new Map<string, string>();
   const announced = new Map<string, string>();
+  const summaries = new Map<string, { controller: AbortController; waiters: number; outcome: Promise<SummarizeOutcome> }>();
+  const cooldowns = new Map<string, number>();
   let stopped = false;
 
   const announce = (sessionId: string, directory = '') => {
@@ -227,13 +296,19 @@ export const createSessionAssistRuntime = ({
     console.log(`[session-assist] skipped: ${key} is served from a local endpoint and is the session's own model, so a side request would evict its prompt cache. Set a different Small Model to get a recap or a suggestion`);
   };
 
-  const generateAssist = async (sessionId: string, directory: string, signal: AbortSignal, allowed: AssistTargets) => {
+  /**
+   * One generation for one session. The turn-end path ignores the outcome;
+   * an on-demand run (`onDemand`) reports it, also asks OpenCode whether the
+   * session is running, answers `fresh` when the stored summary is current,
+   * and needs a summary to count as written.
+   */
+  const generateAssist = async (sessionId: string, directory: string, signal: AbortSignal, allowed: AssistTargets, onDemand = false): Promise<SummarizeOutcome> => {
     const enabledTargets = getTargets();
     const targets = {
       recap: enabledTargets.recap && allowed.recap,
       suggestion: enabledTargets.suggestion && allowed.suggestion,
     };
-    if (!targets.recap && !targets.suggestion) return;
+    if (!targets.recap && !targets.suggestion) return { status: 'refused', reason: 'disabled' };
     const baseUrl = buildOpenCodeUrl('/', '').replace(/\/$/, '');
     const headers = { ...getOpenCodeAuthHeaders() };
     if (directory) headers['x-opencode-directory'] = encodeURIComponent(directory);
@@ -249,8 +324,18 @@ export const createSessionAssistRuntime = ({
     const session = await client.session.get({ sessionID: sessionId }, requestOptions());
     checkCurrent();
     if (session?.id === sessionId) lineage?.remember(sessionId, sessionParentId(session));
-    if (session?.id !== sessionId || sessionParentId(session) || session.revert?.messageID) return;
-    if (await isSessionArchived(sessionId)) return;
+    if (session?.id !== sessionId) return { status: 'refused', reason: 'not-found' };
+    if (sessionParentId(session)) return { status: 'refused', reason: 'child' };
+    if (session.revert?.messageID) return { status: 'refused', reason: 'reverted' };
+    if (await isSessionArchived(sessionId)) return { status: 'refused', reason: 'archived' };
+    if (onDemand) {
+      const active = await client.session.active(requestOptions());
+      checkCurrent();
+      if (isJsonObject(active) && active[sessionId]) return { status: 'refused', reason: 'busy' };
+      // The freshness rule of `getCurrentSessionAssist` in the UI.
+      const stored = storedAssistSchema.safeParse(session.metadata).data?.openchamber.assist;
+      if (stored?.summary && stored.generatedAt >= (session.time?.idle ?? 0)) return { status: 'fresh' };
+    }
     const context = await loadAssistContext({
       signal,
       readPage: ({ limit, cursor }: { limit: number; cursor: string | undefined }) => client.message.list(
@@ -259,23 +344,23 @@ export const createSessionAssistRuntime = ({
       ),
     });
     checkCurrent();
-    if (!context) return;
+    if (!context) return { status: 'empty' };
     const { last, turns } = context;
     const { describeSmallModel, generateSmallModelText } = await getSmallModelService();
     const preferredProviderID = last.providerID;
     const preferredModelID = last.modelID;
     const described = await describeSmallModel({ directory, preferredProviderID, preferredModelID });
     checkCurrent();
-    if (!described) return;
+    if (!described) return { status: 'refused', reason: 'no-model' };
     if (described.localEndpoint
       && described.providerID === preferredProviderID
       && described.modelID === preferredModelID) {
       reportLocalSkip(preferredProviderID, preferredModelID);
-      return;
+      return { status: 'refused', reason: 'local-model' };
     }
     const system = buildAssistSystemPrompt(targets);
     const prompt = buildAssistPrompt(turns, targets, described.inputCharBudget - system.length - 512);
-    if (!prompt) return;
+    if (!prompt) return { status: 'failed', reason: 'context-too-large' };
     let generated;
     try {
       generated = await generateSmallModelText({
@@ -285,41 +370,72 @@ export const createSessionAssistRuntime = ({
       });
     } catch (error) {
       const failure = hasFailureFields(error) ? error : undefined;
-      if (!signal.aborted && Number(failure?.statusCode) !== 404 && !(isString(failure?.code) && QUIET_FAILURE_CODES.has(failure.code))) {
+      if (signal.aborted) return { status: 'cancelled' };
+      if (Number(failure?.statusCode) !== 404 && !(isString(failure?.code) && QUIET_FAILURE_CODES.has(failure.code))) {
         console.warn('[session-assist] generation failed', describeGenerationFailure(failure));
       }
-      return;
+      return { status: 'failed', reason: isString(failure?.code) && failure.code.trim() ? failure.code.trim() : 'generation-failed' };
     }
     checkCurrent();
     const structured = extractJsonObject(generated?.text);
     let recap = targets.recap && isString(structured?.recap) ? clipPairSafe(structured.recap.trim(), RECAP_CHAR_LIMIT) : '';
     let suggestion = targets.suggestion && isString(structured?.suggestion) ? clipPairSafe(structured.suggestion.trim(), SUGGESTION_CHAR_LIMIT) : '';
+    const parsedSummary = targets.recap ? generatedSummarySchema.safeParse(structured).data : undefined;
+    let summary = parsedSummary?.done ? parsedSummary : null;
     const hasCyrillic = (text: string) => /[\u0400-\u04FF]/.test(text);
     const hasCjk = (text: string) => /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text);
     const scriptMismatch = (text: string) => prompt.language && ((hasCyrillic(text) && !hasCyrillic(prompt.language))
       || (hasCjk(text) && !hasCjk(prompt.language)));
     if (recap && scriptMismatch(recap)) recap = '';
     if (suggestion && scriptMismatch(suggestion)) suggestion = '';
-    if (!recap && !suggestion) return;
+    if (summary && scriptMismatch(`${summary.done} ${summary.left} ${summary.stoppedAt}`)) summary = null;
+    if (onDemand ? !summary : (!recap && !suggestion && !summary)) return { status: 'failed', reason: 'unusable-output' };
     const latestPage = await client.message.list({ sessionID: sessionId, limit: TAIL_RECHECK_LIMIT, order: 'desc' }, requestOptions());
     checkCurrent();
-    if (newestContentId(latestPage?.data) !== last.id) return;
+    if (newestContentId(latestPage?.data) !== last.id) return { status: 'cancelled' };
     const freshSession = await client.session.get({ sessionID: sessionId }, requestOptions());
     checkCurrent();
-    if (freshSession?.id !== sessionId || freshSession.revert?.messageID || freshSession.location?.directory !== session.location?.directory) return;
-    if (await isSessionArchived(sessionId)) return;
+    if (freshSession?.id !== sessionId || freshSession.revert?.messageID || freshSession.location?.directory !== session.location?.directory) return { status: 'cancelled' };
+    if (await isSessionArchived(sessionId)) return { status: 'cancelled' };
     checkCurrent();
     const enabled = getTargets();
-    if (!enabled.recap || !allowed.recap) recap = '';
+    if (!enabled.recap || !allowed.recap) {
+      recap = '';
+      summary = null;
+    }
     if (!enabled.suggestion || !allowed.suggestion) suggestion = '';
-    if (!recap && !suggestion) return;
+    // What an earlier write for this same answer holds stays: an on-demand
+    // run asks for no suggestion, and a turn-end run gated to the suggestion
+    // alone (or whose model left the summary out) must not erase a summary
+    // the hover card already asked for.
+    const stored = storedAssistSchema.safeParse(freshSession.metadata).data?.openchamber.assist;
+    if (stored && stored.forMessageID === last.id) {
+      if (onDemand && enabled.suggestion) suggestion = stored.suggestion;
+      if (!onDemand && enabled.recap && !summary && stored.summary) {
+        summary = stored.summary;
+        recap ||= stored.recap;
+      }
+    }
+    if (!recap && !suggestion && !summary) return { status: 'refused', reason: 'disabled' };
     await persistSessionAssist?.(sessionId, directory, {
       recap,
       suggestion,
+      summary,
       forMessageID: last.id,
       generatedAt: Date.now(),
     });
     persisted.set(sessionId, directory);
+    return onDemand && !summary ? { status: 'refused', reason: 'disabled' } : { status: 'written' };
+  };
+
+  const finishRun = (sessionId: string) => {
+    inflight.delete(sessionId);
+    const next = ready.get(sessionId);
+    if (next) {
+      ready.delete(sessionId);
+      startGeneration(sessionId, next.directory, next.armedAt, next.allowed);
+    }
+    announce(sessionId);
   };
 
   const startGeneration = (sessionId: string, directory: string, armedAt: number, allowed: AssistTargets) => {
@@ -329,20 +445,84 @@ export const createSessionAssistRuntime = ({
       return;
     }
     const controller = new AbortController();
-    inflight.set(sessionId, { controller, armedAt });
-    generateAssist(sessionId, directory, controller.signal, allowed)
+    const done = generateAssist(sessionId, directory, controller.signal, allowed)
       .catch(() => {
         if (!controller.signal.aborted) console.warn('[session-assist] failed to read or save assistance');
       })
-      .finally(() => {
-        inflight.delete(sessionId);
-        const next = ready.get(sessionId);
-        if (next) {
-          ready.delete(sessionId);
-          startGeneration(sessionId, next.directory, next.armedAt, next.allowed);
-        }
-        announce(sessionId);
+      .finally(() => finishRun(sessionId));
+    inflight.set(sessionId, { controller, armedAt, done });
+  };
+
+  const ON_DEMAND_FIELDS = { recap: true, suggestion: false };
+
+  const runSummary = async (sessionId: string, directory: string, controller: AbortController): Promise<SummarizeOutcome> => {
+    // One generation per session: wait for a turn-end run already reading
+    // this session, then check freshness against what it wrote.
+    for (let running = inflight.get(sessionId); running; running = inflight.get(sessionId)) {
+      await running.done;
+      if (controller.signal.aborted || stopped) return { status: 'cancelled' };
+    }
+    const done = generateAssist(sessionId, directory, controller.signal, ON_DEMAND_FIELDS, true)
+      .catch((error): SummarizeOutcome => {
+        if (controller.signal.aborted) return { status: 'cancelled' };
+        if (sessionNotFoundSchema.safeParse(error).success) return { status: 'refused', reason: 'not-found' };
+        console.warn('[session-assist] on-demand summary failed to read or save');
+        return { status: 'failed', reason: 'read-failed' };
+      })
+      .finally(() => finishRun(sessionId));
+    inflight.set(sessionId, { controller, armedAt: Date.now(), done });
+    announce(sessionId, directory);
+    return done;
+  };
+
+  const awaitSummary = (run: { controller: AbortController; waiters: number; outcome: Promise<SummarizeOutcome> }, signal: AbortSignal | undefined): Promise<SummarizeOutcome> => {
+    run.waiters += 1;
+    if (!signal) return run.outcome;
+    return new Promise<SummarizeOutcome>((resolve) => {
+      const leave = () => {
+        run.waiters -= 1;
+        // The last caller gone (a closed request) stops the run.
+        if (run.waiters === 0) run.controller.abort();
+        resolve({ status: 'cancelled' });
+      };
+      if (signal.aborted) {
+        leave();
+        return;
+      }
+      signal.addEventListener('abort', leave, { once: true });
+      void run.outcome.then((outcome) => {
+        signal.removeEventListener('abort', leave);
+        resolve(outcome);
       });
+    });
+  };
+
+  /**
+   * Summarize one session now, for the sidebar's hover card. Requests for a
+   * session already being summarized join that run.
+   */
+  const summarizeNow = (sessionId: string, directory: string, { trigger, signal }: { trigger: SummarizeTrigger; signal?: AbortSignal }): Promise<SummarizeOutcome> => {
+    if (stopped || !persistSessionAssist) return Promise.resolve({ status: 'refused', reason: 'unavailable' });
+    if (!getTargets().recap || (trigger === 'hover' && !getHoverSummaryEnabled())) {
+      return Promise.resolve({ status: 'refused', reason: 'disabled' });
+    }
+    if (lineage?.isChild(sessionId) === true) return Promise.resolve({ status: 'refused', reason: 'child' });
+    const joined = summaries.get(sessionId);
+    if (joined) return awaitSummary(joined, signal);
+    const until = cooldowns.get(sessionId) ?? 0;
+    const now = Date.now();
+    if (until > now) return Promise.resolve({ status: 'cooldown', retryAfterMs: until - now });
+    cooldowns.delete(sessionId);
+    if (summaries.size >= maxConcurrentSummaries) return Promise.resolve({ status: 'capacity' });
+    const controller = new AbortController();
+    const outcome = runSummary(sessionId, directory, controller).then((result) => {
+      summaries.delete(sessionId);
+      if (COOLDOWN_STATUSES.has(result.status)) cooldowns.set(sessionId, Date.now() + summaryCooldownMs);
+      return result;
+    });
+    const run = { controller, waiters: 0, outcome };
+    summaries.set(sessionId, run);
+    return awaitSummary(run, signal);
   };
 
   const armTimer = (sessionId: string, directory: string, armedAt: number, allowed: AssistTargets) => {
@@ -423,6 +603,7 @@ export const createSessionAssistRuntime = ({
     gates.clear();
     ready.clear();
     for (const { controller } of inflight.values()) controller.abort();
+    for (const { controller } of summaries.values()) controller.abort();
   };
-  return { processPayload, stop };
+  return { processPayload, summarizeNow, stop };
 };

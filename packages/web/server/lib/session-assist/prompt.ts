@@ -5,11 +5,12 @@ const MAX_PROMPT_CHARS = 32_000;
 
 export function buildAssistSystemPrompt({ recap, suggestion }: AssistTargets) {
   return [
-    `Return exactly one JSON object with string fields: ${[recap ? '"recap"' : '', suggestion ? '"suggestion"' : ''].filter(Boolean).join(', ')}.`,
+    `Return exactly one JSON object with string fields: ${[recap ? '"recap", "done", "left", "stoppedAt"' : '', suggestion ? '"suggestion"' : ''].filter(Boolean).join(', ')}.`,
     recap ? 'recap is a reminder of the actual work accomplished or conclusion reached in the recent conversation. In at most 20 words, name the concrete behavior or subject and its current result. The reader wants to remember WHAT changed or was learned.' : '',
     recap ? 'Write the recap for the person using the app, not for someone reviewing its code. Name the feature and the concrete difference the user will notice. Replace generic "implemented and tested" summaries with what now works differently or what was learned. File paths, internal module names, test counts, and lists of checks belong in the recap only when they are the subject of the user\'s request. Preserve a specific finding or limitation when it changes the meaning of the result.' : '',
     recap ? 'For a closing exchange such as a commit, push, acknowledgment, or thank-you, summarize the substantive work from the preceding answers. Commit bookkeeping, authorship, branch names, and hashes are secondary and usually omitted. A recap saying only that optimizations or changes were committed does not serve this purpose.' : '',
     recap ? 'Use the latest state of that work. Distinguish recommendations from actions already performed, and implementations from verified deployments. Retain the reported conclusion without recalculating detailed lists. Earlier unrelated topics are not part of the recap.' : '',
+    recap ? 'done, left and stoppedAt split the same work into three short lines for a status card, each at most 15 words and written for the same reader as recap. done: what has been accomplished so far. left: what remains of what the user asked for, or "" when nothing remains. stoppedAt: where the work stopped, such as the last step taken, a failing check, or a question or decision it is waiting on. Never invent remaining work the user did not ask for.' : '',
     suggestion ? 'suggestion is optional. Return "" when the current request is satisfied or continuing requires a user decision. Otherwise return one concise message the user could send to continue specific unfinished work they requested.' : '',
     suggestion ? 'suggestion: return an empty string if the latest request has been satisfied, the next move requires the user\'s decision, or the context does not establish unfinished requested work. Finishing is a normal outcome.' : '',
     suggestion ? 'Otherwise write one concise, specific next message the user can send unchanged to continue the unfinished request. Use the user\'s voice addressing the agent.' : '',
@@ -34,7 +35,7 @@ export function buildAssistPrompt(turns: AssistTurn[], targets: AssistTargets, c
   const languageBudget = Math.min(3_600, Math.floor(budget / 5));
   const language = excerpt(turns.map((turn) => excerpt(turn.user.authored, 1_200)).filter(Boolean).join('\n'), languageBudget);
   const header = 'Recent conversation turns, oldest first. Older turns may be omitted.\n\n';
-  const requested = [targets.recap ? 'a reminder of the recent substantive work in recap' : '', targets.suggestion ? 'an optional current next step in suggestion' : ''].filter(Boolean).join(', and ');
+  const requested = [targets.recap ? 'a reminder of the recent substantive work in recap, split into done, left and stoppedAt' : '', targets.suggestion ? 'an optional current next step in suggestion' : ''].filter(Boolean).join(', and ');
   const footer = `\n\n--- End of conversation evidence ---\n\nRecent user-authored communication, excluding attached quotes, oldest first:\n\n${language}\n\nReturn ${requested}.`;
   const available = budget - header.length - footer.length;
   const kept = turns.slice();

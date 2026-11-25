@@ -166,7 +166,7 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
       {originMark}
       {titleLine}
       {meta}
-    </div>{session ? <SessionTimestamps session={session} placement="row" /> : null}</div>;
+    </div>{session ? <SessionTimestamps session={session} /> : null}</div>;
   }
   return <div className="flex w-full min-w-0 flex-col gap-px">
     {/* Fixed 20px first line: the hover actions are positioned against the
@@ -213,6 +213,6 @@ export const SessionTimelineRowBody: React.FC<Props> = ({
         {elements.showProviderLogo && providerId ? <ProviderLogo providerId={providerId} className="h-3 w-3 flex-shrink-0 opacity-45" /> : null}
       </span>
     </div>
-    {session ? <SessionTimestamps session={session} placement="row" /> : null}
+    {session ? <SessionTimestamps session={session} /> : null}
   </div>;
 };

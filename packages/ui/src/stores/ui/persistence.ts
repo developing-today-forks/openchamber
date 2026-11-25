@@ -308,6 +308,7 @@ const uiStorePersistOptions = {
     showReasoningTraces: state.showReasoningTraces,
     streamingAutoFollowEnabled: state.streamingAutoFollowEnabled,
     sessionRecapEnabled: state.sessionRecapEnabled,
+    sessionHoverSummaryEnabled: state.sessionHoverSummaryEnabled,
     sessionSuggestionEnabled: state.sessionSuggestionEnabled,
     sessionWorkEnabled: state.sessionWorkEnabled,
     continueWithModelMode: state.continueWithModelMode,

@@ -158,7 +158,7 @@ type BooleanSettingsKey =
   | 'confirmFileTreeMove' | 'layoutAnimations' | 'openLinksInBrowserPanel' | 'agentBrowserSharesLogins'
   | 'openTrackerLinksOnBoard' | 'diffWrapLines' | 'diffHideWhitespace' | 'allowPromptingSubagentSessions'
   | 'savePastedImagesAsFiles' | 'showOpenCodeRestartConfirm' | 'sessionTabsEnabled' | 'sessionTabsPerWorkspace'
-  | 'terminalCloseOnExit' | 'terminalOpenOnProjectAction' | 'sessionRecapEnabled' | 'sessionSuggestionEnabled'
+  | 'terminalCloseOnExit' | 'terminalOpenOnProjectAction' | 'sessionRecapEnabled' | 'sessionSuggestionEnabled' | 'sessionHoverSummaryEnabled'
   | 'sessionWorkEnabled' | 'sessionReviewOfferEnabled' | 'sessionGoalEnabled' | 'sessionGoalDefaultBudgetEnabled'
   | 'collapsibleThinkingBlocks' | 'showTextJustificationActivity' | 'showDeletionDialog' | 'nativeNotificationsEnabled'
   | 'notifyOnSubtasks' | 'notifyOnCompletion' | 'notifyOnPullRequests' | 'notifyOnError' | 'notifyOnQuestion'
@@ -862,14 +862,8 @@ export const createSettingsHelpers = (dependencies: SettingsHelpersDependencies)
     if (Array.isArray(candidate.providerOrder)) {
       result.providerOrder = normalizeStringArray(candidate.providerOrder);
     }
-    if (isBoolean(candidate.sessionRecapEnabled)) {
-      result.sessionRecapEnabled = candidate.sessionRecapEnabled;
-    }
-    if (isBoolean(candidate.sessionSuggestionEnabled)) {
-      result.sessionSuggestionEnabled = candidate.sessionSuggestionEnabled;
-    }
-    if (isBoolean(candidate.sessionWorkEnabled)) {
-      result.sessionWorkEnabled = candidate.sessionWorkEnabled;
+    for (const key of ['sessionRecapEnabled', 'sessionSuggestionEnabled', 'sessionHoverSummaryEnabled', 'sessionWorkEnabled'] as const) {
+      if (isBoolean(candidate[key])) result[key] = candidate[key];
     }
     if (candidate.continueWithModelMode === 'stop' || candidate.continueWithModelMode === 'keep') {
       result.continueWithModelMode = candidate.continueWithModelMode;

@@ -10,6 +10,7 @@ import { sessionMenuHintsI18n } from './session-menu-hints.i18n';
 import { sessionErrorRecoveryI18n } from './session-error-recovery.i18n';
 import { sidebarLayoutI18n } from './sidebar-layout.i18n';
 import { activityTimesI18n } from './activity-times.i18n';
+import { sessionHoverCardI18n } from './session-hover-card.i18n';
 import { projectKnowledgeI18n } from './project-knowledge.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 import { routingI18n } from './routing.i18n';
@@ -226,6 +227,7 @@ export const dict = {
   ...sessionErrorRecoveryI18n.de,
   ...sidebarLayoutI18n.de,
   ...activityTimesI18n.de,
+  ...sessionHoverCardI18n.de,
   ...projectKnowledgeI18n.de,
   ...linearPanelI18n.de,
   ...routingI18n.de,

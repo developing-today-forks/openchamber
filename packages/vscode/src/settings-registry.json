@@ -819,6 +819,9 @@
     "sessionRecapEnabled": {
       "scope": "profile"
     },
+    "sessionHoverSummaryEnabled": {
+      "scope": "profile"
+    },
     "sessionSuggestionEnabled": {
       "scope": "profile"
     },

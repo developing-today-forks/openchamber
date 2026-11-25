@@ -1,14 +1,19 @@
 # Session assist
 
-The server generates a short reminder of recent work and an optional next user
+The server generates a short reminder of recent work, a structured summary
+(what is done, what is left, where it stopped) and an optional next user
 message with Small Model. Results live in `metadata.openchamber.assist` with
-`recap`, `suggestion`, `forMessageID`, and `generatedAt`. The payload shape is
-unchanged; an empty suggestion is a successful outcome.
+`recap`, `suggestion`, `summary` (`{ done, left, stoppedAt }` or `null`),
+`forMessageID`, and `generatedAt`. An empty suggestion is a successful outcome;
+`left` is empty when nothing remains. A payload from before `summary` existed
+simply has none, and readers treat it as no summary.
 
 ## Ownership
 
 - `runtime.ts` owns idle timers, cancellation, provider selection, SDK reads,
-  freshness checks, settings gates, and metadata writes.
+  freshness checks, settings gates, metadata writes, and the on-demand
+  summary (`summarizeNow`).
+- `routes.ts` owns the summary route and maps each outcome to its status code.
 - `context.ts` reads bounded history and constructs human turns. It removes
   tool payloads and injected prompts before retaining message text.
 - `prompt.ts` owns the generation instructions and total input budget.
@@ -132,7 +137,10 @@ model context is small. Page/count bounds are not a network-byte quota.
    a local inference server by hostname alone, and the log line is the only
    thing that tells an operator why an enabled toggle produced nothing (#6173).
 5. Recap describes the substantive work and its current result, including the
-   work behind a closing commit or acknowledgment. Suggestion is independent:
+   work behind a closing commit or acknowledgment. The summary splits the same
+   work into `done`, `left` and `stoppedAt`, asked for in the same call as the
+   recap; it is written only when `done` is non-empty, and a script mismatch
+   drops it whole. Suggestion is independent:
    only unfinished requested agent work should produce a sendable user message.
    Completed work, optional offers, or a decision/action belonging to the user
    should return an empty suggestion. This is model judgment, not authorization
@@ -162,7 +170,73 @@ context/output-budget codes stay quiet, and no failure retries here: this layer
 makes one attempt, and the small-model service owns the bounded backoff it
 runs while a cold catalog has not published the model yet.
 
+## On-demand summary
+
+`POST /api/session-assist/sessions/:id/summary` with `{ directory, trigger }`
+(`manual` for the hover card's Summarize button, `hover` for the card asking by
+itself) runs one generation for one session through the same context loader,
+prompt budget, small-model resolution and pre-write re-checks as the turn-end
+run. It is registered with the feature routes, before the OpenCode proxy. It
+asks only for the recap and summary; a suggestion already written for the same
+answer is carried over, any other is dropped.
+
+Every outcome has its own answer, so a client never reads a failure as "nothing
+to summarize":
+
+| Outcome | HTTP | Meaning |
+|---|---|---|
+| `written` | 200 | A summary was saved; it reaches clients as `openchamber:session-metadata` |
+| `fresh` | 200 | The stored summary is current (`generatedAt >= time.idle`); no model call |
+| `empty` | 200 | No completed answer in the bounded history; no model call |
+| `refused` + reason | 409 | `disabled`, `busy` (OpenCode lists it in `session/active`), `child`, `archived`, `reverted`, `not-found`, `no-model`, `local-model`, `unavailable` |
+| `cooldown` | 429 + `Retry-After` | A run for this session failed or found nothing less than 30 s ago |
+| `capacity` | 429 | Two on-demand runs are already in flight across all sessions |
+| `cancelled` | 409 | Every caller went away, or the session moved on while generating |
+| `failed` + reason | 502 | Generation failed, the output had no usable summary, or a read failed |
+
+Concurrency: requests for a session already being summarized join that run,
+and a run waits for a turn-end generation already reading the session before it
+starts, so there is one generation per session at a time. A run is aborted when
+its last waiting request closes. Settings: `sessionRecapEnabled` off refuses
+every request; `sessionHoverSummaryEnabled` (default on) off refuses only
+`hover` requests. Only `failed` and `empty` start the cooldown: after
+`written` the next request answers `fresh` from the stored summary, and a
+refusal or cancellation spent no model call.
+
+A turn-end run keeps what an on-demand run wrote for the same answer: when its
+own output has no summary (Jev gated the turn to the suggestion, or the model
+left `done` out), it carries the stored summary and recap forward rather than
+writing `summary: null` over them a minute after the card showed them.
+
+The client (`packages/ui/src/lib/sessionSummaryRequest.ts`) remembers the last
+outcome per session and turn (`time.idle`): the card asks by itself once per
+turn, hides the button after a refusal, says when there is nothing to
+summarize, no Small Model, or a failure, and asks again after `cooldown`,
+`capacity` or `cancelled`. A `written` outcome shows "Summarizing" until the
+metadata event brings the summary; if a later write for the turn has none, the
+button comes back.
+
+Runtime parity: web, Electron, hosted mobile and Capacitor reach this route
+through the OpenChamber server. Only the desktop sidebar's hover card calls
+it; phones have no hover card. VS Code has no hover card and no Summarize
+button, and its extension-only runtime runs no session assist.
+
 ## Decisions
+
+### Why the summary is a field of the assist payload and not a sibling
+
+The recap and the summary describe the same turns with the same context, so
+one prompt returns both and one freshness rule retires both. A sibling payload
+would have needed a second model call per turn end or a second freshness rule
+that could disagree with the recap's.
+
+### Why on-demand runs have a cooldown and a global cap
+
+The hover card can ask by itself. Without the cap a pointer drifting down a
+long list could start a model call per row; without the cooldown a card left
+open on a session the model cannot summarize would ask again on every open.
+Two concurrent runs and 30 seconds are guesses sized for a person hovering,
+not measurements.
 
 ### Why malformed attachment text still fails the context read
 
@@ -236,9 +310,12 @@ payloads written by an earlier process; the `time.idle` rule retires those.
 - `packages/ui/src/hooks/useSessionAssist.ts` adds live-status and settings gating.
 - `SessionRecapSpacer` shows the reminder in the reserved gap under the reply.
 - `SessionSuggestionChip` fills the composer; it never sends automatically.
-- Sidebar rows (`SessionNodeItem`, Projects view) show the current recap in
-  the whole-row tooltip under the same freshness rule, hidden while a turn runs
-  and when `sessionRecapEnabled` is off. The sidebar no longer marks open
+- Sidebar rows (`SessionNodeItem`, Projects view) show the current summary in
+  the whole-row hover card (`sessions/SessionHoverCard.tsx`), or the recap when
+  no summary exists, under the same freshness rule, hidden while a turn runs
+  and when `sessionRecapEnabled` is off. Without a current summary the card
+  offers Summarize, and after it has been open for 2.5 seconds asks by itself
+  (`sessionHoverSummaryEnabled`, once per turn). The sidebar no longer marks open
   suggestions; the "In work" block is the sidebar's attention signal.
 
 Web, Electron, hosted mobile, and Capacitor use the server watcher. VS Code's
