@@ -884,7 +884,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // matches, so children spawned from a custom binary path or a test
   // fixture are still recognised as ours. An unrelated recycled process
   // serves a different port under a different binary and matches neither.
-  const commandMatchesGeneration = (command: string, generation: ManagedStoreGeneration) => {
+  const commandMatchesGeneration = (command: string, generation: Pick<ManagedStoreGeneration, 'pid' | 'port' | 'binary'>) => {
     if (!command) return false;
     if (commandIdentifiesOurServer(command, { pid: generation.pid, port: generation.port })) return true;
     const portMatch = command.match(/--port(?:=|\s+)(\d+)/);
@@ -901,7 +901,24 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     return argv0 === binary || argv0 === base || argv0.endsWith(`/${base}`);
   };
 
-  const terminateRecordedOpenCodeProcess = async (pid: number) => {
+  const isOwnedOpenCodeProcessForClose = async (record: Pick<ManagedOpenCodeRecord, 'pid' | 'port' | 'binary'>) => {
+    try {
+      return isOwnedOpenCodePid(record.pid);
+    } catch (error) {
+      console.error(`[OpenCode] managed store read failed while closing pid ${record.pid}: ${error instanceof Error ? error.message : String(error)}`);
+      if (process.platform === 'win32' || !isPidAlive(record.pid)) return false;
+      let owner: number | null = null;
+      try {
+        owner = readProcessOwner(record.pid);
+      } catch {
+        return false;
+      }
+      if (owner !== process.pid && owner !== getHandoffPredecessorPid()) return false;
+      return commandMatchesGeneration(await readRecordedProcessCommand(record.pid), record);
+    }
+  };
+
+  const terminateRecordedOpenCodeProcess = async (pid: number, fallbackRecord?: Pick<ManagedOpenCodeRecord, 'pid' | 'port' | 'binary'>) => {
     // A recorded pid can be recycled onto an unrelated process after ours
     // exits, and signal-0 liveness cannot tell the two apart — so a
     // recorded pid is never signalled on store membership plus liveness
@@ -913,13 +930,22 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     // no signal. Only win32 keeps the old signal-first behavior: `ps` is
     // unavailable there.
     if (process.platform !== 'win32') {
-      const store = readManagedOpenCodeStore(managedPaths.storePath);
-      const generation = store ? generationForPid(store, pid) : null;
+      let storeReadable = true;
+      let generation: Pick<ManagedStoreGeneration, 'pid' | 'port' | 'binary'> | null = null;
+      try {
+        const store = readManagedOpenCodeStore(managedPaths.storePath);
+        generation = store ? generationForPid(store, pid) : null;
+      } catch (error) {
+        storeReadable = false;
+        if (!fallbackRecord) throw error;
+        generation = fallbackRecord;
+        console.error(`[OpenCode] using verified in-memory generation to close pid ${pid} because the managed store could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (!generation) return;
       if (isPidAlive(pid)) {
         const command = await readRecordedProcessCommand(pid);
         if (!commandMatchesGeneration(command, generation)) {
-          if (command) closeGenerationForPid(pid);
+          if (command && storeReadable) closeGenerationForPid(pid);
           return;
         }
       }
@@ -987,8 +1013,9 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     userEnv: withoutSecretEnv(getUserEnvironment()),
   });
 
-  const closeRecordedOpenCodeProcess = async ({ pid }: { pid: number }) => {
-    if (isOwnedOpenCodePid(pid)) await terminateRecordedOpenCodeProcess(pid);
+  const closeRecordedOpenCodeProcess = async (record: ManagedOpenCodeRecord) => {
+    const { pid } = record;
+    if (await isOwnedOpenCodeProcessForClose(record)) await terminateRecordedOpenCodeProcess(pid, record);
     if (!isPidAlive(pid)) await unregisterManagedProcess(pid);
     closeGenerationForPid(pid);
   };
@@ -1102,7 +1129,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       );
     },
     async close() {
-      if (isOwnedOpenCodePid(saved.pid)) await terminateRecordedOpenCodeProcess(saved.pid);
+      if (await isOwnedOpenCodeProcessForClose(saved)) await terminateRecordedOpenCodeProcess(saved.pid, saved);
       if (!isPidAlive(saved.pid)) {
         await unregisterManagedProcess(saved.pid);
         clearManagedStateIfOwned(saved.pid);

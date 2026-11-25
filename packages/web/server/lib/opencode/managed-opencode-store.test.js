@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appendGeneration,
@@ -10,6 +10,7 @@ import {
   MANAGED_OPENCODE_STORE_MAX_BYTES,
   MANAGED_OPENCODE_STORE_VERSION,
   migrateV1StoreToV2,
+  readManagedOpenCodeClaimDir,
   readManagedOpenCodeStore,
   reapManagedOpenCodeStore,
   recordHandoffStep,
@@ -104,6 +105,21 @@ describe('v2 store file', () => {
       fs.unlinkSync(storePath);
       fs.symlinkSync(path.join(root, 'missing-target.json'), storePath);
       expect(() => readManagedOpenCodeStore(storePath)).toThrow(/unreadable or corrupt|missing symlink target/);
+    }
+  });
+
+  it('uses no instance-directory claim hint when an existing store cannot be read', () => {
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(storePath, '{not json');
+    const original = fs.readFileSync(storePath);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      expect(readManagedOpenCodeClaimDir(storePath)).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('without a claim hint'));
+      expect(fs.readFileSync(storePath)).toEqual(original);
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

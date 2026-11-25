@@ -421,6 +421,18 @@ export const currentRecordFromManagedStore = (store) => {
   return null;
 };
 
+// Startup uses this only as an instance-directory reuse hint. If the store is
+// unreadable, start with a fresh per-process directory and leave the protected
+// store untouched; lifecycle recovery will continue to report the read error.
+export const readManagedOpenCodeClaimDir = (storePath) => {
+  try {
+    return currentRecordFromManagedStore(readManagedOpenCodeStore(storePath))?.instanceDir ?? null;
+  } catch (error) {
+    console.error(`[OpenCode] managed store read failed while choosing an instance directory; starting without a claim hint: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+};
+
 // Length of a trailing incomplete UTF-8 sequence in buffer[0, length), i.e. a
 // valid lead byte followed by fewer continuation bytes than it declares.
 // Invalid bytes (lone continuations, overlong leads 0xC0/0xC1, never-valid

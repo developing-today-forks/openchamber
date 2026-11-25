@@ -2126,6 +2126,44 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     }
   });
 
+  it('closes an adopted process from verified in-memory identity when the store becomes unreadable', async () => {
+    const pid = 12345;
+    let alive = true;
+    const realKill = process.kill.bind(process);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === pid || target === -pid) {
+        if (signal === 0) {
+          if (alive) return true;
+          throw Object.assign(new Error('process exited'), { code: 'ESRCH' });
+        }
+        if (target === pid) alive = false;
+        return true;
+      }
+      return realKill(target, signal);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    recordedProcessCommand = OWNED_PS_OUTPUT;
+
+    try {
+      const { dataDir } = await startFirstRuntime(pid);
+      const paths = resolveManagedOpenCodeStorePaths(dataDir);
+      const second = createRuntime({ dataDir, readProcessOwner: () => process.pid });
+      const adopted = await second.startOpenCode();
+      const corruptStore = Buffer.from('{invalid json');
+      fsSync.writeFileSync(paths.storePath, corruptStore);
+
+      await adopted.close();
+
+      expect(alive).toBe(false);
+      expect(fsSync.readFileSync(paths.storePath)).toEqual(corruptStore);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('using verified in-memory generation'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('v2 store sync failed'));
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
   it('closes a spawned OpenCode when its live generation cannot be written', async () => {
     const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-store-write-failure-test-'));
     tempDataDirs.push(dataDir);
