@@ -30,6 +30,7 @@ const {
   appendGeneration,
   createEmptyManagedOpenCodeStore,
   currentRecordFromManagedStore,
+  MANAGED_OPENCODE_STORE_MAX_BYTES,
   readManagedOpenCodeStore,
   resolveManagedOpenCodeStorePaths,
   writeManagedOpenCodeStore,
@@ -198,7 +199,7 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
       execFileMock(...args.slice(0, 3), (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }));
     }),
     recordStartupPerformanceEvent: recordStartupPerformanceMock,
-  ensureOpencodeCliEnv: vi.fn(),
+    ensureOpencodeCliEnv: vi.fn(() => 'opencode'),
     ensureLocalOpenCodeServerPassword: vi.fn(async () => 'password'),
     resolveManagedOpenCodeLaunchSpec: vi.fn((binary) => ({ binary, args: [], wrapperType: null })),
     setOpenCodePort: vi.fn((port) => {
@@ -1713,6 +1714,34 @@ describe('OpenCode lifecycle', () => {
     await server.close();
   });
 
+  it('stores the PATH fallback binary when the binary resolver returns null', async () => {
+    delete process.env.OPENCODE_BINARY;
+    const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-path-fallback-test-'));
+    tempDataDirs.push(dataDir);
+    const child = createMockChild();
+    const resolveLaunchSpec = vi.fn((binary) => ({ binary, args: [], wrapperType: null }));
+    spawnMock.mockImplementationOnce(() => {
+      queueMicrotask(() => child.stdout.emit('data', 'opencode server listening on http://127.0.0.1:45678\n'));
+      return child;
+    });
+    const runtime = createRuntime({
+      dataDir,
+      ensureOpencodeCliEnv: vi.fn(() => null),
+      resolveManagedOpenCodeLaunchSpec: resolveLaunchSpec,
+    });
+
+    const server = await runtime.startOpenCode();
+    const { binary } = unwrapLaunch(spawnMock.mock.calls[0][0], spawnMock.mock.calls[0][1]);
+    const paths = resolveManagedOpenCodeStorePaths(dataDir);
+    const persisted = currentRecordFromManagedStore(readManagedOpenCodeStore(paths.storePath));
+
+    expect(resolveLaunchSpec).toHaveBeenCalledWith('opencode');
+    expect(binary).toBe('opencode');
+    expect(persisted?.binary).toBe(binary);
+
+    await server.close();
+  });
+
   it('adds managed OpenChamber tool environment without allowing it to replace launch invariants', async () => {
     const child = createMockChild();
     spawnMock.mockImplementationOnce(() => {
@@ -1996,6 +2025,13 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
   };
   // Never a live pid, so a replace path cannot signal an unrelated process.
   const DEAD_PID = 2147483646;
+  const mockLivePid = (pid) => {
+    const realKill = process.kill.bind(process);
+    return vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === pid || target === -pid) return true;
+      return realKill(target, signal);
+    });
+  };
 
   // The v2 store is the only state record since #2423: a previous server is
   // simulated by the store its runtime wrote, and ownership of a recorded
@@ -2026,6 +2062,196 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     spawnMock.mockClear();
     return { dataDir, server };
   };
+
+  const createNearCapStore = (dataDir) => {
+    const storePath = resolveManagedOpenCodeStorePaths(dataDir).storePath;
+    const serialize = (generations) => `${JSON.stringify({
+      ...createEmptyManagedOpenCodeStore(),
+      generations,
+    }, null, 2)}\n`;
+    const liveGeneration = (generationId) => ({
+      generation_id: generationId,
+      pid: process.pid,
+      port: 45678,
+      binary: `/old/${'x'.repeat(1800)}`,
+      args: ['serve', '--hostname', '127.0.0.1'],
+      fingerprint: 'old-fingerprint',
+      state: 'active',
+      started_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    });
+    const liveGenerations = [];
+    for (let generationId = 1; generationId <= 500; generationId += 1) {
+      const candidate = liveGeneration(generationId);
+      if (Buffer.byteLength(serialize([...liveGenerations, candidate])) > MANAGED_OPENCODE_STORE_MAX_BYTES - 128) break;
+      liveGenerations.push(candidate);
+    }
+    const store = { ...createEmptyManagedOpenCodeStore(), generations: liveGenerations };
+    writeManagedOpenCodeStore(storePath, store);
+    const bytes = fsSync.readFileSync(storePath);
+    expect(bytes.length).toBeLessThanOrEqual(MANAGED_OPENCODE_STORE_MAX_BYTES);
+    expect(bytes.length).toBeGreaterThan(MANAGED_OPENCODE_STORE_MAX_BYTES - 4096);
+    return { storePath, liveGenerations, bytes };
+  };
+
+  it('preserves an over-cap store and skips the retired v1 migration', async () => {
+    const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-over-cap-store-test-'));
+    tempDataDirs.push(dataDir);
+    const paths = resolveManagedOpenCodeStorePaths(dataDir);
+    fsSync.mkdirSync(path.dirname(paths.storePath), { recursive: true });
+    const oversizedStore = Buffer.alloc(MANAGED_OPENCODE_STORE_MAX_BYTES + 1, 0x20);
+    fsSync.writeFileSync(paths.storePath, oversizedStore);
+    const legacyState = JSON.stringify({
+      version: 1,
+      pid: 4242,
+      port: 45678,
+      binary: 'opencode',
+      fingerprint: 'legacy-fingerprint',
+      password: 'legacy-password',
+      agentToolToken: null,
+      args: [],
+    });
+    fsSync.writeFileSync(paths.statePath, legacyState);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const runtime = createRuntime({ dataDir, ensureOpencodeCliEnv: vi.fn(() => 'opencode') });
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('overflow'));
+      await expect(runtime.startOpenCode()).rejects.toThrow(/overflow/);
+      expect(fsSync.readFileSync(paths.storePath)).toEqual(oversizedStore);
+      expect(fsSync.readFileSync(paths.statePath, 'utf8')).toBe(legacyState);
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('closes an adopted process from verified in-memory identity when the store becomes unreadable', async () => {
+    const pid = 12345;
+    let alive = true;
+    const realKill = process.kill.bind(process);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === pid || target === -pid) {
+        if (signal === 0) {
+          if (alive) return true;
+          throw Object.assign(new Error('process exited'), { code: 'ESRCH' });
+        }
+        if (target === pid) alive = false;
+        return true;
+      }
+      return realKill(target, signal);
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    recordedProcessCommand = OWNED_PS_OUTPUT;
+
+    try {
+      const { dataDir } = await startFirstRuntime(pid);
+      const paths = resolveManagedOpenCodeStorePaths(dataDir);
+      const second = createRuntime({ dataDir, readProcessOwner: () => process.pid });
+      const adopted = await second.startOpenCode();
+      const corruptStore = Buffer.from('{invalid json');
+      fsSync.writeFileSync(paths.storePath, corruptStore);
+
+      await adopted.close();
+
+      expect(alive).toBe(false);
+      expect(fsSync.readFileSync(paths.storePath)).toEqual(corruptStore);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('using verified in-memory generation'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('v2 store sync failed'));
+    } finally {
+      killSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('closes a spawned OpenCode when its live generation cannot be written', async () => {
+    const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-store-write-failure-test-'));
+    tempDataDirs.push(dataDir);
+    const { storePath, liveGenerations, bytes: previousBytes } = createNearCapStore(dataDir);
+
+    const children = [];
+    spawnMock.mockImplementation((command, args) => {
+      const child = createMockChild();
+      children.push(child);
+      queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
+      return child;
+    });
+    globalThis.fetch = vi.fn(async () => Response.json({ version: '2.0.19' }));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const runtime = createRuntime({
+        dataDir,
+        ensureOpencodeCliEnv: vi.fn(() => `/new/${'y'.repeat(10000)}`),
+        resolveManagedOpenCodeLaunchSpec: vi.fn((binary) => ({ binary, args: [], wrapperType: null })),
+        checkOpenCodeBinary: async () => '2.0.19',
+        readProcessOwner: () => process.pid,
+      });
+      await expect(runtime.startOpenCode()).rejects.toThrow(/write limit/);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('write limit'));
+      expect(fsSync.readFileSync(storePath)).toEqual(previousBytes);
+      expect(readManagedOpenCodeStore(storePath)?.generations).toHaveLength(liveGenerations.length);
+      expect(runtime.testState.isOpenCodeReady).toBe(true);
+      expect(runtime.testState.openCodePort).toBe(45678);
+      expect(runtime.testState.openCodeBaseUrl).toBeNull();
+      expect(runtime.testState.openCodeProcess?.pid).toBe(process.pid);
+      expect(children.length).toBeGreaterThan(0);
+      expect(children.every((child) => child.kill.mock.calls.length > 0)).toBe(true);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not restore a predecessor that exits during a failed handoff', async () => {
+    const dataDir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'opencode-dead-predecessor-test-'));
+    tempDataDirs.push(dataDir);
+    const { storePath } = createNearCapStore(dataDir);
+    let predecessorAlive = true;
+    const realKill = process.kill.bind(process);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === process.pid && (signal === 0 || signal === undefined)) {
+        if (predecessorAlive) return true;
+        throw Object.assign(new Error('predecessor exited'), { code: 'ESRCH' });
+      }
+      return realKill(pid, signal);
+    });
+    const children = [];
+    spawnMock.mockImplementation((command, args) => {
+      const child = createMockChild();
+      const killChild = child.kill;
+      child.kill = vi.fn((signal) => {
+        predecessorAlive = false;
+        return killChild(signal);
+      });
+      children.push(child);
+      queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
+      return child;
+    });
+    globalThis.fetch = vi.fn(async () => Response.json({ version: '2.0.19' }));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const runtime = createRuntime({
+        dataDir,
+        ensureOpencodeCliEnv: vi.fn(() => `/new/${'y'.repeat(10000)}`),
+        resolveManagedOpenCodeLaunchSpec: vi.fn((binary) => ({ binary, args: [], wrapperType: null })),
+        checkOpenCodeBinary: async () => '2.0.19',
+        readProcessOwner: () => process.pid,
+      });
+      const server = await runtime.startOpenCode();
+      const persisted = readManagedOpenCodeStore(storePath);
+      expect(children).toHaveLength(2);
+      expect(server.pid).toBe(children[1].pid);
+      expect(currentRecordFromManagedStore(persisted)?.pid).toBe(children[1].pid);
+      expect(persisted.generations.some((entry) => entry.pid === process.pid && entry.state !== 'closed')).toBe(false);
+      expect(runtime.testState.isOpenCodeReady).toBe(true);
+    } finally {
+      killSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 
   it('adopts a healthy OpenCode whose recorded pid, port and launch config match', async () => {
     delete process.env.OPENCODE_BINARY;
@@ -2186,13 +2412,20 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
       instance_dir: null,
     });
     ensureOpencodeCliEnv.mockImplementation(() => '/opt/other/opencode');
+    const successorPid = 1900000001;
+    const killSpy = mockLivePid(successorPid);
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
+      child.pid = successorPid;
       queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
       return child;
     });
 
-    await expect(runtime.reloadOpenCode()).resolves.toBe(true);
+    try {
+      await expect(runtime.reloadOpenCode()).resolves.toBe(true);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('leaves an orphan another server claimed first', async () => {
@@ -2231,8 +2464,11 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
     });
     spawnSyncMock.mockImplementation((cmd) => ({ stdout: cmd === 'ps' ? OWNED_PS_OUTPUT : '' }));
     globalThis.fetch = vi.fn(async () => Response.json({}));
+    const successorPid = 1900000002;
+    const killSpy = mockLivePid(successorPid);
     spawnMock.mockImplementationOnce((command, args) => {
       const child = createMockChild();
+      child.pid = successorPid;
       queueMicrotask(() => child.stdout.emit('data', readyLineFor(command, args)));
       return child;
     });
@@ -2242,11 +2478,15 @@ describe('managed OpenCode adoption across OpenChamber restarts', () => {
       ensureOpencodeCliEnv: vi.fn(() => '/opt/new/opencode'),
       readProcessOwner: (pid) => (pid === foreign.pid ? process.ppid : process.pid),
     });
-    await second.startOpenCode();
+    try {
+      await second.startOpenCode();
 
-    const pids = drainingPids(dataDir);
-    expect(pids).toContain(foreign.pid);
-    expect(pids.length).toBeGreaterThan(1);
+      const pids = drainingPids(dataDir);
+      expect(pids).toContain(foreign.pid);
+      expect(pids.length).toBeGreaterThan(1);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('registers the draining OpenCode it inherits under itself', async () => {
