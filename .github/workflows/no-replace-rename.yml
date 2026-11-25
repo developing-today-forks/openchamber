@@ -1,0 +1,60 @@
+name: native no-replace rename
+
+# Builds the #2573 no-replace directory rename addon and proves the
+# no-replace behavior on each supported OS. Linux, macOS, and Windows each
+# have their own primitive (renameat2, renamex_np, MoveFile), so the
+# real-filesystem race regression must run where the primitive runs.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/web/server/native/no-replace-rename/**'
+      - 'packages/web/server/lib/shared/atomic-rename.*'
+      - 'packages/web/server/lib/shared/no-replace-dir.*'
+      - 'packages/web/server/lib/fs/routes.*'
+      - 'packages/electron/scripts/packaged-app-contents.*'
+      - '.github/workflows/no-replace-rename.yml'
+  push:
+    branches: ['main']
+    paths:
+      - 'packages/web/server/native/no-replace-rename/**'
+      - 'packages/web/server/lib/shared/atomic-rename.*'
+      - 'packages/web/server/lib/shared/no-replace-dir.*'
+      - 'packages/web/server/lib/fs/routes.*'
+      - 'packages/electron/scripts/packaged-app-contents.*'
+      - '.github/workflows/no-replace-rename.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-24.04', 'macos-15', 'windows-2022']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        if: runner.os == 'Windows'
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the native no-replace rename addon
+        run: node packages/web/server/native/no-replace-rename/build.mjs --strict
+      - name: Assert the prebuild exists for this platform
+        shell: bash
+        run: test -f "packages/web/server/native/no-replace-rename/prebuilds/${{ runner.os == 'Windows' && 'win32' || runner.os == 'macOS' && 'darwin' || 'linux' }}-${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}/no-replace-rename.node"
+      - name: Focused no-replace rename tests
+        working-directory: packages/web
+        run: bunx vitest run server/lib/shared/atomic-rename.test.js server/lib/shared/no-replace-dir.test.js server/lib/fs/routes.test.js
+      - name: Packaged-app contents check
+        run: node --test packages/electron/scripts/packaged-app-contents.test.cjs

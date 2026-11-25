@@ -55,7 +55,7 @@
     "test:linux-desktop": "node --test ./linux-autostart.test.mjs ./linux-desktop-entry.test.mjs && node ./scripts/smoke-linux-app-discovery.mjs && node ./scripts/smoke-path-open-utils.mjs",
     "updater:e2e:fixture": "node ./scripts/updater-e2e-fixture.mjs",
     "verify:update-manifest": "node ./scripts/verify-update-manifest.mjs",
-    "package": "bun run build:web-assets && bun run prepare:opencode-server && bun run prepare:ripgrep && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
+    "package": "bun run build:web-assets && bun run prepare:opencode-server && bun run prepare:ripgrep && node ../web/server/native/no-replace-rename/build.mjs --strict && bun run bundle:main && bun run rebuild:native && node ./scripts/package.mjs",
     "finalize:latest-yml": "node ./scripts/finalize-latest-yml.mjs",
     "type-check": "node --check ./entry.mjs && node --check ./early-startup.mjs && node --check ./main.mjs && node --check ./preload.mjs && node --check ./browser-panel-preload.cjs",
     "lint": "oxlint -c ../../oxlint.config.ts --report-unused-disable-directives ."
@@ -66,6 +66,7 @@
     "asarUnpack": [
       "node_modules/7zip-bin/win/**/*",
       "node_modules/@openchamber/web/build/server/built-in-extensions/**/*",
+      "node_modules/@openchamber/web/build/server/native/no-replace-rename/prebuilds/**/*",
       "node_modules/@openchamber/web/build/server/lib/git/credential-helper.js",
       "node_modules/@openchamber/web/build/server/lib/git/credential-helper-runtime.js",
       "node_modules/@openchamber/web/build/server/lib/git/ssh-wrapper.js",

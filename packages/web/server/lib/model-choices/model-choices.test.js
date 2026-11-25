@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createModelChoiceActions } from '../openchamber-control/model-choice-actions.js';
 import { OPENCHAMBER_AGENT_TOOL_ACTIONS } from '../openchamber-control/actions.js';
-import { buildModelChoiceNotes, buildModelChoiceSuggestions, goalWriterSuggestionId } from './notes.js';
+import { buildModelChoiceNotes, buildModelChoiceSuggestions, goalWriterSuggestionId, MAX_ROUTING_NOTES, MAX_ROUTING_NOTES_CHARS, MAX_ROUTING_NOTE_CHARS, routingNoteTexts } from './notes.js';
 import { registerModelChoiceRoutes } from './routes.js';
 import { createModelChoiceService } from './service.js';
 import { createModelChoiceStore, MAX_MODEL_CHOICE_DECISIONS, MAX_MODEL_CHOICE_EVENTS, MODEL_CHOICES_MAX_BYTES, MODEL_CHOICE_RETENTION_MS } from './store.js';
@@ -253,6 +253,31 @@ describe('model choice suggestions', () => {
   });
 });
 
+describe('routing note texts (#147)', () => {
+  const note = (text) => ({ text });
+
+  it('keeps the strongest notes only, in the summarizer order', () => {
+    const notes = Array.from({ length: MAX_ROUTING_NOTES + 2 }, (_, index) => note(`note ${index}`));
+    expect(routingNoteTexts(notes)).toEqual(notes.slice(0, MAX_ROUTING_NOTES).map((entry) => entry.text));
+    expect(routingNoteTexts([])).toEqual([]);
+  });
+
+  it('cuts a long note at a word boundary to the per-note cap', () => {
+    const text = Array.from({ length: 60 }, () => 'choice').join(' ');
+    const [capped] = routingNoteTexts([note(text)]);
+    expect(capped.length).toBeLessThanOrEqual(MAX_ROUTING_NOTE_CHARS);
+    expect(text.startsWith(capped)).toBe(true);
+    expect(text[capped.length]).toBe(' ');
+  });
+
+  it('stops before the joined block would cross the total cap', () => {
+    const text = 'x'.repeat(190);
+    const texts = routingNoteTexts(Array.from({ length: 6 }, () => note(text)));
+    expect(texts).toHaveLength(4);
+    expect(texts.join('\n').length).toBeLessThanOrEqual(MAX_ROUTING_NOTES_CHARS);
+  });
+});
+
 describe('model choice service', () => {
   it('records nothing while recording is off, and records by default', async () => {
     const off = makeService({ modelChoiceRecordingEnabled: false });
@@ -262,6 +287,24 @@ describe('model choice service', () => {
     const on = makeService({});
     await expect(on.service.record(choice())).resolves.toEqual({ recorded: true });
     expect((await on.service.summary()).total).toBe(1);
+  });
+
+  it('feeds the notes to routing while recording is on, and none while it is off', async () => {
+    const { service, current } = makeService({});
+    await service.record(choice());
+    await service.record(choice());
+    await service.record(choice());
+    await expect(service.routingNotes()).resolves.toEqual([
+      'picks low effort on claude-opus for goal specs (3 of 3 times), usually over high effort on claude-opus, mostly for long inputs',
+    ]);
+    current.modelChoiceRecordingEnabled = false;
+    await expect(service.routingNotes()).resolves.toEqual([]);
+  });
+
+  it('feeds nothing to routing before a choice repeats into a note', async () => {
+    const { service } = makeService({});
+    await service.record(choice());
+    await expect(service.routingNotes()).resolves.toEqual([]);
   });
 
   it('offers no suggestion while recording is off', async () => {

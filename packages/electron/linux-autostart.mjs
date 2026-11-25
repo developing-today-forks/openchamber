@@ -3,6 +3,13 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { z } from 'zod';
+
+const nonEmptyTrimmedString = (value) => {
+  const parsed = z.string().safeParse(value);
+  return parsed.success ? parsed.data.trim() : '';
+};
+
 const AUTOSTART_FILE_NAME = 'openchamber.desktop';
 const MANAGED_KEY = 'X-OpenChamber-Managed';
 
@@ -10,9 +17,8 @@ const resolveLinuxAutostartDirectory = ({
   env = process.env,
   homeDir = os.homedir(),
 } = {}) => {
-  const configHome = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim()
-    ? env.XDG_CONFIG_HOME.trim()
-    : path.join(homeDir || os.homedir(), '.config');
+  const configHome = nonEmptyTrimmedString(env.XDG_CONFIG_HOME)
+    || path.join(homeDir || os.homedir(), '.config');
   return path.join(configHome, 'autostart');
 };
 
@@ -23,7 +29,7 @@ export const resolveLinuxLaunchExecutable = ({
   env = process.env,
   execPath = process.execPath,
 } = {}) => {
-  const appImage = typeof env.APPIMAGE === 'string' ? env.APPIMAGE.trim() : '';
+  const appImage = nonEmptyTrimmedString(env.APPIMAGE);
   if (appImage && path.isAbsolute(appImage)) {
     return appImage;
   }
@@ -146,8 +152,9 @@ export const buildLinuxAutostartDesktopEntry = ({
 } = {}) => {
   const launchPath = executable || resolveLinuxLaunchExecutable({ env, execPath });
   const args = [quoteDesktopExecArg(launchPath)];
-  if (typeof backgroundArg === 'string' && backgroundArg.trim()) {
-    args.push(backgroundArg.trim());
+  const background = nonEmptyTrimmedString(backgroundArg);
+  if (background) {
+    args.push(background);
   }
   const managedKeys = new Map([
     ['Type', 'Application'],

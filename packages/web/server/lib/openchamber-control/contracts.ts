@@ -143,6 +143,12 @@ export interface ControlInput {
   create?: unknown;
   projectLabel?: unknown;
   projectSettings?: unknown;
+  setupWorktree?: unknown;
+  teardownWorktree?: unknown;
+  setupWorktreeWait?: unknown;
+  setupTarget?: unknown;
+  projectAction?: unknown;
+  actionId?: unknown;
 }
 
 export interface ActionContext {

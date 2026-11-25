@@ -71,6 +71,23 @@ The caller passes its own rename function, so a store that receives
 the first attempt. Temp-file cleanup stays with the caller, which owns the
 temp path.
 
+`renameWithoutReplace(ops, source, destination, sourceKind)` commits a
+destination name without replacing a racing one (#2375, #2573): link(2) for
+a regular file (on Windows a hard link likewise refuses an existing
+destination), symlink(2) recreated at the destination for a symbolic link,
+and the native no-replace directory rename for a directory
+(`renameDirectoryNoReplace` from `no-replace-dir.ts`: `renameat2` with
+`RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS,
+`MoveFileWithProgressW` without `MOVEFILE_REPLACE_EXISTING` on Windows;
+see `server/native/no-replace-rename/DOCUMENTATION.md`). A rename whose
+destination is the source itself (a case-only rename) keeps a plain rename,
+which replaces a file with itself and destroys nothing. If removing the
+source name fails after the destination is committed, the destination is
+removed again when it still names what this call created, so a failed
+commit leaves the source as the only name. A directory rename without a
+loadable native prebuild throws an `ENOSYS`-coded error instead of falling
+back to check-then-rename.
+
 ## What stays out
 
 These look adjacent but are not the same predicate, so each keeps its private
@@ -346,7 +363,7 @@ passkeys.
 | Linear session status (`linear/status.js` `readRecords`) | sync | none — covered-by-open-issue #1621 | malformed → coded `MALFORMED` throw, in place; records individually dropped | covered-by-open-issue (#1621, bound) |
 | model choices (`model-choices.json` — `model-choices/store.js` `read`) | async | none — covered-by-open-issue #1610 | malformed → coded store error, never an empty history (a read-modify-write never seeds from it) | covered-by-open-issue (#1610, bound) |
 | relay identity (`relay-identity.json` — `relay/key-store.js` `readStore`) | async | none — covered-by-open-issue #1614 | excepted: throw-and-stop, a human repairs the file (named under "What stays out" in the durable-store section above) | covered-by-open-issue (#1614, bound); disposition excepted-with-reason |
-| managed OpenCode state (`store.json` — `opencode/managed-opencode-state.js` `readManagedOpenCodeStore`; the retired v1 pair `state.json` / `draining.json` is read by `readManagedOpenCodeState` / `readDrainingOpenCodeRecords` as migration input only, #2423) | sync | bound-complete (#2423): handle-judged `readBoundedJsonFileSync`, 256 KiB cap for the store, 64 KiB caps for the v1 migration reads | read-as-empty hazard: any failure → null / [], no distinction between missing and malformed | covered-by-open-issue (#1622, disposition); bound complete for the store read |
+| managed OpenCode state (`store.json` — `opencode/managed-opencode-state.js` `readManagedOpenCodeStore`; the retired v1 pair `state.json` / `draining.json` is read by `readManagedOpenCodeState` / `readDrainingOpenCodeRecords` as migration input only, #2423) | sync | handle-judged `readBoundedFileSync` with no-follow where supported, a dangling-link check, and a 256 KiB cap for the v2 store; the v1 migration readers use `readBoundedJsonFileSync` with 64 KiB caps | missing v2 store → `null` and v1 migration; an existing malformed, non-regular, unreadable, or oversized v2 store throws and prevents migration. Required generation/handoff write failures abort startup; housekeeping writes remain best-effort. | conforming-on-both-halves |
 | merged settings, sync (`settings.json` + `preferences.json` — `settings/settings-files.ts` `readMergedSettingsSync`) | sync | none — covered-by-open-issue #1631 | read-as-empty by design on a read-only hot path (missing or unreadable contributes nothing); the settings family carries its own migration semantics (see the durable-store "What stays out" note) | covered-by-open-issue (#1631, bound) |
 | skills installed sources (`skills-installed-sources.json` — `skills-catalog/installed-sources.js`) | sync | none — covered-by-open-issue #1627 | split: the lenient reader reads malformed as an empty map (read-only provenance badge); the strict for-update reader is three-state in place — missing → empty, malformed → coded `MALFORMED` throw (#936) | covered-by-open-issue (#1627, bound) |
 | skills disk cache (`skills-catalog/disk-cache.js` `readDiskCache`) | sync | none — covered-by-open-issue #1627 | cache semantics: missing / unreadable / malformed → null (a cache miss) | covered-by-open-issue (#1627, bound); disposition excepted-with-reason (cache) |

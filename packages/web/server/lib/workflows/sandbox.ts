@@ -4,6 +4,7 @@ import { wrapWorkflowBody } from './script.js';
 import type { WorkflowAgent } from './store.js';
 
 const WORKER_HEAP_MB = 256;
+export const WORKFLOW_EXECUTION_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_FAN_OUT = 4096;
 export const MAX_CALL_NAME_LENGTH = 120;
 
@@ -17,6 +18,7 @@ interface SandboxOptions {
   body: string;
   args?: unknown;
   filename: string;
+  timeoutMs?: number;
   onAgent: (call: WorkflowAgentCall) => Promise<WorkflowAgent['result']>;
   onPhase?: (title: string) => void;
   onLog?: (message: string) => void;
@@ -42,6 +44,9 @@ globalThis.Date = new Proxy(RealDate, {
   construct(target, values) {
     if (values.length === 0) throw new Error('new Date() without a value' + replayNote);
     return new target(...values);
+  },
+  apply() {
+    throw new Error('Date()' + replayNote);
   },
   get(target, property) {
     if (property === 'now') return () => { throw new Error('Date.now()' + replayNote); };
@@ -174,7 +179,7 @@ parentPort.on('message', (message) => {
 
 const stoppedError = () => Object.assign(new Error('The workflow was stopped'), { stopped: true });
 
-export const runWorkflowSandbox = ({ body, args, filename, onAgent, onPhase = () => {}, onLog = () => {} }: SandboxOptions) => {
+export const runWorkflowSandbox = ({ body, args, filename, timeoutMs = WORKFLOW_EXECUTION_TIMEOUT_MS, onAgent, onPhase = () => {}, onLog = () => {} }: SandboxOptions) => {
   const worker = new Worker(WORKER_SOURCE, {
     eval: true,
     env: {},
@@ -186,11 +191,16 @@ export const runWorkflowSandbox = ({ body, args, filename, onAgent, onPhase = ()
     settle = (outcome) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       void worker.terminate();
       if (outcome.ok) resolve(outcome.value);
       else reject(outcome.error);
     };
   });
+  const timeout = setTimeout(() => {
+    settle({ ok: false, error: new Error(`Workflow execution timed out after ${timeoutMs / 1000} seconds`) });
+  }, timeoutMs);
+  timeout.unref?.();
 
   const replyToAgentCall = async (message: Extract<WorkerMessage, { type: 'call' }>) => {
     try {

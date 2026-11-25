@@ -21,7 +21,12 @@ export const resolveControlTimeoutMs = (input: ControlInput | null | undefined, 
   return needsCheckoutPreparation ? waitTimeoutMs + WORKTREE_PROVISION_TIMEOUT_MS : waitTimeoutMs;
 };
 
-export const requestControlAction = async (port: number, action: string, input: ControlInput, options: JsonRequestOptions = {}) => {
+export type ControlActionDependencies = {
+  requestJson?: typeof requestJson;
+};
+
+export const requestControlAction = async (port: number, action: string, input: ControlInput, options: JsonRequestOptions = {}, deps: ControlActionDependencies = {}) => {
+  const sendRequest = deps.requestJson ?? requestJson;
   const timeoutMs = resolveControlTimeoutMs(input, options, action);
   const requestOptions: JsonRequestOptions = {
     ...options,
@@ -29,7 +34,7 @@ export const requestControlAction = async (port: number, action: string, input: 
     body: JSON.stringify({ action, input }),
   };
   if (timeoutMs) requestOptions.timeoutMs = timeoutMs;
-  const { response, body } = await requestJson(port, '/api/openchamber/control', requestOptions);
+  const { response, body } = await sendRequest(port, '/api/openchamber/control', requestOptions);
   if (response?.ok) return body;
   const isPartial = body?.partial === true;
   const partialSessionId = isPartial ? asNonEmptyString(body?.sessionId) : null;

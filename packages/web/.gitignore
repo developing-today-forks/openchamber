@@ -2,3 +2,6 @@ server/prompt-templates.js
 prompt-enhancer-config.json
 test-results/
 .cache/
+
+# Native no-replace rename prebuilds are compiled locally (#2573).
+server/native/no-replace-rename/prebuilds/**/*.node

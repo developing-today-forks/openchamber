@@ -10,6 +10,7 @@ import {
   startSessionLoadPerformanceEvent,
 } from "./session-load-performance"
 
+// SAFETY: the fixture carries the fields the loader reads on a message record: id, sessionID, role, and time.created on info, and id, messageID, sessionID, type, and text on the text part.
 const createRecord = (sessionID: string, id = "msg_1", created = 1, role: Message["role"] = "user") => ({
   info: { id, sessionID, role, time: { created } } as Message,
   parts: [{ id: `part_${id}`, messageID: id, sessionID, type: "text", text: "hello" }] as Part[],
@@ -559,6 +560,7 @@ describe("SessionMessageLoader", () => {
     // 10s, the server recorded it at 1s and its reply at 1.5s.
     const prompt = createRecord("session-skew", "msg_prompt", 10_000)
     const serverPrompt = createRecord("session-skew", "msg_prompt", 1_000)
+    // SAFETY: the fixture carries the fields the tail refresh reads on this record: id, sessionID, role, and time.created and time.completed on info, and id, messageID, sessionID, type, and text on the text part.
     const reply = {
       info: { id: "msg_reply", sessionID: "session-skew", role: "assistant", time: { created: 1_500, completed: 2_000 } } as Message,
       parts: [{ id: "part_reply", messageID: "msg_reply", sessionID: "session-skew", type: "text", text: "answer" }] as Part[],
@@ -670,10 +672,12 @@ describe("SessionMessageLoader", () => {
     })
     const target = { directory: "/repo", sessionID: "session-a" }
     const store = childStores.ensureChild(target.directory, { bootstrap: false })
+    // SAFETY: the cached fixture carries id, sessionID, role, and time.created, the fields the store reads to hold a message. The expectations below check the record survives the failed load by id.
     store.setState({ message: { [target.sessionID]: [{ id: "cached", sessionID: target.sessionID, role: "user", time: { created: 0 } } as Message] } })
 
     await loader.ensure(target, { force: true })
     expect(loader.getSnapshot(target).status).toBe("error")
+    // SAFETY: the snapshot error is the error this test's adapter threw through failure(), an Error with a status property assigned, as the helper above documents.
     expect((loader.getSnapshot(target).error as Error & { status?: number }).status).toBe(400)
     expect(store.getState().message[target.sessionID]?.[0]?.id).toBe("cached")
 
@@ -690,6 +694,7 @@ describe("SessionMessageLoader", () => {
 
     await loader.ensure(target, { force: true })
 
+    // SAFETY: the snapshot error is the error this test's adapter threw through failure(), an Error with a status property assigned, as the helper above documents.
     expect((loader.getSnapshot(target).error as Error & { status?: number }).status).toBe(0)
     loader.dispose()
     childStores.disposeAll()
@@ -743,6 +748,7 @@ describe("SessionMessageLoader", () => {
 
   test("reports retries and every downloaded initial expansion record", async () => {
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    // SAFETY: the stub carries the window members the diagnostics path touches: location.search and localStorage.getItem for the flag check. The tracker attaches its event buffer to this same object, and the test reads it back below.
     const diagnosticWindow = {
       location: { search: "" },
       localStorage: {
@@ -758,6 +764,7 @@ describe("SessionMessageLoader", () => {
       if (calls === 1) return failure(503, "unavailable")
       if (calls === 2) {
         const assistant = createRecord(target.sessionID, "msg_assistant")
+        // SAFETY: assistant.info comes from createRecord above, so the spread carries the full fixture shape and only role changes.
         assistant.info = { ...assistant.info, role: "assistant" } as Message
         return response([assistant], "older")
       }
@@ -801,7 +808,10 @@ const createHistoryServer = (sessionID: string) => {
     for (let index = 0; index < count; index += 1) {
       const position = records.length
       const record = createRecord(sessionID, `msg_${String(position).padStart(5, "0")}`, position + 1)
-      if (position % promptEvery !== 0) record.info = { ...record.info, role: "assistant", time: { created: position + 1, completed: position + 1 } } as Message
+      if (position % promptEvery !== 0) {
+        // SAFETY: record.info comes from createRecord above, so the spread carries the full fixture shape and only role and time change.
+        record.info = { ...record.info, role: "assistant", time: { created: position + 1, completed: position + 1 } } as Message
+      }
       records.push(record)
     }
   }
@@ -961,6 +971,7 @@ describe("cached transcripts after a stream gap", () => {
     server.append(40, 4)
     // The cached tail is a reply stamped by a clock far ahead.
     const skewed = server.records[39]
+    // SAFETY: skewed.info comes from a createRecord fixture held by the server, so the spread carries the full fixture shape and only time changes.
     skewed.info = { ...skewed.info, time: { created: 1_000_000_000, completed: 1_000_000_000 } } as Message
     let injectLive = false
     const live = createRecord(target.sessionID, "msg_live", 5)
@@ -1152,6 +1163,7 @@ describe("cold history window", () => {
 describe("session load performance diagnostics", () => {
   test("rejects unknown raw labels and preserves approved input counts", () => {
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+    // SAFETY: the stub carries localStorage.getItem, the window member the diagnostics flag check touches. The tracker attaches its event buffer to this same object, and the test reads it back below.
     const diagnosticWindow = {
       localStorage: {
         getItem: (key: string) => key === "openchamber_session_load_perf" ? "1" : null,

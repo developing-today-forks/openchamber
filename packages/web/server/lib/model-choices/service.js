@@ -1,13 +1,15 @@
 /**
  * The model choice history as the routes and the agent tool use it: record a
  * choice while recording is on, read the notes and suggestions, answer a
- * suggestion, clear everything.
+ * suggestion, clear everything. The routing runtime reads the notes through
+ * here too (`routingNotes`), so the recording switch governs that feed in
+ * the same place it governs recording.
  *
  * Recording follows `modelChoiceRecordingEnabled` (on unless set to false),
  * read here for every choice: the UI also stops sending while it is off, but
  * the server is where the switch holds.
  */
-import { buildModelChoiceNotes, buildModelChoiceSuggestions } from './notes.js';
+import { buildModelChoiceNotes, buildModelChoiceSuggestions, routingNoteTexts } from './notes.js';
 import { ModelChoiceStoreError } from './store.js';
 
 const DEFAULT_EVENT_LIMIT = 50;
@@ -62,5 +64,18 @@ export const createModelChoiceService = ({ store, readSettings, persistSettings 
     return { id, decision, settings: decision === 'approved' ? suggestion.settings : null };
   };
 
-  return { record, summary, decide, clear: () => store.clear() };
+  /**
+   * The notes as the Auto-mode classifier may see them (#147): the capped
+   * note texts while recording is on, and nothing while it is off — the
+   * switch that stops recording also stops the feed, so no note reaches a
+   * routing request for a user who turned the history off.
+   */
+  const routingNotes = async () => {
+    const settings = await readSettings();
+    if (!isModelChoiceRecordingEnabled(settings)) return [];
+    const { events } = await store.snapshot();
+    return routingNoteTexts(buildModelChoiceNotes(events));
+  };
+
+  return { record, summary, decide, routingNotes, clear: () => store.clear() };
 };

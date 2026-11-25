@@ -664,28 +664,37 @@ export const createApnsRuntime = (deps: ApnsDependencies) => {
       req.on('end', async () => {
         terminal = true;
         clearTimeout(timeout);
-        if (responseOverflow) {
-          console.warn(`[APNs] push failed status=${status} reason=unknown (response body exceeded ${APNS_DIRECT_RESPONSE_MAX_BYTES} bytes)`);
-          resolve();
-          return;
-        }
-        if (status === 200) {
-          resolve();
-          return;
-        }
-        let reason: JsonValue | undefined = '';
+        // Settle on every path: the awaited dead-token cleanup below can
+        // reject (token store unwritable), and a resolve() placed after the
+        // await would never run — the caller's
+        // Promise.all(...).finally(finish) would hang forever and leak the
+        // HTTP/2 session. Cleanup stays best-effort and logged: on failure
+        // the token remains and is retried on the next send or unregister.
         try {
-          const parsed: JsonValue = JSON.parse(responseBody);
-          reason = (isJsonObject(parsed) ? parsed.reason : undefined) || '';
-        } catch {
-          void 0;
+          if (responseOverflow) {
+            console.warn(`[APNs] push failed status=${status} reason=unknown (response body exceeded ${APNS_DIRECT_RESPONSE_MAX_BYTES} bytes)`);
+            return;
+          }
+          if (status === 200) {
+            return;
+          }
+          let reason: JsonValue | undefined = '';
+          try {
+            const parsed: JsonValue = JSON.parse(responseBody);
+            reason = (isJsonObject(parsed) ? parsed.reason : undefined) || '';
+          } catch {
+            void 0;
+          }
+          if (status === 410 || (isString(reason) && DEAD_TOKEN_REASONS.has(reason))) {
+            await removeApnsTokenFromAllSessions(deviceToken);
+          } else {
+            console.warn(`[APNs] push failed status=${status} reason=${reason || 'unknown'}`);
+          }
+        } catch (error) {
+          console.warn('[APNs] response handling failed:', hasErrorProperties(error) ? error.message ?? error : error);
+        } finally {
+          resolve();
         }
-        if (status === 410 || (isString(reason) && DEAD_TOKEN_REASONS.has(reason))) {
-          await removeApnsTokenFromAllSessions(deviceToken);
-        } else {
-          console.warn(`[APNs] push failed status=${status} reason=${reason || 'unknown'}`);
-        }
-        resolve();
       });
       req.on('error', (error) => {
         terminal = true;

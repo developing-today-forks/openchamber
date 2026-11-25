@@ -32,7 +32,7 @@
     "dev:server": "bun ../../scripts/build-builtin-extensions.mjs && OPENCHAMBER_RELAY_HOST=${OPENCHAMBER_RELAY_HOST:-off} OPENCHAMBER_ALLOW_DEV_ORIGINS=1 bun server/index.js --port ${OPENCHAMBER_PORT:-3001}",
     "dev:server:watch": "bun ../../scripts/build-builtin-extensions.mjs && node ./scripts/dev-server-watch.mjs",
     "build": "bun run build:server && NODE_OPTIONS=--max-old-space-size=6144 vite build",
-    "build:server": "bun ../../scripts/build-builtin-extensions.mjs && node scripts/build-server.mjs && bun ./scripts/prepare-opencode-server.mjs",
+    "build:server": "bun run prebuild:native && bun ../../scripts/build-builtin-extensions.mjs && node scripts/build-server.mjs && bun ./scripts/prepare-opencode-server.mjs",
     "prepare:opencode-server": "bun ./scripts/prepare-opencode-server.mjs",
     "build:diag": "bun ../../scripts/build-builtin-extensions.mjs && NODE_OPTIONS=--max-old-space-size=6144 vite build --config vite.diag.config.ts",
     "build:watch": "bun ../../scripts/build-builtin-extensions.mjs && vite build --watch",
@@ -42,8 +42,9 @@
     "lint": "oxlint -c ../../oxlint.config.ts --report-unused-disable-directives src && bun run lint:server",
     "lint:server": "node scripts/check-server-types.mjs --lint",
     "smoke:server-build": "node scripts/smoke-server-build.mjs",
-    "test": "vitest run && node --test opencode-server/*.test.mjs",
-    "start": "bun bin/cli.js serve"
+    "test": "node server/native/no-replace-rename/build.mjs && vitest run && node --test opencode-server/*.test.mjs",
+    "start": "bun bin/cli.js serve",
+    "prebuild:native": "node server/native/no-replace-rename/build.mjs"
   },
   "dependencies": {
     "7zip-bin": "5.2.0",

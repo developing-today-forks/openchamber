@@ -3,7 +3,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useUIStore, type ContextPanelMode } from '@/stores/useUIStore';
 import { parseRoute, updateBrowserURL, hasRouteParams } from '@/lib/router';
 import { pushRouteEntry } from '@/lib/router/backGuard';
-import { isSessionOpenRedirect, openSessionLink } from '@/lib/router/openSessionFromRoute';
+import { isSessionOpenRedirect, openSessionLink, type SessionOpenOptions } from '@/lib/router/openSessionFromRoute';
 import { listenForNotificationNavigation } from '@/lib/router/notificationNavigation';
 import type { RouteState, AppRouteState } from '@/lib/router';
 import { resolveSettingsSlug } from '@/lib/settings/metadata';
@@ -18,7 +18,9 @@ function isVSCodeContext(): boolean {
   return win.__VSCODE_CONFIG__ !== undefined;
 }
 
-export function useRouter(): void {
+export type RouterDependencies = Pick<SessionOpenOptions, 'loadSessions'>;
+
+export function useRouter(deps: RouterDependencies = {}): void {
   const isVSCode = React.useMemo(() => isVSCodeContext() || isContextWindow(), []);
 
   const initializedRef = React.useRef(false);
@@ -36,7 +38,7 @@ export function useRouter(): void {
       }
 
       if (route.sessionId) {
-        await openSessionLink(route.sessionId, route.messageId);
+        await openSessionLink(route.sessionId, route.messageId, { loadSessions: deps.loadSessions });
       }
 
       if (route.settingsPath) {
@@ -57,7 +59,7 @@ export function useRouter(): void {
         navigateToDiff(route.diffFile);
       }
     },
-    [setSettingsDialogOpen, setSettingsPage, navigateToDiff]
+    [setSettingsDialogOpen, setSettingsPage, navigateToDiff, deps.loadSessions]
   );
 
   const getCurrentAppState = React.useCallback((): AppRouteState => {

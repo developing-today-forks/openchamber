@@ -228,7 +228,7 @@ import { openCodePluginDelivery } from './lib/guests/opencode-plugin.js';
 import { createLimitFailoverRuntime } from './lib/limit-failover/runtime.js';
 import { prepareInstanceDir } from './lib/opencode/instance-dir.js';
 import { createDeviceSettingsStore } from './lib/device-settings/store.js';
-import { currentRecordFromManagedStore, readManagedOpenCodeStore, resolveManagedOpenCodeStorePaths } from './lib/opencode/managed-opencode-state.js';
+import { readManagedOpenCodeClaimDir, resolveManagedOpenCodeStorePaths } from './lib/opencode/managed-opencode-state.js';
 import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
 import { createSessionMetadataStore, createOpenCodeSessionMetadata } from './lib/openchamber-sessions/session-metadata-store.js';
 import { createUnreadBaseline } from './lib/openchamber-sessions/unread-baseline.js';
@@ -1334,6 +1334,13 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   deltaCoalesceWindowMs: resolveDeltaCoalesceWindowMs(),
 });
 
+// Manual model and effort choices and the notes built from them (lib/model-choices).
+const modelChoiceService = createModelChoiceService({
+  store: createModelChoiceStore({ dataDir: OPENCHAMBER_DATA_DIR }),
+  readSettings: () => readSettingsFromDiskMigrated(),
+  persistSettings: (changes: Parameters<typeof persistSettings>[0]) => persistSettings(changes),
+});
+
 const routingRuntime = createRoutingRuntime({
   dataDir: OPENCHAMBER_DATA_DIR,
   buildOpenCodeUrl,
@@ -1341,6 +1348,7 @@ const routingRuntime = createRoutingRuntime({
   broadcastGlobalUiEvent: broadcastOpenChamberUiEvent,
   isSessionWarm: (sessionId, cacheLifetimeMs) => sessionWarmingRuntime.isSessionWarm(sessionId, cacheLifetimeMs),
   readModelPools: (directory) => readLayeredModelRoutes(readConfigSources(directory || null)),
+  readChoiceNotes: () => modelChoiceService.routingNotes(),
 });
 
 const sessionWorkRuntime = createSessionWorkRuntime({
@@ -1823,12 +1831,6 @@ const clientPairingRuntime = createClientPairingRuntime({
 });
 // What each open window reports of its device-only settings (lib/device-settings).
 const deviceSettingsStore = createDeviceSettingsStore();
-// Manual model and effort choices and the notes built from them (lib/model-choices).
-const modelChoiceService = createModelChoiceService({
-  store: createModelChoiceStore({ dataDir: OPENCHAMBER_DATA_DIR }),
-  readSettings: () => readSettingsFromDiskMigrated(),
-  persistSettings: (changes: Parameters<typeof persistSettings>[0]) => persistSettings(changes),
-});
 const featureRoutesRuntime = createFeatureRoutesRuntime({
   clientReloadDelayMs: CLIENT_RELOAD_DELAY_MS,
   trackers: trackerRegistry,
@@ -2474,7 +2476,7 @@ const openChamberControlService = createOpenChamberControlService({
     createIntegrationActions({ readSettingsFromDiskMigrated, persistSettings }),
     createIntegrationServiceActions({ getIntegrationOperations: featureRoutesRuntime.getIntegrationOperations }),
     createEnvironmentActions({ store: environmentStore, runtime: environmentRuntime, listProjects: listConfiguredProjects }),
-    createProjectSetupActions({ readProjectSetup: projectConfigRuntime.readProjectSetup, listProjects: listConfiguredProjects }),
+    createProjectSetupActions({ readProjectSetup: projectConfigRuntime.readProjectSetup, updateProjectSetup: projectConfigRuntime.updateProjectSetup, updateSharedProjectSetup: projectConfigRuntime.updateSharedProjectSetup, listProjects: listConfiguredProjects }),
     createModelChoiceActions({ modelChoiceService }),
   ],
   loadQuota: () => import('./lib/quota/index.js'),
@@ -2605,7 +2607,7 @@ async function main(options: WebUiServerOptions = {}) {
     fsPromises,
     path,
     dataDir: OPENCHAMBER_DATA_DIR,
-    claimDir: currentRecordFromManagedStore(readManagedOpenCodeStore(resolveManagedOpenCodeStorePaths(OPENCHAMBER_DATA_DIR).storePath))?.instanceDir ?? null,
+    claimDir: readManagedOpenCodeClaimDir(resolveManagedOpenCodeStorePaths(OPENCHAMBER_DATA_DIR).storePath),
     handoffFrom: handoffPredecessorPid,
   });
   agentToolRuntime = createAgentToolRuntime({

@@ -121,6 +121,38 @@ export const buildModelChoiceNotes = (events) => {
   return notes.sort((a, b) => b.count - a.count).slice(0, MAX_NOTES);
 };
 
+/** The most notes the Auto-mode classifier sees: the strongest habits only. */
+export const MAX_ROUTING_NOTES = 5;
+/** One note's text cap in the routing request; a note is one short sentence. */
+export const MAX_ROUTING_NOTE_CHARS = 200;
+/** The whole block's cap, so the notes stay a small part of a small request. */
+export const MAX_ROUTING_NOTES_CHARS = 800;
+
+/**
+ * The note texts the Auto-mode classifier may see (#147): the most frequent
+ * notes (the order `buildModelChoiceNotes` returns), each cut at a word
+ * boundary to at most `MAX_ROUTING_NOTE_CHARS`, and the block as a whole —
+ * the texts joined by newlines — to at most `MAX_ROUTING_NOTES_CHARS`. The
+ * notes summarize retained events only, so none describes a choice older
+ * than the store's retention window.
+ */
+export const routingNoteTexts = (notes) => {
+  const texts = [];
+  let used = 0;
+  for (const note of notes.slice(0, MAX_ROUTING_NOTES)) {
+    let text = note.text;
+    if (text.length > MAX_ROUTING_NOTE_CHARS) {
+      const cut = text.lastIndexOf(' ', MAX_ROUTING_NOTE_CHARS);
+      text = text.slice(0, cut > 0 ? cut : MAX_ROUTING_NOTE_CHARS);
+    }
+    const joined = used + (texts.length > 0 ? 1 : 0) + text.length;
+    if (joined > MAX_ROUTING_NOTES_CHARS) break;
+    used = joined;
+    texts.push(text);
+  }
+  return texts;
+};
+
 /**
  * Suggestion decision ids are v2 hashes of the same canonical tuple.
  * Legacy migration policy (#2095): pre-v2 ids (`goal-writer:<model>:<variant>`,

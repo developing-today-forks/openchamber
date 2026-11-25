@@ -19,6 +19,7 @@ import { isString } from '../shared/guards.js';
 import nodeFsPromises from 'node:fs/promises';
 import { constants as nodeFsConstants } from 'node:fs';
 import { renameWithRetry, renameWithoutReplace } from '../shared/atomic-rename.js';
+import { renameDirectoryNoReplace } from '../shared/no-replace-dir.js';
 import nodePath from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -1664,6 +1665,15 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
 
       const canonicalPath = await fsPromises.realpath(resolved.resolved);
 
+      // Canonical containment re-check: the lexical check in
+      // resolveWorkspacePath cannot see through symlinks, so a link
+      // inside the granted tree that resolves outside must be refused
+      // here (#2564). Mirrors POST /api/fs/reveal.
+      const canonicalBase = await canonicalDirectoryPath(resolved.base, fsPromises, path);
+      if (!isPathWithinRoot(canonicalPath, canonicalBase, path, os)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
       const stats = await fsPromises.stat(canonicalPath);
       if (!stats.isFile()) {
         return res.status(400).json({ error: 'Specified path is not a file' });
@@ -2090,10 +2100,20 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
       // The check above cannot close the race on its own: a destination
       // created after it would be replaced by a plain rename (#2375).
       // Commit with a no-replace primitive instead; a destination that
-      // appeared in the window surfaces as the same 409 below. Reaching
-      // here with destinationStats means it names the source itself
-      // (a case-only rename), which the commit keeps as a plain rename.
-      await renameWithoutReplace(fsPromises, renamePaths.sourcePath, renamePaths.destinationPath, {
+      // appeared in the window surfaces as the same 409 below. Directory
+      // sources commit with the native no-replace rename (#2573), which
+      // fails closed with ENOSYS where the platform cannot provide the
+      // exclusive operation. Reaching here with destinationStats means it
+      // names the source itself (a case-only rename), which the commit
+      // keeps as a plain rename.
+      // SAFETY: the spread keeps every fsPromises member's type; the intersection only types the optional injected/test hook.
+      const commitFs = fsPromises as typeof fsPromises & {
+        renameDirNoReplace?: (from: string, to: string) => Promise<void> | void;
+      };
+      await renameWithoutReplace({
+        ...commitFs,
+        renameDirNoReplace: commitFs.renameDirNoReplace ?? ((from: string, to: string) => { renameDirectoryNoReplace(from, to); }),
+      }, renamePaths.sourcePath, renamePaths.destinationPath, {
         isDirectory: sourceStats.isDirectory(),
         isSymbolicLink: sourceStats.isSymbolicLink(),
         destinationIsSource: destinationStats !== null,
@@ -2106,6 +2126,9 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
       }
       if (isErrorObject(err) && err.code === 'ENOENT') {
         return res.status(404).json({ error: 'Source path not found', reason: 'not-found' });
+      }
+      if (isErrorObject(err) && err.code === 'ENOSYS') {
+        return res.status(500).json({ error: 'Directory rename is not supported on this platform', reason: 'unsupported' });
       }
       if (isOsPermissionError(err)) {
         return sendOsPermissionDenied(res, 'Access denied');

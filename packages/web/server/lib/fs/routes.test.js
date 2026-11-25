@@ -1251,7 +1251,7 @@ describe('fs rename', () => {
     expect(fsPromises.rename).not.toHaveBeenCalled();
   });
 
-  it('renames a directory with a plain rename (no hard-link primitive can name one)', async () => {
+  it('renames a directory with the native no-replace rename', async () => {
     const fsPromises = {
       lstat: vi.fn(async (targetPath) => {
         if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
@@ -1260,13 +1260,42 @@ describe('fs rename', () => {
       link: vi.fn(async () => undefined),
       unlink: vi.fn(async () => undefined),
       rename: vi.fn(async () => undefined),
+      renameDirNoReplace: vi.fn(async () => undefined),
     };
     const res = createMockResponse();
     await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
 
     expect(res.body).toEqual({ success: true, path: '/repo/dir-renamed' });
-    expect(fsPromises.rename).toHaveBeenCalledWith('/repo/dir', '/repo/dir-renamed');
+    expect(fsPromises.renameDirNoReplace).toHaveBeenCalledWith('/repo/dir', '/repo/dir-renamed');
+    expect(fsPromises.rename).not.toHaveBeenCalled();
     expect(fsPromises.link).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with 500 when the no-replace directory rename is unavailable', async () => {
+    const emptyPrebuilds = await mkdtemp(path.join(tmpdir(), 'oc-empty-prebuilds-'));
+    const previousOverride = process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
+    process.env.OPENCHAMBER_NOREPLACE_PREBUILDS = emptyPrebuilds;
+    try {
+      const fsPromises = {
+        lstat: vi.fn(async (targetPath) => {
+          if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
+          throw missing();
+        }),
+        link: vi.fn(async () => undefined),
+        unlink: vi.fn(async () => undefined),
+        rename: vi.fn(async () => undefined),
+      };
+      const res = createMockResponse();
+      await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
+
+      expect(res.statusCode).toBe(500);
+      expect(res.body).toEqual({ error: 'Directory rename is not supported on this platform', reason: 'unsupported' });
+      expect(fsPromises.rename).not.toHaveBeenCalled();
+    } finally {
+      if (previousOverride === undefined) delete process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
+      else process.env.OPENCHAMBER_NOREPLACE_PREBUILDS = previousOverride;
+      await rm(emptyPrebuilds, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2073,13 +2102,17 @@ describe('fs reveal', () => {
   });
 });
 
-describe('fs reveal containment (real fs)', () => {
+describe.skipIf(process.platform === 'win32')('fs reveal containment (real fs)', () => {
   let base;
   let workspace;
   let outside;
 
   beforeEach(async () => {
     base = await mkdtemp(path.join(tmpdir(), 'oc-fs-reveal-'));
+    // The reveal handler answers with the canonical path; on macOS the
+    // temp dir sits behind the /var -> /private/var symlink, so compare
+    // against the canonical base everywhere below.
+    base = await nativeFs.realpath(base);
     workspace = path.join(base, 'workspace');
     outside = path.join(base, 'outside');
     await mkdir(workspace, { recursive: true });
@@ -2128,7 +2161,13 @@ describe('fs reveal containment (real fs)', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ success: true, path: path.join(workspace, 'file.txt') });
-    expect(spawn).toHaveBeenCalledWith('xdg-open', [workspace], { windowsHide: true, stdio: 'ignore', detached: true });
+    // The launcher is platform-specific: Finder reveals the file itself
+    // (open -R), while xdg-open opens the containing directory.
+    if (process.platform === 'darwin') {
+      expect(spawn).toHaveBeenCalledWith('open', ['-R', path.join(workspace, 'file.txt')], { windowsHide: true, stdio: 'ignore', detached: true });
+    } else {
+      expect(spawn).toHaveBeenCalledWith('xdg-open', [workspace], { windowsHide: true, stdio: 'ignore', detached: true });
+    }
   });
 
   it('rejects an outside path', async () => {
@@ -3077,7 +3116,7 @@ describe('fs stat directory error handling', () => {
         fileURLToPath(new URL('../git/redaction.ts', import.meta.url)),
          fileURLToPath(new URL('../shared/object-guards.ts', import.meta.url)),
          fileURLToPath(new URL('../path-realpath-cache.ts', import.meta.url)),
-         ...['atomic-rename', 'traversal-budget', 'bounded-file-read'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
+         ...['atomic-rename', 'no-replace-dir', 'traversal-budget', 'bounded-file-read'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
       ], { cwd: directory, stdio: 'pipe' });
       await copyFile(new URL('../shared/guards.ts', import.meta.url), path.join(directory, 'shared/guards.js'));
       await copyFile(new URL('../shared/parse-int.js', import.meta.url), path.join(directory, 'shared/parse-int.js'));
@@ -3633,9 +3672,10 @@ describe('fs html preview grants', () => {
     ['/home/user/.config/openchamber/projects/p1/canvases/c1/data.json', '[]'],
     ['/home/user/.config/openchamber/guest-auth.json', '{"token":"secret"}'],
     ['/tmp/mockup/index.html', '<h1>mockup</h1>'],
+    ['/secret/outside.txt', 'outside bytes'],
   ]);
 
-  const register = () => {
+  const register = (links = {}) => {
     const routes = [];
     const app = {
       get: (routePath, handler) => routes.push({ method: 'GET', routePath, handler }),
@@ -3646,7 +3686,7 @@ describe('fs html preview grants', () => {
       os: { homedir: () => '/home/user' },
       path: path.posix,
       fsPromises: {
-        realpath: async (targetPath) => targetPath,
+        realpath: async (targetPath) => links[targetPath] ?? targetPath,
         stat: async (targetPath) => {
           if (!files.has(targetPath)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
           return { isFile: () => true, size: files.get(targetPath).length };
@@ -3725,6 +3765,27 @@ describe('fs html preview grants', () => {
 
     const secret = await serve(`/api/fs/preview/${grant}/home/user/.config/openchamber/guest-auth.json`);
     expect(secret.getHeader('access-control-allow-origin')).toBeUndefined();
+  });
+
+  it('refuses a symlink inside the grant that resolves outside the read root', async () => {
+    const { mint, serve } = register({ '/workspace/site/escape.html': '/secret/outside.txt' });
+    const { grant } = (await mint('/workspace/site/index.html')).body;
+
+    const escaped = await serve(`/api/fs/preview/${grant}/workspace/site/escape.html`);
+    expect(escaped.statusCode).toBe(403);
+
+    // In-root content still serves through the same grant.
+    const page = await serve(`/api/fs/preview/${grant}/workspace/site/index.html`);
+    expect(page.statusCode).toBe(200);
+  });
+
+  it('serves a symlink that resolves inside the read root', async () => {
+    const { mint, serve } = register({ '/workspace/site/alias.html': '/workspace/site/index.html' });
+    const { grant } = (await mint('/workspace/site/index.html')).body;
+
+    const aliased = await serve(`/api/fs/preview/${grant}/workspace/site/alias.html`);
+    expect(aliased.statusCode).toBe(200);
+    expect(aliased.getHeader('access-control-allow-origin')).toBe('null');
   });
 
   it('refuses unknown grants and files outside the workspace', async () => {
@@ -4382,6 +4443,44 @@ describe('fs rename destination race (real fs)', () => {
     expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
     expect(await nativeFs.readFile(source, 'utf8')).toBe('source bytes');
     expect(await nativeFs.readFile(destination, 'utf8')).toBe('concurrent bytes');
+  });
+
+  it('preserves both directories and returns a conflict when the destination is created after the lookup', async () => {
+    const source = path.join(workspace, 'source-dir');
+    const destination = path.join(workspace, 'dest-dir');
+    await mkdir(source);
+    const sourceIdentity = await nativeFs.lstat(source);
+
+    let injected = false;
+    let destinationIdentity;
+    const racingFs = {
+      ...nativeFs,
+      lstat: async (targetPath, ...rest) => {
+        try {
+          return await nativeFs.lstat(targetPath, ...rest);
+        } catch (error) {
+          if (!injected && error.code === 'ENOENT' && path.basename(targetPath) === 'dest-dir') {
+            injected = true;
+            await mkdir(destination);
+            destinationIdentity = await nativeFs.lstat(destination);
+          }
+          throw error;
+        }
+      },
+    };
+
+    const res = createMockResponse();
+    await registerRacing(workspace, racingFs)({ body: { oldPath: source, newPath: destination } }, res);
+
+    expect(injected).toBe(true);
+    expect.soft(res.statusCode).toBe(409);
+    expect.soft(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    const [sourceAfter, destinationAfter] = await Promise.all([
+      nativeFs.lstat(source).catch(() => null),
+      nativeFs.lstat(destination).catch(() => null),
+    ]);
+    expect.soft(sourceAfter && { dev: sourceAfter.dev, ino: sourceAfter.ino }).toEqual({ dev: sourceIdentity.dev, ino: sourceIdentity.ino });
+    expect.soft(destinationAfter && { dev: destinationAfter.dev, ino: destinationAfter.ino }).toEqual({ dev: destinationIdentity.dev, ino: destinationIdentity.ino });
   });
 
   it('moves a file to a free destination', async () => {

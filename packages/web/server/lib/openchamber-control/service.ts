@@ -826,8 +826,8 @@ export const createOpenChamberControlService = (dependencies: ControlDependencie
     const catalog = await client.model.list();
     return catalog.data;
   };
-  const tierChooser = createTierChooserAction({ listModels: listCatalogModels });
-  const quotaFallback = createQuotaFallbackAction({ listModels: listCatalogModels });
+  const tierChooser = createTierChooserAction({ isEnabled: isRenderToolEnabled, listModels: listCatalogModels });
+  const quotaFallback = createQuotaFallbackAction({ isEnabled: isRenderToolEnabled, listModels: listCatalogModels });
 
   const models = async () => {
     const settings = await readSettingsFromDiskMigrated();

@@ -103,6 +103,12 @@ workflow in `../session-knowledge/runtime.js` (`WORKFLOW_GUIDANCE`).
    proposing session. A completed or failed run wakes it (`resume: true`); a
    declined or stopped one does not, because the user is the one who acted.
 
+The sandbox enforces a 15-minute wall-clock limit per attempt, including time
+spent waiting for workflow agents. On expiry it terminates the worker and fails
+the run with a timeout error. The normal failed-run cleanup then aborts
+outstanding agent work, waits for in-flight calls to settle, saves the terminal
+state and releases the active-run slot. A failed run may be resumed.
+
 `workflow.status` and `workflow.result` read a run's progress and any agent's
 full answer by key or session id; the agent can only reach runs its own
 session proposed. `workflow.save` writes a script to

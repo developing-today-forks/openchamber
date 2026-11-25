@@ -5,7 +5,9 @@
 # summaries / logs or the uploaded hashes.json artifacts. It is this
 # fork's standing measurement route, since nix-hashes.yml re-bakes only
 # upstream. The x86_64-linux leg was added when the 2026-11-22 upstream
-# merge changed bun.lock and nothing in the fork could measure that hash.
+# merge changed bun.lock and nothing in the fork could measure that hash;
+# the aarch64-darwin leg was added for the same reason on 2026-11-23
+# (#2577), because the amd lane hosts cannot measure a Mac hash either.
 name: measure-aarch64-hash
 
 on:
@@ -27,6 +29,8 @@ jobs:
             system: aarch64-linux
           - runner: ubuntu-latest
             system: x86_64-linux
+          - runner: macos-15
+            system: aarch64-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:

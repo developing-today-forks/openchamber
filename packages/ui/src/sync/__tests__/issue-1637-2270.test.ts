@@ -11,6 +11,7 @@ const upsertSessionCalls: Session[] = []
 const markSessionAsOpenChamberCreatedCalls: string[] = []
 
 // Configurable opencodeClient.createSession — set per test
+// SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
 let nextCreateSessionResponse: Session = { id: "ses_default", time: { created: 1 } } as Session
 let nextCreateSessionCalls: Array<{ params: unknown; directory: string | null | undefined }> = []
 
@@ -102,11 +103,13 @@ beforeEach(() => {
   upsertSessionCalls.length = 0
   markSessionAsOpenChamberCreatedCalls.length = 0
   nextCreateSessionCalls = []
+  // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
   nextCreateSessionResponse = { id: "ses_default", time: { created: 1 } } as Session
   currentDirectory = null
 
   // Initialize action refs. `createSession` seeds the created session into its
   // directory's child store, so the mock hands back an empty store.
+  // SAFETY: test stub: it implements the members the create path calls (children, ensureChild returning an empty store, getChild); createSession reads nothing else on the refs object.
   setActionRefs(
     {
       children: new Map(),
@@ -119,6 +122,7 @@ beforeEach(() => {
 
 describe("issue #1637 — server omits directory, falls back to directoryOverride", () => {
   test("when server response omits directory and directoryOverride is set, setCurrentSession receives the directoryOverride (not null)", async () => {
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = { id: "ses_1637_a", time: { created: 1 } } as Session
 
     const result = await createSession("test title", "/projects/alpha")
@@ -138,6 +142,7 @@ describe("issue #1637 — server omits directory, falls back to directoryOverrid
 
 describe("issue #1637 — server returns directory, server value wins", () => {
   test("when server response includes directory and directoryOverride is set, setCurrentSession receives the server directory", async () => {
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = {
       id: "ses_1637_b",
       time: { created: 1 },
@@ -160,6 +165,7 @@ describe("issue #1637 — server returns directory, server value wins", () => {
 describe("issue #1637 — no directoryOverride, no server directory", () => {
   test("when no directoryOverride and server omits directory, setCurrentSession receives null", async () => {
     currentDirectory = null
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = { id: "ses_1637_c", time: { created: 1 } } as Session
 
     const result = await createSession("test title", null)
@@ -183,6 +189,7 @@ describe("issue #1637 — no directoryOverride, no server directory", () => {
 describe("issue #1637 — no directoryOverride, server returns directory", () => {
   test("when no directoryOverride but server returns directory, setCurrentSession receives the server directory", async () => {
     currentDirectory = null
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = {
       id: "ses_1637_d",
       time: { created: 1 },
@@ -209,6 +216,7 @@ describe("issue #2270 — nested Git projects: child directory wins when overrid
     // under a parent Git repo. The user is on a child project and clicks "+".
     // The server response omits the `directory` field.
     const childProjectDir = "/work/parent-git-repo/child-project-a"
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = { id: "ses_2270_child", time: { created: 1 } } as Session
 
     const result = await createSession(undefined, childProjectDir)
@@ -234,11 +242,13 @@ describe("issue #2270 — nested Git projects: child directory wins when overrid
 
 describe("issue #2270 — registered child project wins over a leaked ancestor worktree", () => {
   test("resolves a nested child repository directly instead of through a sibling project's ancestor worktree", () => {
+    // SAFETY: test fixture: each entry carries id and path, the only fields resolveProjectForSessionDirectory reads.
     const projects = [
       { id: "project-a", path: "/workspace/project-a" },
       { id: "project-b", path: "/workspace/project-b" },
       { id: "project-c", path: "/workspace/project-c" },
     ] as ProjectEntry[]
+    // SAFETY: test fixture: the literal carries path and projectDirectory, the only fields the resolver reads on a worktree entry.
     const leakedParentWorktree = {
       path: "/workspace",
       projectDirectory: "/workspace",
@@ -257,10 +267,12 @@ describe("issue #2270 — registered child project wins over a leaked ancestor w
   })
 
   test("still resolves an external worktree through its owning project", () => {
+    // SAFETY: test fixture: each entry carries id and path, the only fields resolveProjectForSessionDirectory reads.
     const projects = [
       { id: "project-a", path: "/workspace/project-a" },
       { id: "project-b", path: "/workspace/project-b" },
     ] as ProjectEntry[]
+    // SAFETY: test fixture: the literal carries path and projectDirectory, the only fields the resolver reads on a worktree entry.
     const externalWorktree = {
       path: "/worktrees/project-b-feature",
       projectDirectory: "/workspace/project-b",
@@ -283,6 +295,7 @@ describe("issue #2270 — registerSessionDirectory called with effective directo
   test("registerSessionDirectory is called with the effective directory (not null or a stale value) when directoryOverride is set", async () => {
     // Server response omits directory; effectiveDirectory is the directoryOverride
     const effectiveDir = "/projects/alpha/subdir"
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = { id: "ses_2270_reg", time: { created: 1 } } as Session
 
     await createSession("title", effectiveDir)
@@ -302,6 +315,7 @@ describe("issue #2270 — registerSessionDirectory called with effective directo
   test("registerSessionDirectory is called with the server's directory when the server returns one (server takes precedence over override)", async () => {
     const overrideDir = "/projects/alpha"
     const serverDir = "/projects/echoed-by-server"
+    // SAFETY: test fixture: the literal carries the exact fields the create flow reads on this path (id, time.created, and directory in the scenarios that set it); the mock returns it as the server response.
     nextCreateSessionResponse = {
       id: "ses_2270_server",
       time: { created: 1 },

@@ -1,6 +1,6 @@
 import type { Session } from '@/lib/opencode/model';
 import { getBtwOriginalSessionID } from '@/lib/sessionBtwMetadata';
-import { ensureGlobalSessionsLoaded, resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { ensureGlobalSessionsLoaded, resolveGlobalSessionDirectory, useGlobalSessionsStore, type LoadResult } from '@/stores/useGlobalSessionsStore';
 import { useBtwStore } from '@/stores/useBtwStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { setSessionOpener } from '@/sync/session-navigation';
@@ -13,6 +13,7 @@ export type SessionOpenOptions = {
   directory?: string | null;
   messageId?: string | null;
   requireKnownSession?: boolean;
+  loadSessions?: () => Promise<LoadResult>;
 };
 
 type SessionOpenTarget = {
@@ -53,9 +54,10 @@ const selectTarget = (target: SessionOpenTarget, directoryHint: string | null): 
 export async function openSession(sessionId: string, options: SessionOpenOptions = {}): Promise<void> {
   const requestedId = sessionId.trim();
   if (!requestedId) return;
+  const loadSessions = options.loadSessions ?? ensureGlobalSessionsLoaded;
   if (options.requireKnownSession) {
     const selectedBeforeLoad = useSessionUIStore.getState().currentSessionId;
-    const snapshot = await ensureGlobalSessionsLoaded().catch(() => null);
+    const snapshot = await loadSessions().catch(() => null);
     if (useSessionUIStore.getState().currentSessionId !== selectedBeforeLoad) return;
     if (!snapshot || ![...snapshot.activeSessions, ...snapshot.archivedSessions].some((session) => session.id === requestedId)) return;
   }
@@ -69,7 +71,7 @@ export async function openSession(sessionId: string, options: SessionOpenOptions
     : targetFor(initialStore.entityById.get(requestedId), requestedId, (parentId) => initialStore.entityById.has(parentId));
   selectTarget(initialTarget, options.directory?.trim() || null);
 
-  const snapshot = await ensureGlobalSessionsLoaded().catch(() => null);
+  const snapshot = await loadSessions().catch(() => null);
   if (!snapshot) return;
 
   const latest = useSessionUIStore.getState();
@@ -95,8 +97,8 @@ export async function openSession(sessionId: string, options: SessionOpenOptions
   latest.setCurrentSession(target.sessionId, target.directory);
 }
 
-export function openSessionLink(sessionId: string, messageId: string | null): Promise<void> {
-  return openSession(sessionId, { messageId });
+export function openSessionLink(sessionId: string, messageId: string | null, options: SessionOpenOptions = {}): Promise<void> {
+  return openSession(sessionId, { ...options, messageId });
 }
 
 export function openSessionFromRoute(sessionId: string): Promise<void> {

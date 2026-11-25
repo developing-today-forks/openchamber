@@ -142,6 +142,7 @@ export function createRoutingRuntime({
   readSessionHistory = null,
   readConfigEntries = null,
   readModelPools = () => ({}),
+  readChoiceNotes = async (): Promise<string[]> => [],
   readSessionAgent = null,
   isSessionWarm = () => false,
   now = Date.now,
@@ -410,12 +411,24 @@ export function createRoutingRuntime({
       } catch (error) {
         console.warn('[routing] history unavailable, routing on the request alone:', errorMessage(error));
       }
+      // The user's model-choice notes (#147) ride along as context when
+      // there are any. Enterprise mode never sends them: the classifier
+      // endpoint there is an admin's crossing, and the notes are the user's
+      // own habits. A failed read routes without them, like history above.
+      let choiceNotes: string[] = [];
+      if (!enterpriseMode()) {
+        try {
+          choiceNotes = await readChoiceNotes();
+        } catch (error) {
+          console.warn('[routing] model choice notes unavailable, routing without them:', errorMessage(error));
+        }
+      }
       try {
         const { endpoint } = await resolveAccess();
         if (!endpoint) throw new Error('No classification provider is available');
         const request = (requestText ?? '').trim();
         const { answers, ms } = await jev.ask(buildRoutingRequest({
-          categories: enabledCategories(config), history, request, pools: modelPoolsFor(directory),
+          categories: enabledCategories(config), history, request, pools: modelPoolsFor(directory), choiceNotes,
         }), endpoint);
         const result = decideRouting(answers.category, { categories: enabledCategories(config), minConfidence: config.minConfidence });
         decision.category = result.category?.id ?? null;

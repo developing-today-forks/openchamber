@@ -115,10 +115,27 @@ describe('renameWithoutReplace', () => {
     expect(calls.filter(([name]) => name === 'rename')).toEqual([]);
   });
 
-  it('uses a plain rename for a directory', async () => {
-    const { ops, calls } = makeOps();
+  it('commits a directory with the native no-replace rename', async () => {
+    const dirCalls = [];
+    const { ops, calls } = makeOps({
+      renameDirNoReplace: async (from, to) => { dirCalls.push([from, to]); },
+    });
     await renameWithoutReplace(ops, 'dir', 'dir2', { ...fileKind, isDirectory: true });
-    expect(calls).toEqual([['rename', 'dir', 'dir2']]);
+    expect(dirCalls).toEqual([['dir', 'dir2']]);
+    expect(calls.filter(([name]) => name === 'rename')).toEqual([]);
+  });
+
+  it('fails closed with ENOSYS for a directory without the native helper', async () => {
+    const { ops, calls } = makeOps();
+    await expect(renameWithoutReplace(ops, 'dir', 'dir2', { ...fileKind, isDirectory: true }))
+      .rejects.toMatchObject({ code: 'ENOSYS' });
+    expect(calls.filter(([name]) => name === 'rename')).toEqual([]);
+  });
+
+  it('uses a plain rename for a directory rename onto itself', async () => {
+    const { ops, calls } = makeOps();
+    await renameWithoutReplace(ops, 'Dir', 'DIR', { ...fileKind, isDirectory: true, destinationIsSource: true });
+    expect(calls).toEqual([['rename', 'Dir', 'DIR']]);
   });
 
   it('uses a plain rename when the destination is the source itself', async () => {
