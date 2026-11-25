@@ -884,7 +884,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // matches, so children spawned from a custom binary path or a test
   // fixture are still recognised as ours. An unrelated recycled process
   // serves a different port under a different binary and matches neither.
-  const commandMatchesGeneration = (command: string, generation: Pick<ManagedStoreGeneration, 'pid' | 'port' | 'binary'>) => {
+  const commandMatchesGeneration = (command: string, generation: { pid: number; port: number; binary: string | null | undefined }) => {
     if (!command) return false;
     if (commandIdentifiesOurServer(command, { pid: generation.pid, port: generation.port })) return true;
     const portMatch = command.match(/--port(?:=|\s+)(\d+)/);
@@ -931,7 +931,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     // unavailable there.
     if (process.platform !== 'win32') {
       let storeReadable = true;
-      let generation: Pick<ManagedStoreGeneration, 'pid' | 'port' | 'binary'> | null = null;
+      let generation: { pid: number; port: number; binary: string | null | undefined } | null = null;
       try {
         const store = readManagedOpenCodeStore(managedPaths.storePath);
         generation = store ? generationForPid(store, pid) : null;
