@@ -1,13 +1,16 @@
 <!--
   developing-today-forks/openchamber fork notice:
-  This fork tracks upstream openchamber/openchamber (branch main).
-  Latest upstream commit merged: 2b94db8470ca77d946917e937e3b04d7b0b678bc (feat(render): let agents ask the user to choose on a page, Fri Oct 16 03:45:18 2026 +0300) via merge commit 8f9956331.
+  This repository is a fork of dezren39/openchamber; the upstream source is
+  openchamber/openchamber (branch main), merged into this fork's main by periodic sync PRs.
+  Latest upstream commit merged: 3a0dbeafb42c6ea6d7ebb65ea5686b0b96ac566d
+  (fix(scripts): check the OpenCode server pin @openchamber/web bundles, not the Docker CLI
+  install, 2026-11-23) via sync PR #2510 (merge commit 186d8f074dbdbde28ed46695e06428f06be855a0).
 -->
 
 > [!NOTE]
 > **Fork Information (`developing-today-forks/openchamber`):**
-> This repository is a fork of [OpenChamber](https://github.com/openchamber/openchamber) tracking upstream `main`.
-> - **Latest upstream commit merged**: `2b94db8470ca77d946917e937e3b04d7b0b678bc` (Fri Oct 16 2026, merged via `8f9956331`).
+> This repository is a fork of [dezren39/openchamber](https://github.com/dezren39/openchamber), whose upstream source is [OpenChamber](https://github.com/openchamber/openchamber); upstream `main` is merged into this fork's `main` by periodic sync PRs.
+> - **Latest upstream commit merged**: `3a0dbeafb42c6ea6d7ebb65ea5686b0b96ac566d` (2026-11-23, via sync PR #2510).
 >
 > **High-Level Additions & Differences in this Fork:**
 > - **Model Pools UI & Recurring Schedules**: Settings section for managing OpenCode route pools (`experimental.model_routes`), target memberships, weights, and recurring time-based weight schedules (`ScheduleFields` / `ScheduleListEditor` with timezone, weekdays, and day-of-month windows).
