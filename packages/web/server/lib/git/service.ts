@@ -4330,10 +4330,11 @@ const extractPatchTargetPath = (patch: string) => {
   return realTargets.at(-1) || null;
 };
 
-const writeTempPatchFile = async (patch: string) => {
+export const writeTempPatchFile = async (patch: string) => {
   const tmpDir = os.tmpdir();
   const tmpPath = path.join(tmpDir, `openchamber-hunk-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
-  await fsp.writeFile(tmpPath, patch, 'utf8');
+  await fsp.writeFile(tmpPath, patch, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await fsp.chmod(tmpPath, 0o600);
   return tmpPath;
 };
 
