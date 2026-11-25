@@ -138,7 +138,9 @@ export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fet
       const detail = bounded.tooLarge ? '' : bounded.text.slice(0, 200);
       throw new ShareRelayError(`The relay answered ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
     }
-    return readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
+    const result = await readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
+    if (result === null) throw new ShareRelayError(`The relay answered ${response.status} without a valid response`, response.status);
+    return result;
   };
 
   const json = (value: JsonValue) => Buffer.from(JSON.stringify(value));
@@ -208,7 +210,8 @@ export const createShareViewerClient = ({ fetchImpl = (...args) => fetch(...args
   function readState(response: Response, route: 'status' | 'answer'): Promise<ViewerStateReply>;
   async function readState(response: Response, route: keyof typeof STATE_STATUSES): Promise<ViewerStateReply> {
     if (!STATE_STATUSES[route].includes(response.status)) throw new ShareRelayError(`The relay answered ${response.status}`, response.status);
-    const state = publicStateSchema.safeParse(await response.json().catch(() => null));
+    const result = await readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
+    const state = publicStateSchema.safeParse(result);
     if (!state.success) throw new ShareRelayError(`The relay answered ${response.status} without a share state`, response.status);
     return { ok: response.ok, httpStatus: response.status, state: state.data };
   }

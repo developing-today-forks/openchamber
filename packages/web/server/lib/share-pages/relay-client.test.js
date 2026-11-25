@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createRelayShareSigner,
   createShareRelayClient,
+  createShareViewerClient,
   isRelayBaseAllowed,
   isSharingAvailable,
   relayHttpBase,
@@ -66,25 +67,73 @@ describe('share relay client', () => {
     expect(states).toHaveLength(120);
   });
 
-  it('bounds an oversized success body instead of parsing it unbounded', async () => {
-    const oversized = JSON.stringify({ states: [{ id: 'a', status: 'open' }], pad: 'x'.repeat(17 * 1024 * 1024) });
+  it('rejects an oversized success body with its relay status', async () => {
+    let cancelled = false;
     const client = createShareRelayClient({
       getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
-      fetchImpl: async () => new Response(oversized, { status: 200 }),
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 200,
+        headers: { 'content-length': String(17 * 1024 * 1024) },
+      }),
     });
-    // The callers' existing empty behavior: an unparseable/oversized
-    // states answer contributes no states, and nothing throws.
-    await expect(client.states('https://relay.test', ['a'])).resolves.toEqual([]);
+    await expect(client.states('https://relay.test', ['a'])).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a valid response',
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('rejects malformed successful relay JSON with its relay status', async () => {
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response('{', { status: 200 }),
+    });
+    await expect(client.states('https://relay.test', ['a'])).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a valid response',
+    });
+  });
+
+  it('bounds answer state reads and rejects an oversized response with its status', async () => {
+    let cancelled = false;
+    const client = createShareViewerClient({
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 200,
+        headers: { 'content-length': String(17 * 1024 * 1024) },
+      }),
+    });
+    await expect(client.answer('https://relay.test', 'a', 'auth', 'sealed')).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a share state',
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('rejects malformed answer state JSON with its relay status', async () => {
+    const client = createShareViewerClient({ fetchImpl: async () => new Response('{', { status: 200 }) });
+    await expect(client.answer('https://relay.test', 'a', 'auth', 'sealed')).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a share state',
+    });
   });
 
   it('bounds an oversized error body instead of buffering it for the detail', async () => {
+    let cancelled = false;
     const client = createShareRelayClient({
       getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
-      fetchImpl: async () => new Response(`refused:${'E'.repeat(5000)}`, { status: 502 }),
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 502,
+        headers: { 'content-length': '5000' },
+      }),
     });
     const error = await client.close('https://relay.test', 'a').catch((caught) => caught);
     expect(error).toMatchObject({ status: 502 });
     expect(error.message).toBe('The relay answered 502');
+    expect(cancelled).toBe(true);
   });
 
   it('carries the relay status on a refusal', async () => {
