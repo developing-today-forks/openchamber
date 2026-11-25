@@ -4,7 +4,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createReplayStore, MAX_REPLAY_FILE_BYTES, resolveGlobalReplayFilePath } from './replay-store.js';
+import {
+  createReplayStore,
+  MAX_PENDING_REPLAY_BYTES,
+  MAX_PENDING_REPLAY_RECORDS,
+  MAX_REPLAY_FILE_BYTES,
+  resolveGlobalReplayFilePath,
+} from './replay-store.js';
 
 const directories = [];
 const tempFile = () => {
@@ -182,6 +188,56 @@ describe('replay store', () => {
     const state = createReplayStore({ filePath }).load();
     expect(state.head).toEqual({ position: 3, upstream: 'inst-a:2' });
     expect(state.entries.map((item) => item.position)).toEqual([2]);
+  });
+
+  it('bounds failed writes by record count and requires a durable reset after overflow', () => {
+    const filePath = tempFile();
+    const warnings = [];
+    const store = createReplayStore({ filePath, warn: (message) => warnings.push(message) });
+    store.load();
+    rmSync(filePath);
+    mkdirSync(filePath);
+
+    for (let position = 1; position <= MAX_PENDING_REPLAY_RECORDS + 1; position += 1) {
+      expect(store.appendHead({ position, upstream: '' })).toBe(false);
+    }
+
+    expect(store.pendingWriteStatus()).toMatchObject({
+      pendingRecords: MAX_PENDING_REPLAY_RECORDS,
+      resetRequired: true,
+    });
+    expect(store.pendingWriteStatus().pendingBytes).toBeLessThanOrEqual(MAX_PENDING_REPLAY_BYTES);
+    expect(store.state().head.position).toBe(0);
+    expect(warnings.some((message) => message.includes('replay persistence degraded')
+      && message.includes('durable reset'))).toBe(true);
+
+    rmSync(filePath, { recursive: true, force: true });
+    expect(store.appendHead({ position: MAX_PENDING_REPLAY_RECORDS + 2, upstream: '' })).toBe(false);
+    expect(store.state().head.position).toBe(0);
+    expect(store.appendReset({ position: MAX_PENDING_REPLAY_RECORDS + 2, upstream: 'inst-a:514' })).toBe(true);
+    expect(store.pendingWriteStatus()).toEqual({ pendingRecords: 0, pendingBytes: 0, resetRequired: false });
+    expect(createReplayStore({ filePath }).load()).toMatchObject({
+      head: { position: MAX_PENDING_REPLAY_RECORDS + 2, upstream: 'inst-a:514' },
+      entries: [],
+      droppedLocalThroughPosition: MAX_PENDING_REPLAY_RECORDS + 2,
+    });
+    expect(store.appendHead({ position: MAX_PENDING_REPLAY_RECORDS + 3, upstream: 'inst-a:515' })).toBe(true);
+  });
+
+  it('refuses one failed record larger than the pending write byte limit', () => {
+    const filePath = tempFile();
+    const warnings = [];
+    const store = createReplayStore({ filePath, warn: (message) => warnings.push(message) });
+    store.load();
+    rmSync(filePath);
+    mkdirSync(filePath);
+
+    const oversized = entry(1);
+    oversized.serializedFrame = 'x'.repeat(MAX_PENDING_REPLAY_BYTES);
+    expect(store.appendLocal(oversized)).toBe(false);
+    expect(store.pendingWriteStatus()).toEqual({ pendingRecords: 0, pendingBytes: 0, resetRequired: true });
+    expect(store.state().head.position).toBe(0);
+    expect(warnings.some((message) => message.includes('replay persistence degraded'))).toBe(true);
   });
 
   it('does not advance the durable drop marker past a failed trim (#2509)', () => {
