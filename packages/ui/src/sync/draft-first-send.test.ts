@@ -8,11 +8,13 @@ import { useConfigStore } from "@/stores/useConfigStore"
 import { useProjectsStore } from "@/stores/useProjectsStore"
 import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { useSessionGoalArmStore } from "@/stores/useSessionGoalArmStore"
+import { useSubsessionDraftStore } from "@/stores/useSubsessionDraftStore"
 import { ChildStoreManager } from "./child-store"
 import { sendRecoveredFormAnswer, setActionRefs, setOptimisticRefs } from "./session-actions"
 import { resetRecoverableQuestions } from "./recoverable-questions"
 import { SessionMessageLoader, setImperativeSessionMessageLoader, type SessionMessagePageSource } from "./session-message-loader"
 import { DraftSendError, useSessionUIStore, type NewSessionDraftState, type PendingDraftSend } from "./session-ui-store"
+import { handOffDraftSession } from "./draft-handoff"
 import { readLastActiveSession } from "./last-session-cache"
 import { setSyncRefs } from "./sync-refs"
 import { useSelectionStore } from "./selection-store"
@@ -588,5 +590,171 @@ describe("the first message of a draft", () => {
       switchRuntimeEndpoint({ apiBaseUrl: originalApiBaseUrl, runtimeKey: originalRuntimeKey })
       useSessionUIStore.getState().restoreForRuntimeSwitch(originalRuntimeKey, "runtime-switched-2")
     }
+  })
+})
+
+// Oracle: the contract of a draft handed to the server ("Send when ready").
+// Like Enter in a draft, the session is selected and the draft closed before
+// the server answers; unlike it, nothing is sent from here, and the user is
+// free at once: no wait (a worktree being made, OpenCode starting, the create
+// request) holds them, and its end never moves them from a draft or chat they
+// opened meanwhile.
+describe("a draft handed to the server", () => {
+  const handOff = (draft: NewSessionDraftState) =>
+    handOffDraftSession({ providerID: "provider", modelID: "model", agent: "build" }, draft, getRuntimeKey(), "held message")
+
+  const startHandOff = async (draft: NewSessionDraftState) => {
+    useSessionUIStore.setState({ newSessionDraft: draft, currentSessionId: null, currentSessionDirectory: null })
+    const handed = await handOff(draft)
+    handed.created.catch(() => undefined)
+    return handed
+  }
+
+  test("is its session before the server answers, and a draft opened meanwhile keeps the view when creation ends", async () => {
+    const handed = await startHandOff(openDraft(21))
+
+    let state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBe(handed.sessionId)
+    expect(state.currentSessionDirectory).toBe(DIRECTORY)
+    expect(state.newSessionDraft.open).toBe(false)
+    expect(state.pendingDraftSends.get(handed.sessionId)).toEqual({ draftId: 21, sessionCreated: false, heldMessage: "held message" })
+    expect(messagesOf(handed.sessionId)).toEqual([])
+
+    // The user opens New chat again while the session is being made.
+    useSessionUIStore.getState().openNewSessionDraft()
+    const nextDraft = useSessionUIStore.getState().newSessionDraft
+    expect(nextDraft.open).toBe(true)
+    await flush()
+    expect(createSessionCalls).toEqual([{ id: handed.sessionId, directory: DIRECTORY }])
+
+    creation.resolve()
+    const created = await handed.created
+    expect(created).toMatchObject({ sessionId: handed.sessionId, directory: DIRECTORY })
+    expect(useSessionUIStore.getState().pendingDraftSends.get(handed.sessionId)).toMatchObject({ sessionCreated: true })
+    handed.release()
+
+    state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBeNull()
+    expect(state.newSessionDraft).toBe(nextDraft)
+    expect(state.pendingDraftSends.size).toBe(0)
+    expect(childStores.getChild(DIRECTORY)?.getState().session.map((session) => session.id)).toContain(handed.sessionId)
+    expect(sendCalls).toEqual([])
+  })
+
+  test("does not wait for its own worktree: the session shows in the project and moves to the worktree once it exists", async () => {
+    const worktree = "/repo-wt"
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([["project", [{ path: worktree, projectDirectory: DIRECTORY, branch: "feature", label: "feature" }]]]) })
+    const requestId = createPendingDraftWorktreeRequest()
+    const handed = await startHandOff({ ...openDraft(22), selectedProjectId: "project", pendingWorktreeRequestId: requestId })
+
+    expect(useSessionUIStore.getState().currentSessionId).toBe(handed.sessionId)
+    expect(useSessionUIStore.getState().currentSessionDirectory).toBe(DIRECTORY)
+    useSessionUIStore.getState().openNewSessionDraft({ directoryOverride: DIRECTORY, preserveDirectoryOverride: true })
+    const nextDraft = useSessionUIStore.getState().newSessionDraft
+    await flush()
+    expect(createSessionCalls).toEqual([])
+
+    resolvePendingDraftWorktreeRequest(requestId, worktree, { keep: true })
+    await flush()
+    expect(createSessionCalls).toEqual([{ id: handed.sessionId, directory: worktree }])
+    expect(childStores.getChild(worktree)?.getState().message[handed.sessionId]).toEqual([])
+
+    creation.resolve()
+    expect(await handed.created).toMatchObject({ sessionId: handed.sessionId, directory: worktree })
+    // The transcript shown in the project before the worktree existed is gone.
+    expect(childStores.getChild(DIRECTORY)?.getState().message[handed.sessionId]).toBeUndefined()
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBeNull()
+    expect(state.newSessionDraft).toBe(nextDraft)
+  })
+
+  test("a user still on the session follows it to a listed worktree at once", async () => {
+    const worktree = "/repo-wt"
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([["project", [{ path: worktree, projectDirectory: DIRECTORY, branch: "feature", label: "feature" }]]]) })
+    const requestId = createPendingDraftWorktreeRequest()
+    const handed = await startHandOff({ ...openDraft(26), selectedProjectId: "project", pendingWorktreeRequestId: requestId })
+
+    resolvePendingDraftWorktreeRequest(requestId, worktree, { keep: true })
+    await flush()
+    expect(useSessionUIStore.getState()).toMatchObject({ currentSessionId: handed.sessionId, currentSessionDirectory: worktree })
+    expect(childStores.getChild(worktree)?.getState().message[handed.sessionId]).toEqual([])
+    expect(childStores.getChild(DIRECTORY)?.getState().message[handed.sessionId]).toBeUndefined()
+
+    creation.resolve()
+    await handed.created
+    expect(useSessionUIStore.getState()).toMatchObject({ currentSessionId: handed.sessionId, currentSessionDirectory: worktree })
+  })
+
+  test("a worktree not listed yet keeps the user on the transcript they see until the session exists", async () => {
+    const worktree = "/repo-wt"
+    const requestId = createPendingDraftWorktreeRequest()
+    const handed = await startHandOff({ ...openDraft(27), selectedProjectId: "project", pendingWorktreeRequestId: requestId })
+
+    resolvePendingDraftWorktreeRequest(requestId, worktree, { keep: true })
+    await flush()
+    // Moving the view to a folder the app does not list yet would ask the
+    // server for a session it has not made: the project's transcript stays.
+    expect(useSessionUIStore.getState()).toMatchObject({ currentSessionId: handed.sessionId, currentSessionDirectory: DIRECTORY })
+    expect(childStores.getChild(DIRECTORY)?.getState().message[handed.sessionId]).toEqual([])
+    expect(createSessionCalls).toEqual([{ id: handed.sessionId, directory: worktree }])
+
+    // The worktree list catches up while the session is being made.
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([["project", [{ path: worktree, projectDirectory: DIRECTORY, branch: "feature", label: "feature" }]]]) })
+    creation.resolve()
+    expect(await handed.created).toMatchObject({ directory: worktree })
+    expect(useSessionUIStore.getState()).toMatchObject({ currentSessionId: handed.sessionId, currentSessionDirectory: worktree })
+    expect(childStores.getChild(DIRECTORY)?.getState().message[handed.sessionId]).toBeUndefined()
+  })
+
+  test("a session the server did not create reopens the draft for a user still on it", async () => {
+    const draft = openDraft(23)
+    const handed = await startHandOff(draft)
+
+    creation.reject(new Error("offline"))
+    const error = await handed.created.then(() => null, (reason: DraftSendError) => reason)
+
+    expect(error).toBeInstanceOf(DraftSendError)
+    expect(error).toMatchObject({ sessionId: handed.sessionId, directory: DIRECTORY, sessionCreated: false })
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBeNull()
+    expect(state.newSessionDraft).toMatchObject({ open: true, draftId: draft.draftId })
+    expect(state.pendingDraftSends.size).toBe(0)
+  })
+
+  test("subsession picks go with the session, and come back to the draft when creation fails", async () => {
+    const subsessions = useSubsessionDraftStore.getState()
+    subsessions.setModels(["provider/small"])
+    try {
+      const handed = await startHandOff(openDraft(28))
+      // A draft opened now starts without the picks.
+      expect(useSubsessionDraftStore.getState().models).toEqual([])
+
+      creation.reject(new Error("offline"))
+      await handed.created.then(() => null, () => null)
+
+      expect(useSessionUIStore.getState().newSessionDraft).toMatchObject({ open: true, draftId: 28 })
+      expect(useSubsessionDraftStore.getState().models).toEqual(["provider/small"])
+    } finally {
+      subsessions.setModels([])
+    }
+  })
+
+  test("a session the server did not create leaves a draft the user opened meanwhile in place", async () => {
+    const handed = await startHandOff(openDraft(24))
+    useSessionUIStore.getState().openNewSessionDraft()
+    const nextDraft = useSessionUIStore.getState().newSessionDraft
+
+    creation.reject(new Error("offline"))
+    await handed.created.then(() => null, () => null)
+
+    const state = useSessionUIStore.getState()
+    expect(state.currentSessionId).toBeNull()
+    expect(state.newSessionDraft).toBe(nextDraft)
+  })
+
+  test("refuses to hand the same draft off twice", async () => {
+    const draft = openDraft(25)
+    await startHandOff(draft)
+    await expect(handOff(draft)).rejects.toThrow("still being created")
   })
 })

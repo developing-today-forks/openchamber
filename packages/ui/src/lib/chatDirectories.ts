@@ -120,13 +120,21 @@ export function resetChatsRootCacheForTests(): void {
   chatsRootCacheByRuntime.clear();
 }
 
-export async function createChatDirectory(now = new Date()): Promise<string> {
+/**
+ * The path a new chat directory gets, without creating it: a send that shows
+ * its session before the folder exists knows where it will be.
+ */
+export async function planChatDirectory(now = new Date()): Promise<string> {
   const runtimeKey = getRuntimeKey();
   const roots = await getChatRoots();
   if (getRuntimeKey() !== runtimeKey) throw new Error('Runtime changed while preparing chat directory');
   const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
   const id = globalThis.crypto?.randomUUID?.() ?? `${now.getTime()}-${Math.random().toString(36).slice(2)}`;
-  const directory = joinPath(roots.configured, date, `session-${id}`);
+  return joinPath(roots.configured, date, `session-${id}`);
+}
+
+export async function createChatDirectory(now = new Date()): Promise<string> {
+  const directory = await planChatDirectory(now);
   await opencodeClient.createDirectory(directory);
   return directory;
 }

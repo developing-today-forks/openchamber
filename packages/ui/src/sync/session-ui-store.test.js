@@ -6,9 +6,10 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionWorktreeStore } from './session-worktree-store';
 import { expandSlashCommandGoalObjective, materializeOpenDraftSession, resolveSendSelection, routeMessage, useSessionUIStore } from './session-ui-store';
+import { handOffDraftSession } from './draft-handoff';
 import { ChildStoreManager } from './child-store';
 import { getAllSyncSessions, setSyncRefs } from './sync-refs';
-import { createDraftSessionForServerSend, revertToMessage, setActionRefs, setOptimisticRefs } from './session-actions';
+import { revertToMessage, setActionRefs, setOptimisticRefs } from './session-actions';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useSpaceArchivesStore } from '@/lib/spaces/space-archives';
 import { useCommandsStore } from '@/stores/useCommandsStore';
@@ -1836,51 +1837,59 @@ describe('sendMessage draft snapshot (issues #2222 / #2315)', () => {
     useSessionDisplayStore.setState({ singleProjectId: null });
   });
 
-  // Oracle: a draft handed to the server ("Send when ready") leaves the user
-  // where they went: its session is created where the draft pointed, nothing
-  // is sent from here, and neither the view nor a draft opened since changes.
-  // The ordinary draft send below still opens its session.
-  const createForServerSend = (draftSnapshot) => createDraftSessionForServerSend(
+  // Oracle: a draft handed to the server ("Send when ready") becomes its
+  // session at once, the way Enter in a draft does: the session is selected
+  // and the draft closed before the server answers. Creation then finishes
+  // wherever the user went, without taking them back, and sends nothing.
+  const handOff = (draftSnapshot) => handOffDraftSession(
     { providerID: 'provider-a', modelID: 'model-a' },
     draftSnapshot,
     getRuntimeKey(),
+    'held message',
   );
 
-  test('a server-sent draft creates its session without pulling the user back from another chat', async () => {
-    const draftSnapshot = { open: true, draftId: 41, directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
+  test('a handed-off draft is its session at once and stays there when the user goes to another chat', async () => {
+    const draftSnapshot = { open: true, draftId: 41, target: 'project', directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
     useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null, newSessionDraft: draftSnapshot });
 
-    const creating = createForServerSend(draftSnapshot);
-    useSessionUIStore.getState().setCurrentSession('session-project-b', '/projects/beta');
-    const created = await creating;
+    const handed = await handOff(draftSnapshot);
+    expect(useSessionUIStore.getState().currentSessionId).toBe(handed.sessionId);
+    expect(useSessionUIStore.getState().newSessionDraft.open).toBe(false);
+    expect(useSessionUIStore.getState().pendingDraftSends.get(handed.sessionId)).toMatchObject({ draftId: 41, heldMessage: 'held message' });
 
-    expect(created.sessionId).toBe('session-materialized');
+    useSessionUIStore.getState().setCurrentSession('session-project-b', '/projects/beta');
+    const created = await handed.created;
+    handed.release();
+
+    expect(created.sessionId).toBe(handed.sessionId);
     expect(createSessionCalls).toEqual(['/projects/alpha']);
     expect(useSessionUIStore.getState().currentSessionId).toBe('session-project-b');
+    expect(useSessionUIStore.getState().pendingDraftSends.has(handed.sessionId)).toBe(false);
     expect(sendMessageCalls).toHaveLength(0);
   });
 
-  test('a server-sent draft leaves a new draft the user opened meanwhile open', async () => {
-    const draftSnapshot = { open: true, draftId: 51, directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
+  test('a handed-off draft leaves a new draft the user opened meanwhile open', async () => {
+    const draftSnapshot = { open: true, draftId: 51, target: 'project', directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
     useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null, newSessionDraft: draftSnapshot });
 
-    const creating = createForServerSend(draftSnapshot);
-    useSessionUIStore.setState({ newSessionDraft: { open: true, draftId: 52, directoryOverride: '/projects/alpha', parentID: null } });
-    await creating;
+    const handed = await handOff(draftSnapshot);
+    useSessionUIStore.setState({ currentSessionId: null, newSessionDraft: { open: true, draftId: 52, target: 'project', directoryOverride: '/projects/alpha', parentID: null } });
+    await handed.created;
 
     expect(useSessionUIStore.getState().currentSessionId).toBeNull();
     expect(useSessionUIStore.getState().newSessionDraft.open).toBe(true);
     expect(useSessionUIStore.getState().newSessionDraft.draftId).toBe(52);
   });
 
-  test('a server-sent draft still opens its session when the user stayed on the draft', async () => {
-    const draftSnapshot = { open: true, draftId: 61, directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
-    useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null, newSessionDraft: draftSnapshot });
+  test('a draft the user already left is not selected when it is handed off', async () => {
+    const draftSnapshot = { open: true, draftId: 61, target: 'project', directoryOverride: '/projects/alpha', parentID: null, title: 'Project A draft' };
+    useSessionUIStore.setState({ currentSessionId: 'session-project-b', currentSessionDirectory: '/projects/beta', newSessionDraft: { open: false, directoryOverride: null, parentID: null } });
 
-    await createForServerSend(draftSnapshot);
-    expect(useSessionUIStore.getState().currentSessionId).toBe('session-materialized');
-    expect(useSessionUIStore.getState().newSessionDraft.open).toBe(false);
-    expect(sendMessageCalls).toHaveLength(0);
+    const handed = await handOff(draftSnapshot);
+    expect(useSessionUIStore.getState().currentSessionId).toBe('session-project-b');
+    await handed.created;
+    expect(useSessionUIStore.getState().currentSessionId).toBe('session-project-b');
+    expect(createSessionCalls).toEqual(['/projects/alpha']);
   });
 
   test.each([

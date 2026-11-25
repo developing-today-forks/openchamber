@@ -133,13 +133,21 @@ const initializeSessionForWorktree = (sessionId: string, startDirectory: string,
 };
 
 
+const liveDraftHolds = (requestId: string): boolean => {
+  const draft = useSessionUIStore.getState().newSessionDraft;
+  return draft.open && draft.pendingWorktreeRequestId === requestId;
+};
+
 const rollBackCancelledDraftWorktree = (
   requestId: string,
   previousDraft: NewSessionDraftState,
 ): void => {
   const sessionStore = useSessionUIStore.getState();
   void waitForPendingDraftWorktreeRequest(requestId).catch(() => undefined);
-  rejectPendingDraftWorktreeRequest(requestId, new Error('Worktree creation cancelled'));
+  rejectPendingDraftWorktreeRequest(requestId, new Error('Worktree creation cancelled'), { keep: true });
+  // A draft sent meanwhile (Send when ready) is a session now; the draft on
+  // screen is someone else's.
+  if (!liveDraftHolds(requestId)) return;
   if (!previousDraft.open) {
     sessionStore.resolvePendingDraftWorktreeTarget(requestId, null);
     sessionStore.closeNewSessionDraft();
@@ -194,11 +202,11 @@ const createInstantWorktreeDraft = async (options?: {
   }
 
   isCreatingWorktreeSession = true;
+  const pendingRequestId = createPendingDraftWorktreeRequest();
 
   try {
     const projectRef: ProjectRef = { id: activeProject.id, path: projectDirectory };
     const previousDraft = useSessionUIStore.getState().newSessionDraft;
-    const pendingRequestId = createPendingDraftWorktreeRequest();
 
     const sessionStore = useSessionUIStore.getState();
     if (previousDraft.open) {
@@ -230,7 +238,8 @@ const createInstantWorktreeDraft = async (options?: {
       return null;
     }
 
-    resolvePendingDraftWorktreeRequest(pendingRequestId, metadata.path);
+    resolvePendingDraftWorktreeRequest(pendingRequestId, metadata.path, { keep: true });
+    if (!liveDraftHolds(pendingRequestId)) return metadata.path;
     useSessionUIStore.getState().overrideNewSessionDraftTarget({
       projectId: projectRef.id,
       directoryOverride: metadata.path,
@@ -245,12 +254,11 @@ const createInstantWorktreeDraft = async (options?: {
     return metadata.path;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create worktree';
-    const requestId = useSessionUIStore.getState().newSessionDraft.pendingWorktreeRequestId;
-    if (requestId) {
-      rejectPendingDraftWorktreeRequest(requestId, error instanceof Error ? error : new Error(message));
-      useSessionUIStore.getState().resolvePendingDraftWorktreeTarget(requestId, null);
+    rejectPendingDraftWorktreeRequest(pendingRequestId, error instanceof Error ? error : new Error(message), { keep: true });
+    if (liveDraftHolds(pendingRequestId)) {
+      useSessionUIStore.getState().resolvePendingDraftWorktreeTarget(pendingRequestId, null);
+      useSessionUIStore.getState().setDraftBootstrapPendingDirectory(null);
     }
-    useSessionUIStore.getState().setDraftBootstrapPendingDirectory(null);
     toast.error('Failed to create worktree', {
       description: message,
     });

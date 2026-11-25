@@ -282,7 +282,11 @@ disabled, Stop is not offered, Enter and the pill's arrow do nothing, and
 nothing is queued. A first send that fails restores its text under the
 identity `DraftSendError` names: the created session's composer, or the
 reopened draft's, with the text typed meanwhile kept above the sent text
-(*A draft's first send* in `sync/DOCUMENTATION.md`).
+(*A draft's first send* in `sync/DOCUMENTATION.md`). A draft handed to the
+server with Send when ready holds the same entry until its goal job is
+started, so a message typed into the new session cannot reach it before the
+held one; the held message shows in the goal-spec row above the input
+(`GoalSpecJobStrip`), which stays until the server queues it.
 
 A send the page did not live to see settled comes back after the next start.
 On Enter the composer clears its draft and writes the sent text to

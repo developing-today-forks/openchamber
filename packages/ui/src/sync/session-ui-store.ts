@@ -150,7 +150,6 @@ export function resolveGoalObjective(content: string, directory: string | null |
   return expandSlashCommandGoalObjective(content, selectCommandsForDirectory(useCommandsStore.getState(), directory))
 }
 
-
 export async function routeMessage(params: Pick<SendMessageOptions, "isCurrentRuntime"> & {
   runtimeKey?: string
   sessionId: string
@@ -347,7 +346,6 @@ function notifyMessageSent(sessionId: string): void {
     .catch(() => { /* ignore */ })
 }
 
-
 type NewSessionDraftTarget = "chat" | "project"
 
 /**
@@ -452,7 +450,8 @@ export type SessionUIState = {
   resolvePendingDraftWorktreeTarget: (requestId: string, directory: string | null, options?: PendingDraftWorktreeResolution) => void
   setDraftBootstrapPendingDirectory: (directory: string | null) => void
   setDraftWorktreeStartDirectory: (draftId: number, worktreeRoot: string, directory: string | null) => void
-  setPendingDraftWorktreeRequest: (requestId: string | null) => void
+  /** Marks the open draft as waiting for a worktree; with `draftId`, only when that draft is still the open one. */
+  setPendingDraftWorktreeRequest: (requestId: string | null, draftId?: number) => void
   getWorktreeMetadata: (sessionId: string) => WorktreeMetadata | undefined
 
   sendMessage: (
@@ -499,7 +498,6 @@ export type SessionUIState = {
   setSessionDirectory: (sessionId: string, directory: string | null) => void
   adoptAuthoritativeSessionDirectory: (sessionId?: string) => void
 }
-
 
 
 const resolveDirectoryKey = (session: Session): string | null => {
@@ -787,6 +785,8 @@ type MaterializedDraftSession = {
 export type PendingDraftSend = {
   draftId: number
   sessionCreated: boolean
+  /** A message the server sends later with its goal spec ("Send when ready"), shown while the session is made. */
+  heldMessage?: string
 }
 
 const resolveProjectRefForWorktreeDirectory = (directory: string | null, projectId?: string | null): { id: string; path: string } | null => {
@@ -989,29 +989,6 @@ const consumeDraftSubagentPolicy = (createSelection: SessionCreateSelection): vo
   if (createSelection.subagentPolicy) useSubsessionDraftStore.getState().consume()
 }
 
-/**
- * Whether the user is still on `draft`. A send can create its session long
- * after it was made (it waits on a worktree, or on a goal being written), and
- * by then the user may have opened another draft or chat.
- */
-const isStillOnDraft = (draft: NewSessionDraftState): boolean => {
-  const live = useSessionUIStore.getState().newSessionDraft
-  return live.open && live.draftId === draft.draftId
-}
-
-/**
- * Where a handed-off draft whose user moved on creates its session: the
- * draft's own target, never the live draft's (`keepUserPlace`).
- */
-const resolveMovedOnDraftDirectory = async (draft: NewSessionDraftState): Promise<string | null> => {
-  if (draft.target === "chat") return draft.preparedChatDirectory ?? await createChatDirectory()
-  let directory = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
-  if (draft.pendingWorktreeRequestId) directory = await waitForPendingDraftWorktreeRequest(draft.pendingWorktreeRequestId)
-  const draftProjectId = draft.selectedProjectId ?? null
-  await waitForWorktreeBootstrapIfConfigured(directory, draftProjectId)
-  return resolveDraftStartDirectory(directory, draftProjectId)
-}
-
 const resolveDraftTargetDirectory = async (draft: NewSessionDraftState): Promise<string | null> => {
   const store = useSessionUIStore.getState()
   let directory = draft.bootstrapPendingDirectory ?? draft.directoryOverride ?? null
@@ -1158,15 +1135,6 @@ export async function materializeOpenDraftSession(
   selection: DraftSessionSelection,
   draftOverride?: NewSessionDraftState,
   expectedRuntimeKey = getRuntimeKey(),
-  options?: {
-    /**
-     * The send was handed off and the user may have moved on (a goal written
-     * on the server): if they left the draft, its session is created without
-     * opening it or closing the draft now on screen. Other sends open their
-     * session.
-     */
-    keepUserPlace?: boolean
-  },
 ): Promise<MaterializedDraftSession | null> {
   const draft = draftOverride ?? useSessionUIStore.getState().newSessionDraft
   if (!draft?.open) return null
@@ -1177,10 +1145,7 @@ export async function materializeOpenDraftSession(
   const chatDirectoryCleanup = await captureChatDirectoryCleanup(draft.target, expectedRuntimeKey)
   assertRuntimeCurrent()
 
-  const keepUserPlace = options?.keepUserPlace === true
-  const directory = keepUserPlace && !isStillOnDraft(draft)
-    ? await resolveMovedOnDraftDirectory(draft)
-    : await resolveDraftSessionDirectory(draft, chatDirectoryCleanup)
+  const directory = await resolveDraftSessionDirectory(draft, chatDirectoryCleanup)
   if (getRuntimeKey() !== expectedRuntimeKey) {
     if (draft.target === "chat") await deletePreparedChatDirectory(directory, chatDirectoryCleanup)
     assertRuntimeCurrent()
@@ -1192,7 +1157,7 @@ export async function materializeOpenDraftSession(
     draftSessionMetadata(draft),
     "submitted-draft",
     createSelection,
-    keepUserPlace ? "preserve" : "open",
+    "open",
     undefined,
     expectedRuntimeKey,
   )
@@ -1203,14 +1168,7 @@ export async function materializeOpenDraftSession(
   }
   consumeDraftSubagentPolicy(createSelection)
   assertRuntimeCurrent()
-  // A handed-off draft decides whether to open its session only once it
-  // exists: the user may leave the draft while it is being created.
-  if (!keepUserPlace) {
-    useSessionUIStore.getState().closeNewSessionDraft()
-  } else if (isStillOnDraft(draft)) {
-    useSessionUIStore.getState().setCurrentSession(created.id, created.directory || directory || null, { transition: "submitted-draft" })
-    useSessionUIStore.getState().closeNewSessionDraft()
-  }
+  useSessionUIStore.getState().closeNewSessionDraft()
 
   const createdDirectory = finishDraftSession(draft, created, directory)
   const agent = saveDraftSessionSelection(created.id, selection)
@@ -1492,7 +1450,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (restoredSessionId && isSessionAdmitted(directory)) get().setCurrentSession(restoredSessionId, directory)
     }
   },
-
 
 
   openNewSessionDraft: (options) => {
@@ -1889,9 +1846,9 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return { newSessionDraft: { ...s.newSessionDraft, worktreeStartDirectory: { worktreeRoot, directory } } }
     }),
 
-  setPendingDraftWorktreeRequest: (requestId) =>
+  setPendingDraftWorktreeRequest: (requestId, draftId) =>
     set((s) => {
-      if (!s.newSessionDraft?.open) return s
+      if (!s.newSessionDraft?.open || (draftId !== undefined && s.newSessionDraft.draftId !== draftId)) return s
       return { newSessionDraft: { ...s.newSessionDraft, pendingWorktreeRequestId: requestId } }
     }),
 
@@ -2669,3 +2626,24 @@ useSessionUIStore.subscribe((state, prev) => {
     }
   }
 })
+
+/**
+ * The steps of a draft's first send that `draft-handoff.ts` shares with
+ * `sendMessage`; nothing else uses them.
+ */
+export const draftSendSteps = {
+  sentDraftIds,
+  runtimeMemoryKey,
+  writeRuntimeSessionMemory,
+  draftSessionCreateSelection,
+  consumeDraftSubagentPolicy,
+  saveDraftSessionSelection,
+  setPendingDraftSend,
+  resolveDraftCreateDirectory,
+  finishDraftSession,
+  captureChatDirectoryCleanup,
+  deletePreparedChatDirectory,
+  reopenDraftAfterFailedCreation,
+}
+
+export type { DraftSessionSelection, MaterializedDraftSession }

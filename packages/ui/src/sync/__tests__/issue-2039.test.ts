@@ -351,6 +351,7 @@ mock.module("../session-actions", () => ({
   adoptSessionMove: () => undefined,
   markSessionStatus: () => undefined,
   openPendingSessionTranscript: () => undefined,
+  movePendingSessionTranscript: () => undefined,
   deleteSession: mock(async () => true),
   deleteSessions: mock(async () => ({ deletedIds: [], failedIds: [] })),
   archiveSession: mock(async () => true),

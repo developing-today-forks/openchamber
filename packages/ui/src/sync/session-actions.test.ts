@@ -1,6 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test"
 import type { PermissionRequest } from "@/types/permission"
-import type { NewSessionDraftState } from "./session-ui-store"
 import type { WorktreeMetadata } from "@/types/worktree"
 import type { FormRequest } from "@/lib/opencode/model"
 import type { InputState } from "./input-store"
@@ -282,12 +281,6 @@ mock.module("@/stores/useConfigStore", () => ({
 
 // The session the main chat shows; the composer in the config store is its own.
 let mainSessionId: string | null = null
-// What a send hands to routing, and the draft sessions it asks for.
-const routedMessages: Array<{ sessionId: string; directory?: string | null; content: string }> = []
-let materializeDraft: () => Promise<{ sessionId: string; directory: string | null; agent?: string }> = async () => {
-  throw new Error("materializeOpenDraftSession is not stubbed for a send")
-}
-const materializeCalls: Array<{ draft: NewSessionDraftState; options: { keepUserPlace?: boolean } }> = []
 
 // Mock useSessionUIStore
 type RecordedSend = {
@@ -304,13 +297,8 @@ const sendMessageCalls: RecordedSend[] = []
 let sendMessageBehavior: () => Promise<void> = async () => {}
 
 mock.module("./session-ui-store", () => ({
-  routeMessage: async (input: { sessionId: string; directory?: string | null; content: string }) => {
-    routedMessages.push({ sessionId: input.sessionId, directory: input.directory, content: input.content })
-  },
-  materializeOpenDraftSession: async (_selection: { providerID: string }, draft: NewSessionDraftState, _runtimeKey: string, options: { keepUserPlace?: boolean }) => {
-    materializeCalls.push({ draft, options })
-    return materializeDraft()
-  },
+  routeMessage: async () => {},
+  materializeOpenDraftSession: async () => null,
   useSessionUIStore: {
     getState: () => ({
       getDirectoryForSession: (sessionId: string) => {
@@ -6009,40 +5997,6 @@ describe("setSessionWorkState", () => {
     expect(globalUpsertedSessions).toHaveLength(0)
   })
 });
-
-// Oracle: the contract of createDraftSessionForServerSend. The session is
-// made from the submitted snapshot with keepUserPlace, and a runtime switch
-// before the create refuses it, so nothing lands on the wrong server.
-describe("createDraftSessionForServerSend", () => {
-  beforeEach(() => {
-    materializeDraft = async () => { throw new Error("materializeOpenDraftSession is not stubbed for a send") }
-  })
-
-  test("creates the submitted draft's session and sends nothing", async () => {
-    const { createDraftSessionForServerSend } = await import("./session-actions")
-    routedMessages.length = 0
-    materializeDraft = async () => ({ sessionId: "created", directory: "/test/project" })
-    // SAFETY: the action passes the snapshot through; materializeOpenDraftSession, which reads it, is stubbed.
-    const draft = { open: true } as NewSessionDraftState
-    const created = await createDraftSessionForServerSend({ providerID: "p", modelID: "m" }, draft, runtimeKey)
-    expect(created).toMatchObject({ sessionId: "created", directory: "/test/project" })
-    expect(materializeCalls.at(-1)).toEqual({ draft, options: { keepUserPlace: true } })
-    expect(routedMessages).toEqual([])
-  })
-
-  test("refuses a draft submitted on another runtime", async () => {
-    const { createDraftSessionForServerSend } = await import("./session-actions")
-    let materialized = 0
-    materializeDraft = async () => {
-      materialized += 1
-      return { sessionId: "created", directory: "/test/project" }
-    }
-    // SAFETY: as above; the snapshot is never read.
-    const draft = { open: true } as NewSessionDraftState
-    await expect(createDraftSessionForServerSend({ providerID: "p", modelID: "m" }, draft, "another-runtime")).rejects.toThrow("runtime changed")
-    expect(materialized).toBe(0)
-  })
-})
 
 describe("sendRecoveredFormAnswer", () => {
   const recoveredForm: FormRequest = {

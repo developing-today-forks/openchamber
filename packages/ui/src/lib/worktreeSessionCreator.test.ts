@@ -37,6 +37,8 @@ const rejectedRequests: Array<{ id: string; message: string }> = [];
 const resolvedRequests: Array<{ id: string; directory: string }> = [];
 const directories: string[] = [];
 const toastErrors: string[] = [];
+// Runs while the worktree is being made: the user moves on meanwhile.
+let whileCreating: () => void = () => {};
 
 const sessionStoreState = {
   get newSessionDraft() {
@@ -119,6 +121,7 @@ mock.module('@/lib/worktrees/worktreeManager', () => ({
 mock.module('@/lib/worktrees/worktreeCreate', () => ({
   createWorktreeWithDefaults: async (_project: ProjectRef, args: CreateWorktreeArgs) => {
     createdPayloads.push(args);
+    whileCreating();
     return {
       source: 'sdk',
       name: 'generated-branch',
@@ -190,6 +193,7 @@ describe('quick worktree trust', () => {
     resolvedRequests.length = 0;
     directories.length = 0;
     toastErrors.length = 0;
+    whileCreating = () => {};
   });
 
   test('a cancelled trust prompt creates no worktree', async () => {
@@ -244,5 +248,36 @@ describe('quick worktree trust', () => {
 
     expect(createdPayloads).toHaveLength(1);
     expect(createdPayloads[0]?.setupCommands).toEqual(['bun install', 'cp .env.example .env']);
+  });
+
+  // Oracle: the request the worktree belongs to. A draft handed off with
+  // "Send when ready" closes while its worktree is made, and the session it
+  // became waits on that request; a draft the user opened since is theirs.
+  const openNewerDraft = () => {
+    draftState = { ...emptyDraft(), draftId: 2, open: true, directoryOverride: '/elsewhere', title: 'mine' };
+  };
+
+  test('a worktree that fails after its draft was handed off still settles the request the session waits on', async () => {
+    resolvedCommands = [];
+    whileCreating = () => {
+      openNewerDraft();
+      throw new Error('disk full');
+    };
+
+    expect(await createWorktreeDraft()).toBeNull();
+
+    expect(rejectedRequests).toEqual([{ id: 'request-1', message: 'disk full' }]);
+    expect(draftState).toMatchObject({ draftId: 2, open: true, directoryOverride: '/elsewhere', pendingWorktreeRequestId: null, title: 'mine' });
+  });
+
+  test('a worktree made after its draft was handed off leaves the draft and folder the user opened since alone', async () => {
+    resolvedCommands = [];
+    whileCreating = openNewerDraft;
+
+    expect(await createWorktreeDraft()).toBe('/repo/.oc/worktrees/generated-branch');
+
+    expect(resolvedRequests).toEqual([{ id: 'request-1', directory: '/repo/.oc/worktrees/generated-branch' }]);
+    expect(draftState).toMatchObject({ draftId: 2, directoryOverride: '/elsewhere', bootstrapPendingDirectory: null, title: 'mine' });
+    expect(directories).toEqual([]);
   });
 });

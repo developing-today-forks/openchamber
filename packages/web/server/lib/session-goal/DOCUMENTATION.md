@@ -548,12 +548,19 @@ session or a settled goal costs one read.
   review) does the same; closing a review dialog cancels. The run in the
   window stops, and the server takes over (`spec-jobs.js`, below): the
   composer resolves the message as it would for the queue (mentions,
-  snippets, attachments, attached context), creates a draft's session
-  (`createDraftSessionForServerSend`, which leaves the user where they went
-  meanwhile), and starts a job for that session. The message leaves the
-  composer at once. A job that cannot be started (session creation or the
-  save failed) puts the message back at once, in the created session's
-  composer or the one it came from.
+  snippets, attachments, attached context), makes a draft its session on the
+  spot (`handOffDraftSession`: the session is selected and the draft closed
+  at once, and creation, with any worktree and its setup commands, goes on in
+  the background), and starts a job for that session once the server has it.
+  The message leaves the composer at once; the composer of its session shows
+  it in a row with the goal being written (`GoalSpecJobStrip`), from the
+  moment the session is selected until the server queues it. Nothing this
+  later work does moves the user or touches another composer's text: only the
+  composer the message was written in is cleared (its text on screen while it
+  still shows that draft or session, its saved draft either way). A job that cannot be started (session creation
+  or the save failed) puts the message back at once, in the created session's
+  composer or the draft's (reopened when the user is still on its session),
+  with anything typed in the uncreated session's composer kept above it.
 - `server/lib/session-goal/spec-jobs.js` — the server owns a Send when ready
   message from then on, whether or not a window is open. It writes the spec
   and puts the message into the session's message queue with the spec as a
@@ -760,15 +767,16 @@ it loop over them.
 
 ### Why a draft creates its session before its goal is written, and not after
 
-Creating a session from a draft reads the live draft: its directory checks,
-the prepared chat directory and closing the draft all assume the user is still
-on it. Deferring creation until the spec arrives would race whatever draft or
-chat the user opened meanwhile, and the server cannot create it from a draft
-that only exists in a browser. The session is created at once, and the job
-the server owns holds its first message until the goal is written, so the
-agent never starts without it. Creation that waits on worktree setup uses the submitted
-draft snapshot and preserves a different chat or draft the user opened while
-waiting. The new session never changes that later selection or clears its text.
+The server cannot create a session from a draft that only exists in a
+browser, and deferring creation until the spec arrives would race whatever
+draft or chat the user opened meanwhile. The session is created first, and
+the job the server owns holds its first message until the goal is written, so
+the agent never starts without it. Creation works from the submitted draft
+snapshot, never the live draft: the session is selected at once like any
+draft's first send, the draft is released, and the waits behind creation (a
+worktree, its setup commands, OpenCode starting) run while the user is free
+to open New chat again. Their end never changes a later selection or clears
+its text.
 
 ### Why the server owns Send when ready, through the message queue
 

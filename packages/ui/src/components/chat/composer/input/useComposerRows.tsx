@@ -32,6 +32,7 @@ import { BackgroundShellsStrip } from '@/components/chat/BackgroundShellsStrip';
 import { PersistentTerminalsStrip } from '@/components/chat/PersistentTerminalsStrip';
 import { useHasSessionTerminals, useSessionTerminalsLoaded } from '@/hooks/usePersistentTerminals';
 import { GoalEditStrip } from '@/components/chat/GoalEditStrip';
+import { GoalSpecJobStrip } from '@/components/chat/GoalSpecJobStrip';
 import { useRunParentHint } from '@/components/multirun/RunParentHint';
 import CurrentModelIndicator from '../../CurrentModelIndicator';
 import { ComposerStatusStrip } from '@/components/chat/ComposerStatusStrip';
@@ -194,6 +195,11 @@ export function useComposerRows({
         />
     ) : null;
 
+    // A message held for its goal spec ("Send when ready").
+    const goalSpecJobRow = !isBtwActive && !newSessionDraftOpen ? (
+        <GoalSpecJobStrip key={`goal-spec-job:${currentSessionId ?? ''}`} sessionId={currentSessionId} />
+    ) : null;
+
     const revertRow = !isBtwActive && !newSessionDraftOpen ? (
         <RevertedMessagesStrip
             sessionId={currentSessionId}
@@ -218,7 +224,7 @@ export function useComposerRows({
         ? <SessionTrustPausedRow directory={trustPausedDirectory} />
         : null;
 
-    const composerTopRows = folderMissingRow || trustPausedRow || worktreeSetupRow || creatingSessionRow || spaceWaitRow || parentHintRow || goalRow || goalEditRow || autoReviewRow || prWatchRow || extensionWaitRow || backgroundShellsRow || persistentTerminalsRow || revertRow || queueRow || doneHintRow || reviewHintRow || suggestionRow ? (
+    const composerTopRows = folderMissingRow || trustPausedRow || worktreeSetupRow || creatingSessionRow || spaceWaitRow || parentHintRow || goalRow || goalEditRow || goalSpecJobRow || autoReviewRow || prWatchRow || extensionWaitRow || backgroundShellsRow || persistentTerminalsRow || revertRow || queueRow || doneHintRow || reviewHintRow || suggestionRow ? (
         <>
             {folderMissingRow}
             {trustPausedRow}
@@ -228,6 +234,7 @@ export function useComposerRows({
             {parentHintRow}
             {goalRow}
             {goalEditRow}
+            {goalSpecJobRow}
             {autoReviewRow}
             {prWatchRow}
             {extensionWaitRow}

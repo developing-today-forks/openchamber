@@ -26,29 +26,30 @@ import { createGoalSpecJob, takeGoalSpecJob, type GoalSpecJobWriterInput } from 
 import { getSessionGoal } from '@/lib/sessionGoalMetadata';
 import { resolveProjectForSessionDirectory } from '@/lib/projectResolution';
 import { captureRuntimeInstance, getRuntimeKey } from '@/lib/runtime-switch';
-import { createChatDraftIdentity, getChatDraftIdentityKey, type ChatDraftIdentity } from '@/lib/chatDraftPersistence';
+import { clearChatDraft, createChatDraftIdentity, getChatDraftIdentityKey, readChatDraft, writeChatDraft, type ChatDraftIdentity } from '@/lib/chatDraftPersistence';
 import { fetchResponseStyleInstruction } from '@/lib/responseStyle';
 import { wrapSystemReminder } from '@/lib/systemReminder';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { shouldAutoCreateDraftWorktree, startAutoDraftWorktree } from '@/lib/worktrees/autoDraftWorktree';
 import { selectWorktreeStartFrom } from '@/lib/worktrees/worktreeStartSource';
-import { useSessionUIStore, type NewSessionDraftState } from '@/sync/session-ui-store';
+import { DraftSendError, useSessionUIStore, type NewSessionDraftState } from '@/sync/session-ui-store';
+import { handOffDraftSession } from '@/sync/draft-handoff';
 import { getAllSyncSessionMap } from '@/sync/sync-refs';
 import { useInputStore } from '@/sync/input-store';
-import * as sessionActions from '@/sync/session-actions';
 import { toast } from '@/components/ui';
 import { collectGoalWriterContext } from '@/components/chat/goalWriterContext';
 import type { GoalSpecDialogRequest, GoalWriterHandoff, GoalWriterRunOptions } from '@/components/chat/GoalSpecDialog';
 import { recordLinkedReferences } from './recordLinkedReferences';
 import { goalWriterHeldMessage } from './goalWriterHeldMessage';
 import { createComposerSubmitErrorMessage } from './createComposerSubmitErrorMessage';
+import { resolveOpenWorkDraftIdentity } from './composerDraftIdentity';
 
 type DraftTargetInfo = Pick<ReturnType<typeof useComposerDraftTarget>, 'showDraftTargetSelectors' | 'selectedDraftProject' | 'selectedDraftProjectIsGitRepo'>;
 
 type Dependencies = {
     i18n: Pick<ReturnType<typeof useI18n>, 't'>;
     sendHandlers: Pick<ComposerSendHandlers, 'handleSubmitRef'>;
-    draftText: Pick<ReturnType<typeof useComposerDraftText>, 'setMessage' | 'confirmedMentionsRef' | 'currentChatDraftIdentityRef'>;
+    draftText: Pick<ReturnType<typeof useComposerDraftText>, 'setMessage' | 'confirmedMentionsRef' | 'currentChatDraftIdentityRef' | 'composerText'>;
     sessionScope: Pick<ReturnType<typeof useComposerSessionScope>, 'chatDraftIdentity' | 'currentSessionId' | 'currentSessionDirectoryForSync' | 'currentDirectory' | 'newSessionDraftOpen' | 'newSessionDraft' | 'clearAttachedFiles' | 'isBtwActive' | 'inputMode'>;
     selection: Pick<ReturnType<typeof useComposerSelection>, 'currentProviderId' | 'currentModelId' | 'currentAgentName' | 'currentVariant'>;
     draftHistory: Pick<ReturnType<typeof useComposerDraftHistory>, 'restoreDraft' | 'persistDraftImmediately' | 'messageHistory'>;
@@ -84,7 +85,7 @@ export function useComposerGoalWriter({
 }: Dependencies) {
     const { t } = i18n;
     const { handleSubmitRef } = sendHandlers;
-    const { setMessage, confirmedMentionsRef, currentChatDraftIdentityRef } = draftText;
+    const { setMessage, confirmedMentionsRef, currentChatDraftIdentityRef, composerText } = draftText;
     const {
         chatDraftIdentity, currentSessionId, currentSessionDirectoryForSync, currentDirectory,
         newSessionDraftOpen, newSessionDraft, clearAttachedFiles, isBtwActive, inputMode,
@@ -140,9 +141,10 @@ export function useComposerGoalWriter({
     /**
      * Starts the draft's own worktree when Settings ask for one; the draft's
      * session creation waits for it. Writes the request id onto `draft`.
+     * `draftTarget` is the composer's target as it was when `draft` was
+     * submitted.
      */
-    const startDraftWorktreeIfConfigured = (draft: NewSessionDraftState, prompt: string, model: string) => {
-        const draftTarget = draftTargetRef.current;
+    const startDraftWorktreeIfConfigured = (draft: NewSessionDraftState, prompt: string, model: string, draftTarget = draftTargetRef.current) => {
         const project = draftTarget?.selectedDraftProject;
         if (
             !draftTarget?.showDraftTargetSelectors
@@ -156,6 +158,7 @@ export function useComposerGoalWriter({
         ) return;
         const autoWorktreeSource = draft.autoWorktreeSource;
         draft.pendingWorktreeRequestId = startAutoDraftWorktree({
+            draftId: draft.draftId,
             project: { id: project.id, path: project.path },
             prompt,
             model,
@@ -191,6 +194,25 @@ export function useComposerGoalWriter({
         if (isCurrent && context.length > 0) restoreQueuedContext(context);
     };
 
+    /**
+     * Text typed in the composer of a session the server never created goes
+     * to the composer the message goes back to, above the message. The
+     * session's composer was keyed by each folder it was shown in.
+     */
+    const moveTextTypedInUncreatedSession = (sessionId: string, directories: Array<string | null>, runtimeKey: string, restoreTo: ChatDraftIdentity) => {
+        const seen = new Set<string>();
+        for (const directory of directories) {
+            const sessionIdentity = createChatDraftIdentity(runtimeKey, directory, sessionId);
+            if (!sessionIdentity || seen.has(getChatDraftIdentityKey(sessionIdentity))) continue;
+            seen.add(getChatDraftIdentityKey(sessionIdentity));
+            const typed = sameDraftIdentity(sessionIdentity, currentChatDraftIdentityRef.current)
+                ? composerText.get()
+                : readChatDraft(sessionIdentity).text;
+            if (typed.trim()) restoreDraft(restoreTo, typed, new Set());
+            clearChatDraft(sessionIdentity);
+        }
+    };
+
     startGoalJobRef.current = async (pending, handoff) => {
         const runtimeKey = getRuntimeKey();
         const isCurrentRuntime = captureRuntimeInstance();
@@ -203,6 +225,7 @@ export function useComposerGoalWriter({
         }
         const sendConfig = { providerID, modelID, agent: currentAgentName ?? undefined, variant: currentVariant ?? undefined };
         const draftSnapshot = newSessionDraftOpen ? { ...newSessionDraft } : null;
+        const draftTarget = draftTargetRef.current;
         const replySessionId = currentSessionId;
         const replyDirectory = currentSessionDirectoryForSync ?? currentDirectory ?? null;
         const isNewSession = !replySessionId && Boolean(draftSnapshot);
@@ -215,25 +238,38 @@ export function useComposerGoalWriter({
         const message = goalWriterHeldMessage(captured);
         // The composer is free for the next message at once. Its goal arm went
         // with this message: the server sets the written spec as the goal.
+        // Text typed in another composer while the message was resolved stays.
         useSessionGoalArmStore.getState().setArmed(false);
-        setMessage('');
-        confirmedMentionsRef.current.clear();
-        persistDraftImmediately(chatDraftIdentity, '');
-        messageHistory.reset();
+        if (sameDraftIdentity(sourceIdentity, currentChatDraftIdentityRef.current)) {
+            setMessage('');
+            confirmedMentionsRef.current.clear();
+            messageHistory.reset();
+            persistDraftImmediately(chatDraftIdentity, '');
+        } else if (chatDraftIdentity) {
+            writeChatDraft(chatDraftIdentity, '', new Set());
+        }
         if (captured.composerAttachments.length > 0) clearAttachedFiles(chatDraftIdentity);
         setLinkedReferencesFor(chatDraftIdentity, []);
 
         let target: { sessionId: string; directory: string } | null = replySessionId && replyDirectory
             ? { sessionId: replySessionId, directory: replyDirectory }
             : null;
+        let releaseDraftSession: (() => void) | null = null;
+        let shownDirectory: string | null = null;
         try {
             if (!target && draftSnapshot) {
-                startDraftWorktreeIfConfigured(draftSnapshot, captured.textToQueue, `${providerID}/${modelID}`);
-                const created = await sessionActions.createDraftSessionForServerSend(
+                startDraftWorktreeIfConfigured(draftSnapshot, captured.textToQueue, `${providerID}/${modelID}`, draftTarget);
+                // The session is selected now; its creation (a worktree, its
+                // setup, OpenCode starting) goes on wherever the user goes.
+                const handedOff = await handOffDraftSession(
                     { providerID, modelID, agent: currentAgentName ?? undefined, variant: currentVariant },
                     draftSnapshot,
                     runtimeKey,
+                    message.content,
                 );
+                releaseDraftSession = handedOff.release;
+                shownDirectory = handedOff.shownDirectory;
+                const created = await handedOff.created;
                 if (!created.directory) throw new Error('Failed to create session');
                 target = { sessionId: created.sessionId, directory: created.directory };
                 for (const part of created.syntheticParts ?? []) message.context?.push({ kind: 'synthetic', text: part.text });
@@ -257,10 +293,18 @@ export function useComposerGoalWriter({
             recordLinkedReferences(target.sessionId, target.directory, captured.linkedToQueue);
         } catch (error) {
             // Nothing reached the server: the message goes back where it was
-            // written, or to the session it already made.
-            const restoreTo = target ? createChatDraftIdentity(runtimeKey, target.directory, target.sessionId) ?? sourceIdentity : sourceIdentity;
+            // written (the draft, reopened when the user is still on its
+            // session), or to the session it already made.
+            const restoreTo = target
+                ? createChatDraftIdentity(runtimeKey, target.directory, target.sessionId) ?? sourceIdentity
+                : (draftSnapshot?.workDraftId ? resolveOpenWorkDraftIdentity(draftSnapshot.workDraftId, runtimeKey) : null) ?? sourceIdentity;
+            if (error instanceof DraftSendError && !error.sessionCreated) {
+                moveTextTypedInUncreatedSession(error.sessionId, [error.directory, shownDirectory], runtimeKey, restoreTo);
+            }
             restoreHandedBackMessage(restoreTo, message);
             toast.error(getSubmitErrorMessage(error, t('chat.chatInput.toast.messageSendFailed')));
+        } finally {
+            releaseDraftSession?.();
         }
     };
 

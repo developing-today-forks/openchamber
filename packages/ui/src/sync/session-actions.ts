@@ -8,7 +8,7 @@ import { Binary } from "./binary"
 import { dropSessionCaches } from "./session-cache"
 import { buildMetadataMergePatch, readForkMessages } from "./session-metadata-helpers"
 import { forkAtTranscriptCut, isTurnBoundary, transcriptCutAfterMessage, transcriptCutForMessage } from "./transcript-cut"
-import { materializeOpenDraftSession, useSessionUIStore, type NewSessionDraftState, type SentMessage, type SessionUIState } from "./session-ui-store"
+import { useSessionUIStore, type SentMessage, type SessionUIState } from "./session-ui-store"
 import { useSelectionStore } from "./selection-store"
 import {
   DEFERRED_ANSWER_LEAD_IN,
@@ -44,7 +44,7 @@ import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
 import { readGlobalSessionLineage } from "@/stores/sessionLineage"
 import { isRestorableOnItsOwn } from "./session-restore-rule"
 import { useConfigStore } from "@/stores/useConfigStore"
-import { runAfterOpenCodeStartup, waitForOpenCodeStartup } from "./opencode-startup-gate"
+import { waitForOpenCodeStartup } from "./opencode-startup-gate"
 import { getAllSyncSessionMap, getDirectoryState, registerSessionDirectory } from "./sync-refs"
 import { useGlobalSessionStatusStore } from "./global-session-status"
 import { recordSendFailure } from "./send-failure-log"
@@ -72,7 +72,6 @@ import { registerBulkArchiveEchoes, releaseBulkArchiveEchoes } from "./bulk-arch
 import { markSessionUnreadSeen } from "./session-unread"
 import { captureRuntimeInstance, getRuntimeKey } from "@/lib/runtime-switch"
 import { markDefiniteTransportFailure } from "@/lib/relay/transport-error"
-import { useSessionTabsStore } from "@/stores/useSessionTabsStore"
 import { isRelayModeActive } from "@/lib/relay/runtime-tunnel"
 import { getErrorStatus, isAmbiguousSendFailure } from "./send-failure-classification"
 import { isFormAlreadySettledError, isFormRequestNotFoundError } from "./form-request-error"
@@ -1111,6 +1110,17 @@ export function openPendingSessionTranscript(sessionId: string, directory: strin
   getImperativeSessionMessageLoader()?.initializeCreatedSession({ directory, sessionID: sessionId })
 }
 
+/**
+ * Moves the empty transcript of a session the server has not created yet to
+ * the directory it turned out to be created in (a worktree made after the
+ * session was shown).
+ */
+export function movePendingSessionTranscript(sessionId: string, sourceDirectory: string, destinationDirectory: string): void {
+  invalidateSessionLoads(sessionId, [sourceDirectory])
+  openPendingSessionTranscript(sessionId, destinationDirectory)
+  dropSessionLiveStateOutside(sessionId, destinationDirectory)
+}
+
 function isStaleRuntime(expectedRuntimeKey: string | undefined): boolean {
   return expectedRuntimeKey !== undefined && getRuntimeKey() !== expectedRuntimeKey
 }
@@ -1854,25 +1864,6 @@ export function sendMessage(...args: Parameters<SessionUIState["sendMessage"]>):
   return useSessionUIStore.getState().sendMessage(...args)
 }
 
-/**
- * Creates the open draft's session for a message the server sends later (the
- * goal writer's "Send when ready"). The session is created from the submitted
- * draft snapshot; a user who moved to another chat or draft meanwhile stays
- * there (`keepUserPlace`). Waits for OpenCode to start like any send.
- */
-export async function createDraftSessionForServerSend(
-  selection: { providerID: string; modelID: string; agent?: string; variant?: string | null },
-  draftSnapshot: NewSessionDraftState,
-  runtimeKey: string,
-): Promise<NonNullable<Awaited<ReturnType<typeof materializeOpenDraftSession>>>> {
-  return runAfterOpenCodeStartup(async () => {
-    if (getRuntimeKey() !== runtimeKey) throw new Error("Message was not sent because the runtime changed.")
-    const created = await materializeOpenDraftSession(selection, draftSnapshot, runtimeKey, { keepUserPlace: true })
-    if (!created) throw new Error("Failed to create session")
-    useSessionTabsStore.getState().pinTab(created.sessionId)
-    return created
-  })
-}
 
 export async function optimisticSend(input: {
   runtimeKey?: string

@@ -211,7 +211,9 @@ const localBranchNames = (branches: GitBranch): Set<string> => new Set(branches.
  * pending request the draft now waits on. The live draft is marked too, so the
  * target selector shows the worktree being made and cannot be changed under it.
  */
-export const startAutoDraftWorktree = ({ project, prompt, model, typedName, source, startFrom, branchTemplates, sourceControl, fallbackDirectory }: {
+export const startAutoDraftWorktree = ({ draftId, project, prompt, model, typedName, source, startFrom, branchTemplates, sourceControl, fallbackDirectory }: {
+  /** The draft that sends; a draft opened since is not marked. */
+  draftId: number;
   project: ProjectRef;
   prompt: string;
   /** `providerID/modelID` the first prompt is sent with; it also names the worktree. */
@@ -228,7 +230,7 @@ export const startAutoDraftWorktree = ({ project, prompt, model, typedName, sour
   fallbackDirectory: string;
 }): string => {
   const requestId = createPendingDraftWorktreeRequest();
-  useSessionUIStore.getState().setPendingDraftWorktreeRequest(requestId);
+  useSessionUIStore.getState().setPendingDraftWorktreeRequest(requestId, draftId);
 
   void (async () => {
     try {
