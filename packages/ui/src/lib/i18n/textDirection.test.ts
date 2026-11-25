@@ -63,4 +63,10 @@ describe('formatMessage isolates inserted values when directions mix', () => {
     expect(formatMessage(ar, 'chat.folderMissing.text', { name: 1e-7 })).toBe('لم يعد المجلد 1e-7 موجودًا');
     expect(formatMessage(ar, 'chat.folderMissing.text', { name: true })).toBe('لم يعد المجلد true موجودًا');
   });
+
+  test('does not interpolate braces inside an inserted value', () => {
+    expect(formatMessage(en, 'chat.folderMissing.text', { name: 'provider/{value}' })).toBe(
+      'Folder provider/{value} no longer exists',
+    );
+  });
 });

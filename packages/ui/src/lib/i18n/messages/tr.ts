@@ -36,6 +36,7 @@ import { webSearchI18n } from './websearch.i18n';
 import { sessionWarmingI18n } from './session-warming.i18n';
 import { continueWithModelI18n } from './continue-with-model.i18n';
 import { connectionHeartbeatI18n } from './connection-heartbeat.i18n';
+import { facadeVoiceCaptureI18n } from './facade-voice-capture.i18n';
 import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
@@ -3408,6 +3409,7 @@ export const dict = {
   ...secretRequestI18n.tr,
   ...questionsInChatI18n.tr,
   ...connectionHeartbeatI18n.tr,
+  ...facadeVoiceCaptureI18n.tr,
   ...compactionSettingsI18n.tr,
   ...heapSnapshotI18n.tr,
   ...consoleBudgetsI18n.tr,

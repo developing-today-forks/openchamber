@@ -20,6 +20,7 @@ import { routingI18n } from './messages/routing.i18n';
 import { poolSettingsI18n } from './messages/pool-settings.i18n';
 import { modelDefaultsI18n } from './messages/model-defaults.i18n';
 import { sessionErrorRecoveryI18n } from './messages/session-error-recovery.i18n';
+import { facadeVoiceCaptureI18n } from './messages/facade-voice-capture.i18n';
 
 const localeDictionaries = {
   en: enDict,
@@ -234,6 +235,28 @@ describe('i18n dictionaries', () => {
       for (const [key, englishText] of english) {
         expect(dictionary[key as keyof typeof dictionary].trim()).toBeTruthy();
         if (locale !== 'en') expect(dictionary[key as keyof typeof dictionary]).not.toBe(englishText);
+      }
+    }
+  });
+
+  test('facade voice capture copy is translated in every locale and keeps placeholders', () => {
+    const english = Object.entries(facadeVoiceCaptureI18n.en);
+    // Loanwords: Dutch and Polish keep "provider"/"model", Turkish keeps "model".
+    const sameAsEnglish = new Set([
+      'nl:chat.facadeVoiceCapture.provenance.provider',
+      'nl:chat.facadeVoiceCapture.provenance.model',
+      'pl:chat.facadeVoiceCapture.provenance.model',
+      'tr:chat.facadeVoiceCapture.provenance.model',
+    ]);
+    const placeholders = (text: string) => (text.match(/\{[a-zA-Z]+\}/g) ?? []).sort();
+    for (const [locale, dictionary] of Object.entries(facadeVoiceCaptureI18n)) {
+      const translations = new Map<string, string>(Object.entries(dictionary));
+      expect(Object.keys(dictionary).sort()).toEqual(english.map(([key]) => key).sort());
+      for (const [key, englishText] of english) {
+        const translated = translations.get(key) ?? '';
+        expect(translated.trim()).toBeTruthy();
+        expect(placeholders(translated)).toEqual(placeholders(englishText));
+        if (locale !== 'en' && !sameAsEnglish.has(`${locale}:${key}`)) expect(translated).not.toBe(englishText);
       }
     }
   });
