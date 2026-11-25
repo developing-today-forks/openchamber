@@ -167,11 +167,24 @@ const collectMarkdownLinesOutsideCode = (message: JsonObject) => {
   // unclosed fence: this collector is a grant gate, so ambiguous code
   // extent fails closed.
   let inlineRun = 0;
-  const stripInlineCode = (line: string) => {
+  let inComment = false;
+  const visibleLine = (line: string) => {
     let out = '';
     let i = 0;
     while (i < line.length) {
+      if (inComment) {
+        const end = line.indexOf('-->', i);
+        if (end < 0) break;
+        inComment = false;
+        i = end + 3;
+        continue;
+      }
       if (line[i] !== '`') {
+        if (!inlineRun && line.startsWith('<!--', i)) {
+          inComment = true;
+          i += 4;
+          continue;
+        }
         if (!inlineRun) out += line[i];
         i += 1;
         continue;
@@ -204,7 +217,6 @@ const collectMarkdownLinesOutsideCode = (message: JsonObject) => {
     }
     return out;
   };
-  let inComment = false;
   let indentedCode = false;
   let previousBlank = true;
   let htmlBlock: HtmlBlock | null = null;
@@ -261,42 +273,17 @@ const collectMarkdownLinesOutsideCode = (message: JsonObject) => {
       previousBlank = blank;
       // A raw HTML block start inside an HTML comment is comment text,
       // so starts are recognized only outside comments (#2158).
-      if (!inComment) {
+      if (!inComment && !inlineRun) {
         const started = htmlBlockStart(line);
         if (started) {
           if (!htmlBlockEndsOn(started, line)) htmlBlock = started;
           continue;
         }
       }
-      // HTML comments are not rendered (#2142): image syntax inside one
-      // must not authorize a grant. Comment state spans lines and text
-      // parts, like the fence state above; text outside the comment on
-      // the same line stays visible and is then stripped of inline code
-      // like any other line.
-      let visible = '';
-      let rest = line;
-      while (rest.length > 0) {
-        if (inComment) {
-          const end = rest.indexOf('-->');
-          if (end < 0) {
-            rest = '';
-            break;
-          }
-          inComment = false;
-          rest = rest.slice(end + 3);
-        } else {
-          const start = rest.indexOf('<!--');
-          if (start < 0) {
-            visible += rest;
-            rest = '';
-            break;
-          }
-          visible += rest.slice(0, start);
-          inComment = true;
-          rest = rest.slice(start + 4);
-        }
-      }
-      lines.push(stripInlineCode(visible));
+      // Code spans are removed before their contents can affect HTML
+      // comment state, while comments still take precedence over code
+      // markers inside their contents.
+      lines.push(visibleLine(line));
     }
   }
   return lines;
