@@ -67,7 +67,7 @@ describe('share relay client', () => {
   });
 
   it('bounds an oversized success body instead of parsing it unbounded', async () => {
-    const oversized = JSON.stringify({ states: [], pad: 'x'.repeat(17 * 1024 * 1024) });
+    const oversized = JSON.stringify({ states: [{ id: 'a', status: 'open' }], pad: 'x'.repeat(17 * 1024 * 1024) });
     const client = createShareRelayClient({
       getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
       fetchImpl: async () => new Response(oversized, { status: 200 }),
