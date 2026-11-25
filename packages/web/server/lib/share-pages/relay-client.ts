@@ -1,6 +1,7 @@
 
 import { z } from 'zod';
 import type { JsonValue, ShareRelaySettings } from './contracts.js';
+import type { JsonValue as BoundedJsonValue } from '../shared/json-values.js';
 import type { createRelayKeyStore } from '../relay/key-store.js';
 
 import { isEnterpriseMode } from '../enterprise-mode.js';
@@ -114,10 +115,12 @@ type ShareHeaders = {
   'x-openchamber-share'?: string;
 };
 
+type RelayResponse = BoundedJsonValue;
+
 export type ShareState = z.infer<typeof shareStateSchema>;
 
 export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fetch(...args), now = Date.now }: RelayClientOptions) => {
-  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<unknown> => {
+  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<RelayResponse> => {
     const signer = await getSigner();
     const url = new URL(`${base}${path}`);
     const ts = now();
