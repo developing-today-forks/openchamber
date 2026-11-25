@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
@@ -105,7 +105,7 @@ export const decideManagedOpenCodeLaunch = ({ state, ownsPid, binary, args, fing
 // reuse them; closing a generation scrubs the credentials, so history
 // never retains a dead process's password or token.
 export const MANAGED_OPENCODE_STORE_VERSION = 2;
-const MANAGED_OPENCODE_STORE_MAX_BYTES = 256 * 1024;
+export const MANAGED_OPENCODE_STORE_MAX_BYTES = 256 * 1024;
 
 const GENERATION_STATES = ['starting', 'active', 'draining', 'closed'];
 const HANDOFF_STEPS = ['prepared', 'switched', 'confirmed', 'aborted'];
@@ -147,21 +147,108 @@ const isValidHandoff = (handoff) => isStoreRecord(handoff)
   && isText(handoff.at);
 
 export const readManagedOpenCodeStore = (storePath) => {
-  const parsed = readBoundedJsonFileSync(storePath, MANAGED_OPENCODE_STORE_MAX_BYTES);
-  if (parsed?.schema_version !== MANAGED_OPENCODE_STORE_VERSION) return null;
-  if (!Array.isArray(parsed.generations) || !Array.isArray(parsed.handoffs)) return null;
-  if (!parsed.generations.every(isValidGeneration) || !parsed.handoffs.every(isValidHandoff)) return null;
+  let result;
+  try {
+    result = readBoundedFileSync(storePath, MANAGED_OPENCODE_STORE_MAX_BYTES, { noFollow: true });
+  } catch (error) {
+    throw new Error(`managed OpenCode store is unreadable or corrupt at ${storePath}`, { cause: error });
+  }
+  if (!result.ok) {
+    if (result.reason === 'missing') {
+      try {
+        lstatSync(storePath);
+      } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+        throw new Error(`managed OpenCode store is unreadable or corrupt at ${storePath}`, { cause: error });
+      }
+      throw new Error(`managed OpenCode store is corrupt or over limit at ${storePath} (missing symlink target)`);
+    }
+    const detail = result.reason === 'too-large'
+      ? `overflow: ${result.size} bytes exceeds the ${result.limit}-byte limit`
+      : 'not a regular file';
+    throw new Error(`managed OpenCode store is corrupt or over limit at ${storePath} (${detail})`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(result.buffer.toString('utf8'));
+  } catch (error) {
+    throw new Error(`managed OpenCode store is corrupt at ${storePath} (invalid JSON)`, { cause: error });
+  }
+  if (parsed?.schema_version !== MANAGED_OPENCODE_STORE_VERSION) {
+    throw new Error(`managed OpenCode store is corrupt at ${storePath} (unsupported schema)`);
+  }
+  if (!Array.isArray(parsed.generations) || !Array.isArray(parsed.handoffs)) {
+    throw new Error(`managed OpenCode store is corrupt at ${storePath} (invalid collections)`);
+  }
+  if (!parsed.generations.every(isValidGeneration) || !parsed.handoffs.every(isValidHandoff)) {
+    throw new Error(`managed OpenCode store is corrupt at ${storePath} (invalid record)`);
+  }
   return parsed;
 };
 
+const compactManagedOpenCodeStore = (store) => {
+  const generationById = new Map(store.generations.map((generation) => [generation.generation_id, generation]));
+  const handoffs = store.handoffs.filter((handoff) => {
+    if (handoff.step === 'aborted') return false;
+    if (handoff.step !== 'confirmed') return true;
+    const predecessor = generationById.get(handoff.predecessor);
+    const successor = generationById.get(handoff.successor);
+    const predecessorDrained = predecessor && (predecessor.state === 'draining' || predecessor.state === 'closed');
+    const successorStarted = successor && (successor.state === 'active' || successor.state === 'draining' || successor.state === 'closed');
+    return !(predecessorDrained && successorStarted);
+  });
+  const pendingGenerationIds = new Set();
+  for (const handoff of handoffs) {
+    pendingGenerationIds.add(handoff.predecessor);
+    pendingGenerationIds.add(handoff.successor);
+  }
+  let newestClosedId = 0;
+  let newestLiveId = 0;
+  for (const generation of store.generations) {
+    if (generation.state === 'closed' && generation.generation_id > newestClosedId) {
+      newestClosedId = generation.generation_id;
+    } else if (generation.state !== 'closed' && generation.generation_id > newestLiveId) {
+      newestLiveId = generation.generation_id;
+    }
+  }
+  const preserveClosedId = newestClosedId > newestLiveId ? newestClosedId : 0;
+  const generations = store.generations.filter((generation) => (
+    generation.state !== 'closed'
+    || generation.generation_id === preserveClosedId
+    || pendingGenerationIds.has(generation.generation_id)
+  ));
+  return { ...store, generations, handoffs };
+};
+
 export const writeManagedOpenCodeStore = (storePath, store) => {
+  if (!isStoreRecord(store)
+    || !Array.isArray(store.generations)
+    || !Array.isArray(store.handoffs)
+    || !store.generations.every(isValidGeneration)
+    || !store.handoffs.every(isValidHandoff)) {
+    throw new Error('invalid managed OpenCode store');
+  }
+  const normalized = { ...store, schema_version: MANAGED_OPENCODE_STORE_VERSION };
+  let persisted = normalized;
+  let text = `${JSON.stringify(persisted, null, 2)}\n`;
+  if (Buffer.byteLength(text) > MANAGED_OPENCODE_STORE_MAX_BYTES) {
+    persisted = compactManagedOpenCodeStore(normalized);
+    text = `${JSON.stringify(persisted, null, 2)}\n`;
+    const size = Buffer.byteLength(text);
+    if (size > MANAGED_OPENCODE_STORE_MAX_BYTES) {
+      throw new Error(`managed OpenCode store exceeds the ${MANAGED_OPENCODE_STORE_MAX_BYTES}-byte write limit after compaction (${size} bytes)`);
+    }
+  }
   mkdirSync(path.dirname(storePath), { recursive: true, mode: 0o700 });
   const tmpPath = `${storePath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, `${JSON.stringify({ ...store, schema_version: MANAGED_OPENCODE_STORE_VERSION }, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(tmpPath, text, { mode: 0o600 });
   renameSyncWithRetry((from, to) => renameSync(from, to), tmpPath, storePath);
 };
 
-// Generations are append-only: history is never rewritten, only advanced.
+// A full history stays intact until it reaches the read cap. Compaction then
+// keeps live generations and unfinished handoffs, plus the newest closed id
+// so the next generation id stays monotonic.
 export const appendGeneration = (store, generation) => {
   const ids = store.generations.map((entry) => entry.generation_id);
   const record = {
@@ -308,9 +395,9 @@ export const reapManagedOpenCodeStore = (store, { isPidAlive = defaultManagedOpe
 };
 
 // The record state.json used to carry, derived from the store: the newest
-// starting-or-active generation is the current managed OpenCode
-// (generations are append-only, so a later spawn — a handoff successor —
-// supersedes its predecessor). Draining generations are predecessors
+// starting-or-active generation is the current managed OpenCode. Generations
+// remain in spawn order after compaction, so a later spawn supersedes its
+// predecessor. Draining generations are predecessors
 // being retired, never the current record (state.json never named one),
 // and closed generations are history. Returns the lifecycle record shape,
 // or null when the store names no current generation.

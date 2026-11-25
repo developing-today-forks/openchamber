@@ -704,8 +704,8 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // newest live generation names someone else's OpenCode.
   let ownRecord: ManagedOpenCodeRecord | null = null;
   const writeOwnState = (record: ManagedOpenCodeRecord) => {
-    ownRecord = record;
     recordGenerationStart(record);
+    ownRecord = record;
   };
   const clearOwnState = () => {
     if (ownRecord?.pid) closeGenerationForPid(ownRecord.pid);
@@ -736,19 +736,22 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // generations); that migration is the pair's only remaining reader.
   // Every load reaps generations whose recorded pid is gone (store-only
   // reaper: signal-0 liveness, never `ps` inference).
-  const syncStore = (fn: () => void) => {
+  // Ownership and write-ahead handoff writes are required before startup can
+  // continue. Reaper and housekeeping writes remain best-effort.
+  const syncStore = (fn: () => void, required = false) => {
     try {
       fn();
     } catch (error) {
       console.error(`[OpenCode] v2 store sync failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (required) throw error;
     }
   };
   const loadManagedStore = (): ManagedStore => {
     let store = readManagedOpenCodeStore(managedPaths.storePath);
     if (!store) {
-      // No store yet: import the v1 pair if an older installation left one
-      // (the migration is the pair's only remaining reader). An empty
-      // migration means a fresh data dir, and nothing is written.
+      // Only a missing store reaches this path: an existing invalid store
+      // throws during read and must never be replaced by the retired v1 pair.
+      // An empty migration means a fresh data dir, and nothing is written.
       store = migrateV1StoreToV2({ statePath: managedPaths.statePath, drainingPath: managedPaths.drainingPath });
       if (store.generations.length === 0) store = createEmptyManagedOpenCodeStore();
       else writeManagedOpenCodeStore(managedPaths.storePath, store);
@@ -779,7 +782,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   const recordGenerationStart = (record: ManagedOpenCodeRecord) => syncStore(() => {
     const { store } = ensureGeneration(loadManagedStore(), record, 'active');
     writeManagedOpenCodeStore(managedPaths.storePath, store);
-  });
+  }, true);
   const closeGenerationForPid = (pid: number) => syncStore(() => {
     let store = loadManagedStore();
     const generation = generationForPid(store, pid);
@@ -789,8 +792,8 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   });
   const handoffIdFor = (predecessorPid: number, successorPid: number) => `handoff-${predecessorPid}-${successorPid}`;
   // Write-ahead: 'prepared' is persisted after the successor exists but
-  // before the switch; 'switched' once the port points at the successor;
-  // 'confirmed' once the predecessor is draining; 'aborted' on failure.
+  // before the switch; 'switched' and 'confirmed' are persisted before the
+  // route moves to the successor and the runtime starts draining its predecessor.
   // A crash between any two steps replays from the last persisted step
   // (replayHandoffStep in managed-opencode-state.js).
   const recordHandoffPrepared = (predecessor: ManagedOpenCodeRecord, successorPid: number, context: HandoffContext | null) => syncStore(() => {
@@ -798,7 +801,9 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     ({ store } = ensureGeneration(store, predecessor, 'active'));
     const predecessorGeneration = generationForPid(store, predecessor.pid);
     const successorGeneration = generationForPid(store, successorPid);
-    if (!predecessorGeneration || !successorGeneration) return;
+    if (!predecessorGeneration || !successorGeneration) {
+      throw new Error('cannot persist handoff without both managed generations');
+    }
     const busy = Array.isArray(context?.busySessionIds) ? context.busySessionIds : listBusySessionIds();
     store = recordHandoffStep(store, {
       handoff_id: handoffIdFor(predecessor.pid, successorPid),
@@ -810,11 +815,19 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       at: new Date().toISOString(),
     });
     writeManagedOpenCodeStore(managedPaths.storePath, store);
-  });
+  }, true);
   const recordHandoffAdvance = (predecessorPid: number, successorPid: number, step: string, outcome: string | null) => syncStore(() => {
     let store = loadManagedStore();
     const existing = store.handoffs.find((handoff) => handoff.handoff_id === handoffIdFor(predecessorPid, successorPid));
-    if (!existing) return;
+    if (!existing) {
+      if (step === 'aborted') return;
+      throw new Error(`cannot advance missing handoff ${handoffIdFor(predecessorPid, successorPid)} to ${step}`);
+    }
+    const predecessorGeneration = generationForPid(store, predecessorPid);
+    const successorGeneration = generationForPid(store, successorPid);
+    if (step !== 'aborted' && (!predecessorGeneration || !successorGeneration)) {
+      throw new Error(`cannot advance handoff ${existing.handoff_id} without both managed generations`);
+    }
     store = recordHandoffStep(store, { ...existing, step, outcome, at: new Date().toISOString() });
     writeManagedOpenCodeStore(managedPaths.storePath, store);
     if (step === 'confirmed') {
@@ -824,7 +837,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
         writeManagedOpenCodeStore(managedPaths.storePath, store);
       }
     }
-  });
+  }, step !== 'aborted');
   syncStore(() => loadManagedStore());
 
   // Ownership for action paths comes from the store (#82, #2423): a pid
@@ -958,6 +971,11 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     }
   };
 
+  const resolveEffectiveManagedOpenCodeBinary = () => {
+    const resolved = ensureOpencodeCliEnv();
+    return (resolved || process.env.OPENCODE_BINARY || 'opencode').trim() || 'opencode';
+  };
+
   const computeLaunchFingerprint = ({ binary, hostname, port, cwd, password, managedEnv }: { binary: string | null | undefined; hostname: string; port: number; cwd: string; password: string | null | undefined; managedEnv: ProcessEnvironment }) => createLaunchFingerprint({
     binary,
     args: ['serve', '--hostname', hostname, '--port', String(port)],
@@ -980,12 +998,12 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   // draining children would lose that protection the next time this server's
   // list changes.
   const persistDrainingOpenCode = (records: ManagedOpenCodeRecord[]) => {
-    const mine = new Set(records.map((record) => record.pid));
-    const theirs = (readManagedOpenCodeStore(managedPaths.storePath)?.generations ?? [])
-      .filter((generation: ManagedStoreGeneration) => generation.state === 'draining' && !mine.has(generation.pid) && Number.isInteger(otherServerOwning(generation.pid)))
-      .map((generation: ManagedStoreGeneration) => ({ pid: generation.pid, port: generation.port, binary: generation.binary }));
     syncStore(() => {
       let store = loadManagedStore();
+      const mine = new Set(records.map((record) => record.pid));
+      const theirs = store.generations
+        .filter((generation: ManagedStoreGeneration) => generation.state === 'draining' && !mine.has(generation.pid) && Number.isInteger(otherServerOwning(generation.pid)))
+        .map((generation: ManagedStoreGeneration) => ({ pid: generation.pid, port: generation.port, binary: generation.binary }));
       for (const record of [...records, ...theirs]) {
         if (!Number.isInteger(record.port) || record.port <= 0 || !isString(record.binary)) continue;
         const generation = generationForPid(store, record.pid);
@@ -1508,6 +1526,8 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
   const isBinaryRejected = (cause: unknown) => cause instanceof UnsupportedOpenCodeVersionError || optionalErrorFields(cause)?.code === 'OPENCODE_BINARY_INVALID';
 
   const startOpenCodeOnce = async (attempt: number, handoffContext: { busySessionIds?: string[] | null; force?: boolean } | null = null) => {
+    const previousOpenCodeProcess = state.openCodeProcess;
+    const previousOpenCodeBaseUrl = state.openCodeBaseUrl;
     const attemptStartedAt = performance.now();
     let phaseStartedAt = attemptStartedAt;
     recordStartupPerformanceEvent('opencode.attempt.start', { attempt });
@@ -1539,9 +1559,10 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     );
 
     await applyOpencodeBinaryFromSettings({ strict: true });
-    const resolvedBinary = ensureOpencodeCliEnv();
+    const resolvedBinary = resolveEffectiveManagedOpenCodeBinary();
     const binaryIdentity = resolveBinaryIdentity(resolvedBinary);
-    const preflight = checkOpenCodeBinary(resolveManagedOpenCodeLaunchSpec(resolvedBinary));
+    const launchSpec = resolveManagedOpenCodeLaunchSpec(resolvedBinary);
+    const preflight = checkOpenCodeBinary(launchSpec);
     managedPreflight = preflight.then(() => true, () => false);
     await preflight;
     recordStartupPerformanceEvent('opencode.binary.ready', {
@@ -1631,6 +1652,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
         ownRecord = savedState;
         await registerAsOwner(savedState);
       } else if (decision.action === 'handoff' && savedState) {
+        handoffPredecessor = savedState;
         if (spawnPort === savedState.port) {
           spawnPort = await resolveManagedOpenCodePort(0, hostname);
         }
@@ -1656,7 +1678,6 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
           instanceDir: getInstanceDir(),
           startedAt: new Date().toISOString(),
         });
-        handoffPredecessor = savedState;
         recordHandoffPrepared(savedState, requireSpawnedPid(serverInstance), handoffContext);
       } else {
         if (savedState) {
@@ -1711,6 +1732,10 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       const ready = await waitForReady(serverInstance.url, 10000);
       if (state.isShuttingDown) throw new Error('OpenCode startup cancelled during shutdown');
       if (ready) {
+        if (handoffPredecessor) {
+          recordHandoffAdvance(handoffPredecessor.pid, requireSpawnedPid(serverInstance), 'switched', null);
+          recordHandoffAdvance(handoffPredecessor.pid, requireSpawnedPid(serverInstance), 'confirmed', 'predecessor-draining');
+        }
         credentialRotationPending = false;
         setOpenCodePort(port);
         if (lastReadyOwnServer?.pid !== serverInstance.pid) {
@@ -1735,11 +1760,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
           outcome: 'ready',
         });
 
-        if (handoffPredecessor) {
-          recordHandoffAdvance(handoffPredecessor.pid, requireSpawnedPid(serverInstance), 'switched', null);
-          retireHandoffPredecessor(handoffPredecessor, handoffContext?.busySessionIds ?? null);
-          recordHandoffAdvance(handoffPredecessor.pid, requireSpawnedPid(serverInstance), 'confirmed', 'predecessor-draining');
-        }
+        if (handoffPredecessor) retireHandoffPredecessor(handoffPredecessor, handoffContext?.busySessionIds ?? null);
         return serverInstance;
       }
 
@@ -1748,14 +1769,59 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       diagnosticJournal.record('managed startup failed', { attempt });
       await serverInstance?.close();
       if (serverInstance && state.openCodeProcess === serverInstance) state.openCodeProcess = null;
-      if (handoffPredecessor) writeOwnState(handoffPredecessor);
+      if (handoffPredecessor) {
+        const predecessor = handoffPredecessor;
+        let predecessorCanResume = false;
+        try {
+          const store = readManagedOpenCodeStore(managedPaths.storePath);
+          const predecessorGeneration = [...(store?.generations ?? [])].reverse().find((generation) => (
+            generation.pid === predecessor.pid
+            && (generation.state === 'starting' || generation.state === 'active')
+          ));
+          const sameRecord = predecessorGeneration
+            && predecessorGeneration.port === predecessor.port
+            && predecessorGeneration.binary === predecessor.binary
+            && predecessorGeneration.started_at === predecessor.startedAt;
+          const owner = otherServerOwning(predecessor.pid);
+          const hasLocalClaim = previousOpenCodeProcess?.pid === predecessor.pid || ownRecord?.pid === predecessor.pid;
+          const ownerIsThisRuntime = owner === null || (owner === 'unknown' && hasLocalClaim);
+          const alive = isPidAlive(predecessor.pid);
+          const healthy = sameRecord && alive && ownerIsThisRuntime
+            ? await probeManagedOpenCodeHealth(`http://${formatHost(env.ENV_CONFIGURED_OPENCODE_HOSTNAME)}:${predecessor.port}`)
+            : false;
+          predecessorCanResume = Boolean(sameRecord && alive && ownerIsThisRuntime && healthy);
+        } catch (restoreError) {
+          console.error(`[OpenCode] predecessor recovery check failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
+        }
+        if (predecessorCanResume) {
+          ownRecord = predecessor;
+          state.openCodeProcess = previousOpenCodeProcess?.pid === predecessor.pid
+            ? previousOpenCodeProcess
+            : adoptManagedOpenCodeServer(predecessor, env.ENV_CONFIGURED_OPENCODE_HOSTNAME);
+          setOpenCodePort(predecessor.port);
+          state.openCodeBaseUrl = previousOpenCodeBaseUrl;
+          state.isOpenCodeReady = true;
+          state.openCodeNotReadySince = 0;
+          lastReadyOwnServer = { pid: predecessor.pid, port: predecessor.port };
+        } else {
+          if (!isPidAlive(predecessor.pid)) closeGenerationForPid(predecessor.pid);
+          ownRecord = null;
+          state.openCodeProcess = null;
+          state.openCodePort = null;
+          state.openCodeBaseUrl = null;
+          state.isOpenCodeReady = false;
+          state.openCodeNotReadySince = Date.now();
+          lastReadyOwnServer = null;
+        }
+        syncToHmrState();
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (handoffPredecessor && serverInstance?.pid) {
         recordHandoffAdvance(handoffPredecessor.pid, serverInstance.pid, 'aborted', message);
         closeGenerationForPid(serverInstance.pid);
       }
       state.lastOpenCodeError = message;
-      if (!handoffContext) state.openCodePort = null;
+      if (!handoffContext && !handoffPredecessor) state.openCodePort = null;
       syncToHmrState();
       recordStartupPerformanceEvent('opencode.attempt.error', {
         attempt,
@@ -1784,7 +1850,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
 
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`[OpenCode] Managed server startup failed on attempt ${attempt}/${START_OPEN_CODE_MAX_ATTEMPTS}; retrying: ${message}`);
-        if (!handoffContext) {
+        if (!handoffContext && !state.openCodeProcess) {
           state.openCodePort = null;
           state.isOpenCodeReady = false;
           state.openCodeNotReadySince = Date.now();
@@ -1806,7 +1872,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
     const saved = recorded?.pid === state.openCodeProcess.pid ? recorded : ownRecord?.pid === state.openCodeProcess.pid ? ownRecord : null;
     if (!saved) return false;
     await applyOpencodeBinaryFromSettings({ strict: false });
-    const binary = ensureOpencodeCliEnv();
+    const binary = resolveEffectiveManagedOpenCodeBinary();
     const args = managedOpenCodeArgs(env.ENV_CONFIGURED_OPENCODE_HOSTNAME);
     // saved.binary is the resolved identity, so an unchanged bin link is not a change.
     if (resolveBinaryIdentity(binary) === saved.binary && sameOpenCodeArgs(saved.args, args)) return false;
@@ -2162,7 +2228,7 @@ export const createOpenCodeLifecycleRuntime = (deps: OpenCodeLifecycleDependenci
       return { decision: { action: 'start', reason: 'unverified-owner' }, openCodeVersion: null };
     }
     await applyOpencodeBinaryFromSettings({ strict: true });
-    const resolvedBinary = ensureOpencodeCliEnv();
+    const resolvedBinary = resolveEffectiveManagedOpenCodeBinary();
     const binaryIdentity = resolveBinaryIdentity(resolvedBinary);
     await checkOpenCodeBinary(resolveManagedOpenCodeLaunchSpec(resolvedBinary));
     const hostname = env.ENV_CONFIGURED_OPENCODE_HOSTNAME;
