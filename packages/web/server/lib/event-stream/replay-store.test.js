@@ -195,9 +195,11 @@ describe('replay store', () => {
     const warnings = [];
     const store = createReplayStore({ filePath, warn: (message) => warnings.push(message) });
     store.load();
+    writeFileSync(filePath, '');
     rmSync(filePath);
     mkdirSync(filePath);
 
+    // The status snapshot is the oracle for both caps and reset-required degradation.
     for (let position = 1; position <= MAX_PENDING_REPLAY_RECORDS + 1; position += 1) {
       expect(store.appendHead({ position, upstream: '' })).toBe(false);
     }
@@ -229,11 +231,13 @@ describe('replay store', () => {
     const warnings = [];
     const store = createReplayStore({ filePath, warn: (message) => warnings.push(message) });
     store.load();
+    writeFileSync(filePath, '');
     rmSync(filePath);
     mkdirSync(filePath);
 
     const oversized = entry(1);
     oversized.serializedFrame = 'x'.repeat(MAX_PENDING_REPLAY_BYTES);
+    // The status snapshot and warning are the oracle for an oversized rejected record.
     expect(store.appendLocal(oversized)).toBe(false);
     expect(store.pendingWriteStatus()).toEqual({ pendingRecords: 0, pendingBytes: 0, resetRequired: true });
     expect(store.state().head.position).toBe(0);
