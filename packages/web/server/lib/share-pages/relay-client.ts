@@ -117,7 +117,7 @@ type ShareHeaders = {
 export type ShareState = z.infer<typeof shareStateSchema>;
 
 export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fetch(...args), now = Date.now }: RelayClientOptions) => {
-  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<JsonValue> => {
+  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<unknown> => {
     const signer = await getSigner();
     const url = new URL(`${base}${path}`);
     const ts = now();
