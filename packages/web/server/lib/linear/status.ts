@@ -69,7 +69,9 @@ function writeJsonFile(filePath: string, payload: Record<string, LinearSessionSt
     fs.mkdirSync(dir, { recursive: true });
   }
   const tmpFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf8');
+  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+  // Best-effort only: the temp file is already created 0600 above, so a
+  // chmod failure here cannot leave a world-readable status file.
   try {
     fs.chmodSync(tmpFile, 0o600);
   } catch {

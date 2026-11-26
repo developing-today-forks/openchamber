@@ -101,6 +101,8 @@ function readMappingDocument(raw: Parameters<typeof readTrimmedString>[0]): Mapp
   };
 }
 
+// Best-effort only: writers create their temp file with mode 0600, so a
+// chmod failure here cannot leave a world-readable mapping file.
 function chmodMappingFile(filePath: string) {
   try {
     fs.chmodSync(filePath, 0o600);
@@ -115,7 +117,7 @@ function writeJsonFile(filePath: string, payload: MappingDocument) {
     fs.mkdirSync(dir, { recursive: true });
   }
   const tmpFile = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), 'utf8');
+  fs.writeFileSync(tmpFile, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
   chmodMappingFile(tmpFile);
   renameSyncWithRetry((from, to) => fs.renameSync(from, to), tmpFile, filePath);
   chmodMappingFile(filePath);
