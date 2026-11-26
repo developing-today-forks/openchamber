@@ -24,7 +24,8 @@
  * A write names its store with `setupTarget`: `personal` (default) writes
  * the user's own project file; `shared` writes the repository's committed
  * `.openchamber/project.json`. Action create/update/remove read the target
- * store's current actions and write the whole list back through the locked
+ * store's current actions inside the project write lock (the atomic mutate
+ * writers, #2605) and write the computed list back through the locked
  * writer, the same whole-list replace the Settings UI saves with.
  *
  * Dependencies (`createProjectSetupActions(deps)`), from packages/web/server/runtime.ts:
@@ -34,6 +35,12 @@
  *   personal store writer.
  * - `updateSharedProjectSetup` — `projectConfigRuntime.updateSharedProjectSetup`,
  *   the shared store writer.
+ * - `mutateProjectSetupActions` / `mutateSharedProjectSetupActions` —
+ *   `projectConfigRuntime.mutate*ProjectSetupActions`, the atomic
+ *   project-actions writers: they read the current list and compute the
+ *   replacement inside the per-project write lock (#2605), so concurrent
+ *   create/update/remove calls cannot lose a write. When an embedder does
+ *   not wire them, the actions fall back to the whole-list writers.
  * - `listProjects` — `listConfiguredProjects`; the id must name a configured project.
  */
 import { asNonEmptyString, isPlainObject } from '../shared/guards.js';
@@ -60,7 +67,7 @@ export const PROJECT_SETUP_PARAMETERS = {
 
 const PROJECT_SETUP_ACTIONS = PROJECT_SETUP_ACTION_DEFINITIONS.map(({ action }) => action);
 
-export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup, updateSharedProjectSetup, listProjects }) => {
+export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup, updateSharedProjectSetup, mutateProjectSetupActions, mutateSharedProjectSetupActions, listProjects }) => {
   const requireProject = async (input) => {
     const projectId = asNonEmptyString(input.projectId);
     if (!projectId) throw new OpenChamberControlError('projectId is required; projects.list lists them', 400);
@@ -109,6 +116,30 @@ export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup
     }
   };
 
+  // Project-actions create/update/remove must be linearizable (#2605): the
+  // current list has to be read and the replacement computed inside the
+  // per-project write lock, not read here and written back whole — two
+  // concurrent calls starting from the same base list would otherwise each
+  // write back only their own change and one write would silently vanish.
+  // The runtime's mutate writers hold that lock across read + compute +
+  // write. Embedders that only wire the whole-list writers keep the old
+  // read-modify-write path as a fallback.
+  const mutateActions = async (target, projectId, mutate) => {
+    const mutateFn = target === 'shared' ? mutateSharedProjectSetupActions : mutateProjectSetupActions;
+    if (typeof mutateFn === 'function') {
+      try {
+        return await mutateFn(projectId, mutate);
+      } catch (error) {
+        if (error instanceof OpenChamberControlError) throw error;
+        if (isProjectSetupValidationError(error)) throw new OpenChamberControlError(error.message, 400);
+        throw error;
+      }
+    }
+    const current = storeActionsOf(await readProjectSetup(projectId), target);
+    const next = await mutate(current);
+    return writeSetup(target, projectId, { projectActions: next });
+  };
+
   const changeOf = (action, target, detail) => ({ action, target, by: 'agent-tool', at: new Date().toISOString(), ...detail });
 
   const storeActionsOf = (setup, target) => {
@@ -151,16 +182,19 @@ export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup
     const projectId = await requireProject(input);
     const target = targetOf(input);
     if (!isPlainObject(input.projectAction)) throw new OpenChamberControlError('projectAction is required: an object with name and command', 400);
-    const current = storeActionsOf(await readProjectSetup(projectId), target);
-    const taken = new Set(current.map((entry) => entry.id));
-    const candidate = { ...input.projectAction };
-    if (asNonEmptyString(candidate.id) && taken.has(candidate.id)) {
-      throw new OpenChamberControlError(`A project action with id ${candidate.id} already exists in the ${target} setup; change it with projects.actions.update`, 400);
-    }
-    if (!asNonEmptyString(candidate.id)) candidate.id = actionIdFromName(asNonEmptyString(candidate.name) ?? '', taken);
-    const [created] = sanitizeProjectActions([candidate]);
-    if (!created) throw new OpenChamberControlError('projectAction needs a name and a command', 400);
-    const setup = await writeSetup(target, projectId, { projectActions: [...current, created] });
+    let created;
+    const setup = await mutateActions(target, projectId, (current) => {
+      const taken = new Set(current.map((entry) => entry.id));
+      const candidate = { ...input.projectAction };
+      if (asNonEmptyString(candidate.id) && taken.has(candidate.id)) {
+        throw new OpenChamberControlError(`A project action with id ${candidate.id} already exists in the ${target} setup; change it with projects.actions.update`, 400);
+      }
+      if (!asNonEmptyString(candidate.id)) candidate.id = actionIdFromName(asNonEmptyString(candidate.name) ?? '', taken);
+      const [sanitized] = sanitizeProjectActions([candidate]);
+      if (!sanitized) throw new OpenChamberControlError('projectAction needs a name and a command', 400);
+      created = sanitized;
+      return [...current, sanitized];
+    });
     return { projectId, target, action: created, setup, change: changeOf('projects.actions.create', target, { actionId: created.id }) };
   };
 
@@ -171,14 +205,17 @@ export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup
     const actionId = asNonEmptyString(input.actionId) ?? asNonEmptyString(isPlainObject(input.projectAction) ? input.projectAction.id : undefined);
     if (!actionId) throw new OpenChamberControlError('actionId is required for projects.actions.update; projects.setup lists them', 400);
     if (!isPlainObject(input.projectAction)) throw new OpenChamberControlError('projectAction is required: an object with the fields to change', 400);
-    const current = storeActionsOf(await readProjectSetup(projectId), target);
-    const index = current.findIndex((entry) => entry.id === actionId);
-    if (index < 0) throw new OpenChamberControlError(`No project action with id ${actionId} in the ${target} setup`, 404);
-    const [updated] = sanitizeProjectActions([{ ...current[index], ...input.projectAction, id: actionId }]);
-    if (!updated) throw new OpenChamberControlError('The changed project action needs a name and a command', 400);
-    const next = [...current];
-    next[index] = updated;
-    const setup = await writeSetup(target, projectId, { projectActions: next });
+    let updated;
+    const setup = await mutateActions(target, projectId, (current) => {
+      const index = current.findIndex((entry) => entry.id === actionId);
+      if (index < 0) throw new OpenChamberControlError(`No project action with id ${actionId} in the ${target} setup`, 404);
+      const [sanitized] = sanitizeProjectActions([{ ...current[index], ...input.projectAction, id: actionId }]);
+      if (!sanitized) throw new OpenChamberControlError('The changed project action needs a name and a command', 400);
+      updated = sanitized;
+      const next = [...current];
+      next[index] = sanitized;
+      return next;
+    });
     return { projectId, target, action: updated, setup, change: changeOf('projects.actions.update', target, { actionId }) };
   };
 
@@ -188,11 +225,12 @@ export const createProjectSetupActions = ({ readProjectSetup, updateProjectSetup
     const target = targetOf(input);
     const actionId = asNonEmptyString(input.actionId);
     if (!actionId) throw new OpenChamberControlError('actionId is required for projects.actions.remove; projects.setup lists them', 400);
-    const current = storeActionsOf(await readProjectSetup(projectId), target);
-    if (!current.some((entry) => entry.id === actionId)) {
-      throw new OpenChamberControlError(`No project action with id ${actionId} in the ${target} setup`, 404);
-    }
-    const setup = await writeSetup(target, projectId, { projectActions: current.filter((entry) => entry.id !== actionId) });
+    const setup = await mutateActions(target, projectId, (current) => {
+      if (!current.some((entry) => entry.id === actionId)) {
+        throw new OpenChamberControlError(`No project action with id ${actionId} in the ${target} setup`, 404);
+      }
+      return current.filter((entry) => entry.id !== actionId);
+    });
     return { projectId, target, removedActionId: actionId, setup, change: changeOf('projects.actions.remove', target, { actionId }) };
   };
 
