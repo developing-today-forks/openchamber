@@ -85,6 +85,19 @@ const parseVersion = (value) => {
   return { core: match.slice(1, 4).map(Number), prerelease: match[4]?.split('.') ?? [] };
 };
 
+// SemVer numeric identifiers may be arbitrarily long, so comparing them via
+// Number() loses precision above Number.MAX_SAFE_INTEGER (and very long
+// identifiers become Infinity). Compare digit strings instead: strip leading
+// zeros, then a longer string is the larger number, and equal-length strings
+// order lexicographically.
+const compareNumericIdentifiers = (x, y) => {
+  const a = x.replace(/^0+/, '') || '0';
+  const b = y.replace(/^0+/, '') || '0';
+  if (a.length !== b.length) return a.length < b.length ? -1 : 1;
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+};
+
 export const compareHandoffVersions = (left, right) => {
   const a = parseVersion(left);
   const b = parseVersion(right);
@@ -102,7 +115,11 @@ export const compareHandoffVersions = (left, right) => {
     if (x === y) continue;
     const xn = /^\d+$/.test(x);
     const yn = /^\d+$/.test(y);
-    if (xn && yn) return Number(x) < Number(y) ? -1 : 1;
+    if (xn && yn) {
+      const order = compareNumericIdentifiers(x, y);
+      if (order !== 0) return order;
+      continue;
+    }
     if (xn !== yn) return xn ? -1 : 1;
     return x < y ? -1 : 1;
   }
