@@ -2476,7 +2476,7 @@ const openChamberControlService = createOpenChamberControlService({
     createIntegrationActions({ readSettingsFromDiskMigrated, persistSettings }),
     createIntegrationServiceActions({ getIntegrationOperations: featureRoutesRuntime.getIntegrationOperations }),
     createEnvironmentActions({ store: environmentStore, runtime: environmentRuntime, listProjects: listConfiguredProjects }),
-    createProjectSetupActions({ readProjectSetup: projectConfigRuntime.readProjectSetup, updateProjectSetup: projectConfigRuntime.updateProjectSetup, updateSharedProjectSetup: projectConfigRuntime.updateSharedProjectSetup, listProjects: listConfiguredProjects }),
+    createProjectSetupActions({ readProjectSetup: projectConfigRuntime.readProjectSetup, updateProjectSetup: projectConfigRuntime.updateProjectSetup, updateSharedProjectSetup: projectConfigRuntime.updateSharedProjectSetup, mutateProjectSetupActions: projectConfigRuntime.mutateProjectSetupActions, mutateSharedProjectSetupActions: projectConfigRuntime.mutateSharedProjectSetupActions, listProjects: listConfiguredProjects }),
     createModelChoiceActions({ modelChoiceService }),
   ],
   loadQuota: () => import('./lib/quota/index.js'),
