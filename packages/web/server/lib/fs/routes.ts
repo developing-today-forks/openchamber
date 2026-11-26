@@ -152,6 +152,8 @@ interface PreviewRoot { base: string; readRoot: string }
 interface DirectoryStatResult { path: string; isDirectory: boolean; realPath?: string }
 
 const EXEC_JOB_TTL_MS = 30 * 60 * 1000;
+const EXEC_MAX_COMMANDS_PER_REQUEST = 32;
+const EXEC_MAX_RETAINED_JOBS = 256;
 
 const PREVIEW_GRANT_IDLE_TTL_MS = 10 * 60 * 1000;
 const PREVIEW_GRANT_MAX_ENTRIES = 256;
@@ -842,6 +844,14 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
       if (updatedAt && now - updatedAt > EXEC_JOB_TTL_MS) {
         execJobs.delete(jobId);
       }
+    }
+  };
+
+  const evictOldestExecJobs = () => {
+    while (execJobs.size >= EXEC_MAX_RETAINED_JOBS) {
+      const oldestJobId = execJobs.keys().next().value;
+      if (oldestJobId === undefined) break;
+      execJobs.delete(oldestJobId);
     }
   };
 
@@ -2222,6 +2232,9 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
     if (!Array.isArray(commands) || commands.length === 0) {
       return res.status(400).json({ error: 'Commands array is required' });
     }
+    if (commands.length > EXEC_MAX_COMMANDS_PER_REQUEST) {
+      return res.status(400).json({ error: `Too many commands (max ${EXEC_MAX_COMMANDS_PER_REQUEST} per request)` });
+    }
     if (!cwd || !isStringInput(cwd)) {
       return res.status(400).json({ error: 'Working directory (cwd) is required' });
     }
@@ -2274,6 +2287,7 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
         updatedAt: Date.now(),
       };
 
+      evictOldestExecJobs();
       execJobs.set(jobId, job);
 
       const isBackground = false;

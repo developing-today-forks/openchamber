@@ -6,6 +6,7 @@ import { mapGitLabCI, mapGitLabCommit, mapGitLabDiff, mapGitLabIssue, mapGitLabM
 import { readDiffStats, readReviewerStates } from './context-extras.js';
 import { resolveGitLabProjectsFromDirectory } from './repo.js';
 import { gitPatchForDiff } from './diff-patch.js';
+import { readGitLabTextFile } from './text-file.js';
 import { systemReferences, withIssueReferences, withReferences } from './references.js';
 import { isPlainObject as isPlain, isPresent, isString } from './validation.js';
 import type { SourceControlMutationTarget, SourceControlProjectRef } from '@openchamber/sdk';
@@ -192,7 +193,6 @@ function liveIssueSummary(ref: Ref, raw: Reply) {
   return { owner: ref.owner, repo: ref.repo, number: raw.iid, title: isString(raw.title) ? raw.title : '', state: raw.state === 'opened' ? 'open' : 'completed' };
 }
 
-const MAX_FULL_FILE_BYTES = 5 * 1024 * 1024;
 /** A whole merge request patch is far larger than one file: ten times the per-file cap, matching the walkthrough GitHub cap. */
 const MAX_PATCH_BYTES = 50 * 1024 * 1024;
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
@@ -1494,17 +1494,12 @@ export function createGitLabResourceService({ origin, client, download, resolveP
         throw new Error('GitLab returned invalid merge request refs');
       }
       const readFile = async (filePath: string, ref: Field) => {
-        const content = await client.RepositoryFiles.showRaw(target.project.id, filePath, ref);
         if (binary) {
+          const content = await client.RepositoryFiles.showRaw(target.project.id, filePath, ref);
           if (!(content instanceof Blob)) throw new Error('GitLab returned invalid file contents');
           return documentDataUrl(Buffer.from(await content.arrayBuffer()));
         }
-        const value = content instanceof Blob ? await content.text() : content;
-        if (!isString(value)) throw new Error('GitLab returned invalid file contents');
-        if (Buffer.byteLength(value) > MAX_FULL_FILE_BYTES) {
-          throw Object.assign(new Error('This file is too large to show in full'), { status: 413, code: 'file-too-large' });
-        }
-        return value;
+        return readGitLabTextFile(client, target.project.id, filePath, String(ref));
       };
       const [original, modified] = await Promise.all([
         status === 'A' ? '' : readFile(previousPath || path, baseSha),

@@ -25,6 +25,8 @@ const DEFAULT_COMPACT_AFTER_RECORDS = 4096;
 const DEFAULT_COMPACT_AFTER_BYTES = 8 * 1024 * 1024;
 // Room for the retained snapshot, JSON escaping, and the append log between compactions.
 export const MAX_REPLAY_FILE_BYTES = 32 * 1024 * 1024;
+export const MAX_PENDING_REPLAY_RECORDS = 512;
+export const MAX_PENDING_REPLAY_BYTES = 2 * 1024 * 1024;
 
 export function resolveGlobalReplayFilePath(env = process.env, home = os.homedir()) {
   const configured = env.OPENCHAMBER_DATA_DIR === undefined || env.OPENCHAMBER_DATA_DIR === null
@@ -98,6 +100,32 @@ export function createReplayStore({
   // (#2111). A later successful write flushes them first; a reset that
   // lands clears them, because a reset supersedes everything before it.
   let pendingLines = [];
+  let pendingBytes = 0;
+  let pendingWriteDegraded = false;
+
+  const requireReplayReset = () => {
+    if (pendingWriteDegraded) return;
+    pendingWriteDegraded = true;
+    warn(
+      `replay persistence degraded for ${filePath}: pending append queue limit reached `
+      + `(${pendingLines.length} records, ${pendingBytes} bytes); appends are refused until a durable reset `
+      + `replaces the pending records and requires clients to refetch`,
+    );
+  };
+
+  const queuePending = (line) => {
+    const bytes = Buffer.byteLength(line);
+    if (
+      pendingLines.length >= MAX_PENDING_REPLAY_RECORDS
+      || pendingBytes + bytes > MAX_PENDING_REPLAY_BYTES
+    ) {
+      requireReplayReset();
+      return false;
+    }
+    pendingLines.push(line);
+    pendingBytes += bytes;
+    return true;
+  };
 
   const noteWriteFailure = (error) => {
     if (!writeFailed) {
@@ -122,6 +150,7 @@ export function createReplayStore({
         noteWriteFailure(error);
         return false;
       }
+      pendingBytes -= Buffer.byteLength(pendingLines[0]);
       pendingLines.shift();
     }
     return true;
@@ -132,6 +161,7 @@ export function createReplayStore({
   // every write counts as committed; a failed append to a configured file
   // is queued behind pendingLines and reported as not committed.
   const write = (record) => {
+    if (pendingWriteDegraded) return false;
     if (!filePath || persistenceDisabled) return true;
     if (repairBeforeWrite) {
       compact();
@@ -145,14 +175,14 @@ export function createReplayStore({
       return false;
     }
     if (!flushPending()) {
-      pendingLines.push(line);
+      queuePending(line);
       return false;
     }
     try {
       appendLine(line);
     } catch (error) {
       noteWriteFailure(error);
-      pendingLines.push(line);
+      queuePending(line);
       return false;
     }
     return true;
@@ -212,6 +242,8 @@ export function createReplayStore({
       droppedLocalThroughPosition = 0;
       repairBeforeWrite = false;
       pendingLines = [];
+      pendingBytes = 0;
+      pendingWriteDegraded = false;
       let text = '';
       try {
         const result = readBoundedFileSync(filePath, MAX_REPLAY_FILE_BYTES);
@@ -294,6 +326,37 @@ export function createReplayStore({
     }
   };
 
+  const writeResetSnapshot = (nextHead) => {
+    const snapshot = {
+      v: STORE_VERSION,
+      t: RECORD_KIND_SNAPSHOT,
+      head: nextHead,
+      entries: [],
+      droppedLocalThroughPosition: Math.max(droppedLocalThroughPosition, nextHead.position),
+    };
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      const temporaryPath = `${filePath}.${process.pid}.tmp`;
+      const serialized = `${JSON.stringify(snapshot)}\n`;
+      fs.writeFileSync(temporaryPath, serialized, { mode: 0o600 });
+      fs.renameSync(temporaryPath, filePath);
+      head = { ...nextHead };
+      entries = [];
+      droppedLocalThroughPosition = snapshot.droppedLocalThroughPosition;
+      pendingLines = [];
+      pendingBytes = 0;
+      pendingWriteDegraded = false;
+      recordsSinceSnapshot = 1;
+      appendedBytes = Buffer.byteLength(serialized);
+      writeFailed = false;
+      repairBeforeWrite = false;
+      return true;
+    } catch (error) {
+      noteWriteFailure(error);
+      return false;
+    }
+  };
+
   const maybeCompact = () => {
     if (recordsSinceSnapshot >= compactAfterRecords || appendedBytes >= compactAfterBytes) {
       compact();
@@ -303,6 +366,13 @@ export function createReplayStore({
   return {
     load,
     state,
+    pendingWriteStatus() {
+      return {
+        pendingRecords: pendingLines.length,
+        pendingBytes,
+        resetRequired: pendingWriteDegraded,
+      };
+    },
     // The append methods return whether the change was committed. On a
     // failed durable write nothing advances — not the entries, not the
     // head — so in-memory state never claims more than the file holds.
@@ -335,15 +405,32 @@ export function createReplayStore({
     },
     appendReset({ position, upstream }) {
       const sanitized = sanitizeHead({ position: Math.max(head.position, position), upstream });
+      if (pendingWriteDegraded) {
+        return writeResetSnapshot(sanitized);
+      }
       // A reset supersedes every earlier record, committed or still pending
       // — but only once it lands. A failed reset supersedes nothing: the
       // queued lines stay queued, ahead of the reset record the failed
       // write leaves behind, so the persisted sequence never skips a
       // failed frame (#2509, the #2111 ordering rule).
       const superseded = pendingLines;
+      const supersededBytes = pendingBytes;
       pendingLines = [];
+      pendingBytes = 0;
       if (!write({ v: STORE_VERSION, t: RECORD_KIND_RESET, p: sanitized.position, u: sanitized.upstream })) {
-        pendingLines = [...superseded, ...pendingLines];
+        const resetLines = pendingLines;
+        const resetBytes = pendingBytes;
+        pendingLines = superseded;
+        pendingBytes = supersededBytes;
+        if (
+          pendingLines.length + resetLines.length > MAX_PENDING_REPLAY_RECORDS
+          || pendingBytes + resetBytes > MAX_PENDING_REPLAY_BYTES
+        ) {
+          requireReplayReset();
+        } else {
+          pendingLines.push(...resetLines);
+          pendingBytes += resetBytes;
+        }
         return false;
       }
       head = sanitized;

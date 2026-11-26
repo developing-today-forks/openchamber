@@ -332,6 +332,9 @@ constructor retains its existing `Object.assign` behavior.
 
 ## Invariants
 
+- All render actions check the render tool setting on every call. A disabled
+  tool returns the same 403 error before tier chooser or quota fallback catalog reads.
+
 - A directory whose OpenCode configuration runs untrusted code requires the
   user's approval in the app before the control service opens it. Agent-selected
   directories, including pull request checkouts, pass the same trust check.

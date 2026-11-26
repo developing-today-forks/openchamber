@@ -496,6 +496,42 @@ describe('session image assets', () => {
     expect(response.body.results).toEqual([{ source, status: 'ready', path: expect.any(String) }]);
   });
 
+  it('authorizes rendered images when comment markers appear only inside single-line or multiline code spans', async () => {
+    const fixture = await createFixture();
+    const single = fixture.sources[0];
+    const multilinePath = path.join(fixture.outsideRoot, 'multiline.png');
+    await fs.writeFile(multilinePath, PNG);
+    const multiline = new URL(`file://${multilinePath}`).toString();
+    fixture.fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'msg_1',
+      type: 'assistant',
+      content: [{ type: 'text', text: `\`<!--\`\n![single](${single})\n-->\n\`<!--\ncontinued\`\n![multiline](${multiline})\n-->` }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const response = await prepare(fixture.app, fixture.directory, [single, multiline]);
+
+    expect(response.body.results).toEqual([
+      { source: single, status: 'ready', path: decodeURIComponent(new URL(single).pathname) },
+      { source: multiline, status: 'ready', path: decodeURIComponent(new URL(multiline).pathname) },
+    ]);
+  });
+
+  it('authorizes a rendered image after a block tag inside a multiline code span', async () => {
+    const fixture = await createFixture();
+    const source = fixture.sources[0];
+    fixture.fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      id: 'msg_1',
+      type: 'assistant',
+      content: [{ type: 'text', text: `\`example\n<div>\ncode\n\`\n![visible](${source})` }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+    const response = await prepare(fixture.app, fixture.directory, [source]);
+
+    expect(response.body.results).toEqual([
+      { source, status: 'ready', path: decodeURIComponent(new URL(source).pathname) },
+    ]);
+  });
+
   it('does not authorize image syntax inside HTML comments', async () => {
     const fixture = await createFixture();
     const single = fixture.sources[0];

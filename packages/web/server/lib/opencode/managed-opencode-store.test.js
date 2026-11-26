@@ -1,14 +1,16 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appendGeneration,
   createEmptyManagedOpenCodeStore,
   currentRecordFromManagedStore,
+  MANAGED_OPENCODE_STORE_MAX_BYTES,
   MANAGED_OPENCODE_STORE_VERSION,
   migrateV1StoreToV2,
+  readManagedOpenCodeClaimDir,
   readManagedOpenCodeStore,
   reapManagedOpenCodeStore,
   recordHandoffStep,
@@ -80,21 +82,144 @@ describe('v2 store file', () => {
     expect(fs.statSync(storePath).mode & 0o777).toBe(0o600);
   });
 
-  it('returns null for a missing, corrupt, or non-v2 document', () => {
+  it('returns null only for a missing document and rejects corrupt or oversized files', () => {
     expect(readManagedOpenCodeStore(path.join(root, 'missing.json'))).toBeNull();
 
     fs.mkdirSync(path.dirname(storePath), { recursive: true });
     fs.writeFileSync(storePath, '{not json');
-    expect(readManagedOpenCodeStore(storePath)).toBeNull();
+    expect(() => readManagedOpenCodeStore(storePath)).toThrow(/corrupt.*invalid JSON/);
 
     fs.writeFileSync(storePath, JSON.stringify({ schema_version: 1, generations: [], handoffs: [] }));
-    expect(readManagedOpenCodeStore(storePath)).toBeNull();
+    expect(() => readManagedOpenCodeStore(storePath)).toThrow(/unsupported schema/);
 
     fs.writeFileSync(storePath, JSON.stringify({ schema_version: 2, generations: [{ bogus: true }], handoffs: [] }));
-    expect(readManagedOpenCodeStore(storePath)).toBeNull();
+    expect(() => readManagedOpenCodeStore(storePath)).toThrow(/invalid record/);
 
     fs.writeFileSync(storePath, JSON.stringify({ schema_version: 2, generations: [], handoffs: [{ bogus: true }] }));
-    expect(readManagedOpenCodeStore(storePath)).toBeNull();
+    expect(() => readManagedOpenCodeStore(storePath)).toThrow(/invalid record/);
+
+    fs.writeFileSync(storePath, Buffer.alloc(MANAGED_OPENCODE_STORE_MAX_BYTES + 1));
+    expect(() => readManagedOpenCodeStore(storePath)).toThrow(/corrupt or over limit.*overflow/);
+
+    if (process.platform !== 'win32') {
+      fs.unlinkSync(storePath);
+      fs.symlinkSync(path.join(root, 'missing-target.json'), storePath);
+      expect(() => readManagedOpenCodeStore(storePath)).toThrow(/unreadable or corrupt|missing symlink target/);
+    }
+  });
+
+  it('uses no instance-directory claim hint when an existing store cannot be read', () => {
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(storePath, '{not json');
+    const original = fs.readFileSync(storePath);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      expect(readManagedOpenCodeClaimDir(storePath)).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('without a claim hint'));
+      expect(fs.readFileSync(storePath)).toEqual(original);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('compacts closed generation history while keeping the live record readable', () => {
+    const closed = Array.from({ length: 900 }, (_, index) => generation({
+      generation_id: index + 1,
+      pid: 8000 + index,
+      port: 10000 + index,
+      binary: `/opencode/${'x'.repeat(500)}`,
+      state: 'closed',
+      ended_at: '2026-02-01T00:00:00.000Z',
+      password: null,
+      agent_tool_token: null,
+    }));
+    const active = generation({
+      generation_id: 901,
+      pid: 9999,
+      state: 'active',
+    });
+    const store = {
+      ...createEmptyManagedOpenCodeStore(),
+      generations: [...closed, active],
+    };
+
+    writeManagedOpenCodeStore(storePath, store);
+
+    const persisted = readManagedOpenCodeStore(storePath);
+    expect(fs.statSync(storePath).size).toBeLessThanOrEqual(MANAGED_OPENCODE_STORE_MAX_BYTES);
+    expect(persisted.generations.map((entry) => [entry.generation_id, entry.state])).toEqual([[901, 'active']]);
+    expect(currentRecordFromManagedStore(persisted)?.pid).toBe(9999);
+    expect(appendGeneration(persisted, generation({ pid: 10000 })).generations.at(-1)?.generation_id).toBe(902);
+
+    writeManagedOpenCodeStore(storePath, { ...createEmptyManagedOpenCodeStore(), generations: closed });
+    const closedHistory = readManagedOpenCodeStore(storePath);
+    expect(closedHistory.generations.map((entry) => entry.generation_id)).toEqual([900]);
+    expect(appendGeneration(closedHistory, generation({ pid: 10001 })).generations.at(-1)?.generation_id).toBe(901);
+  });
+
+  it('compacts settled handoffs and preserves unfinished recovery records', () => {
+    const settled = Array.from({ length: 1600 }, (_, index) => handoff({
+      handoff_id: `aborted-${index}`,
+      step: 'aborted',
+      outcome: `failed-${'x'.repeat(100)}`,
+    }));
+    const pending = handoff({ handoff_id: 'unfinished', predecessor: 1, successor: 2, step: 'prepared' });
+    const confirmedInProgress = handoff({
+      handoff_id: 'confirmed-in-progress',
+      predecessor: 3,
+      successor: 4,
+      step: 'confirmed',
+      outcome: 'predecessor-draining',
+    });
+    const confirmedSettled = handoff({
+      handoff_id: 'confirmed-settled',
+      predecessor: 5,
+      successor: 6,
+      step: 'confirmed',
+      outcome: 'predecessor-draining',
+    });
+    const store = {
+      ...createEmptyManagedOpenCodeStore(),
+      generations: [
+        generation({ generation_id: 1, pid: 5001, state: 'draining' }),
+        generation({ generation_id: 2, pid: 5002, state: 'starting' }),
+        generation({ generation_id: 3, pid: 5003, state: 'active' }),
+        generation({ generation_id: 4, pid: 5004, state: 'active' }),
+        generation({ generation_id: 5, pid: 5005, state: 'draining' }),
+        generation({ generation_id: 6, pid: 5006, state: 'active' }),
+      ],
+      handoffs: [...settled, pending, confirmedInProgress, confirmedSettled],
+    };
+
+    writeManagedOpenCodeStore(storePath, store);
+
+    const persisted = readManagedOpenCodeStore(storePath);
+    expect(fs.statSync(storePath).size).toBeLessThanOrEqual(MANAGED_OPENCODE_STORE_MAX_BYTES);
+    expect(persisted.handoffs.map((entry) => entry.handoff_id)).toEqual(['unfinished', 'confirmed-in-progress']);
+    expect(persisted.generations.map((entry) => entry.pid)).toEqual([5001, 5002, 5003, 5004, 5005, 5006]);
+  });
+
+  it('refuses an oversized live store without replacing the previous readable file', () => {
+    const previous = appendGeneration(createEmptyManagedOpenCodeStore(), generation({ pid: 7001 }));
+    writeManagedOpenCodeStore(storePath, previous);
+    const previousBytes = fs.readFileSync(storePath);
+    const liveGenerations = Array.from({ length: 700 }, (_, index) => generation({
+      generation_id: index + 1,
+      pid: 12000 + index,
+      port: 20000 + index,
+      binary: `/opencode/${'x'.repeat(500)}`,
+      state: 'active',
+    }));
+    const oversized = {
+      ...createEmptyManagedOpenCodeStore(),
+      generations: liveGenerations,
+    };
+
+    expect(() => writeManagedOpenCodeStore(storePath, oversized)).toThrow(/exceeds the 262144-byte write limit/);
+    expect(fs.readFileSync(storePath)).toEqual(previousBytes);
+    expect(readManagedOpenCodeStore(storePath)).toEqual({ ...previous, schema_version: MANAGED_OPENCODE_STORE_VERSION });
+    expect(oversized.generations).toHaveLength(700);
   });
 });
 

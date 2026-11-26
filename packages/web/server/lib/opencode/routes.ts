@@ -828,7 +828,7 @@ export const registerOpenCodeRoutes = <Settings extends { opencodeBinary?: unkno
       // destination itself (including a symlink), it does not follow it.
       const tmp = `${AGENTS_MD_PATH}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       try {
-        await fs.promises.writeFile(tmp, content, 'utf8');
+        await fs.promises.writeFile(tmp, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         await renameWithRetry((from, to) => fs.promises.rename(from, to), tmp, AGENTS_MD_PATH);
       } catch (error) {
         await fs.promises.unlink(tmp).catch(() => {});

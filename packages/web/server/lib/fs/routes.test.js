@@ -1271,6 +1271,26 @@ describe('fs rename', () => {
     expect(fsPromises.link).not.toHaveBeenCalled();
   });
 
+  it('returns a conflict when a directory destination appears between the check and the commit', async () => {
+    const exists = () => Object.assign(new Error('exists'), { code: 'EEXIST' });
+    const fsPromises = {
+      lstat: vi.fn(async (targetPath) => {
+        if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
+        throw missing();
+      }),
+      link: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      renameDirNoReplace: vi.fn(async () => { throw exists(); }),
+    };
+    const res = createMockResponse();
+    await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    expect(fsPromises.rename).not.toHaveBeenCalled();
+  });
+
   it('fails closed with 500 when the no-replace directory rename is unavailable', async () => {
     const emptyPrebuilds = await mkdtemp(path.join(tmpdir(), 'oc-empty-prebuilds-'));
     const previousOverride = process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
@@ -4189,6 +4209,77 @@ describe('fs exec output cap (#737)', () => {
     expect(res.body.results[0].error).toContain('output-too-large');
     expect(res.body.results[0].stderr).toBe('e'.repeat(16));
     expect(kills).toEqual(['SIGKILL']);
+  });
+});
+
+describe('fs exec bounds (#2583)', () => {
+  const createQuickSpawn = () => {
+    const spawn = vi.fn(() => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      queueMicrotask(() => child.emit('close', 0, null));
+      return child;
+    });
+    return { spawn };
+  };
+
+  it('rejects a commands array over the per-request cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const handler = registerExec({ spawn });
+    const commands = Array.from({ length: 33 }, (_, i) => `echo ${i}`);
+
+    const res = await callExec(handler, { commands, cwd: '/repo' });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toContain('Too many commands');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('accepts a commands array at the per-request cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const handler = registerExec({ spawn });
+    const commands = Array.from({ length: 32 }, (_, i) => `echo ${i}`);
+
+    const res = await callExec(handler, { commands, cwd: '/repo' });
+
+    expect(res.statusCode).not.toBe(400);
+    expect(spawn).toHaveBeenCalledTimes(32);
+  });
+
+  it('evicts the oldest retained jobs past the job cap', async () => {
+    const { spawn } = createQuickSpawn();
+    const { app, getRoute } = createRouteRegistry();
+    registerFsRoutes(app, {
+      os: { homedir: () => '/home/user' },
+      path,
+      fsPromises: {
+        realpath: async (targetPath) => targetPath,
+        stat: async () => ({ isDirectory: () => true }),
+      },
+      spawn,
+      crypto: { randomUUID: (() => { let n = 0; return () => `job-${n++}`; })() },
+      normalizeDirectoryPath: (p) => p,
+      resolveProjectDirectory: async () => ({ directory: '/repo' }),
+      buildAugmentedPath: () => '/usr/bin',
+      resolveGitBinaryForSpawn: () => 'git',
+      openchamberUserConfigRoot: '/home/user/.config',
+    });
+    const postExec = getRoute('POST', '/api/fs/exec');
+    const getExec = getRoute('GET', '/api/fs/exec/:jobId');
+
+    for (let i = 0; i < 257; i += 1) {
+      await callExec(postExec, { commands: ['true'], cwd: '/repo' });
+    }
+
+    const oldest = createMockResponse();
+    await getExec({ params: { jobId: 'job-0' } }, oldest);
+    const newest = createMockResponse();
+    await getExec({ params: { jobId: 'job-256' } }, newest);
+
+    expect(oldest.statusCode).toBe(404);
+    expect(newest.statusCode).toBe(200);
   });
 });
 

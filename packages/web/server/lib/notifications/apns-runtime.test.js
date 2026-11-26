@@ -768,6 +768,129 @@ describe('clearing handled notifications from the phones', () => {
     expect(requests.map((request) => request.badge)).toEqual([1, 1]);
   });
 
+  it('clears every device in chunks of at most 100, each signed over its own chunk (#2615)', async () => {
+    const fetchMock = vi.fn(async (url) =>
+      isRegister([url]) ? jsonResponse({ ok: true }) : jsonResponse({ ok: true, results: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+    const runtime = createApnsRuntime(makeDeps());
+    const tokens = Array.from({ length: 201 }, (_, index) => `token-${index}`);
+    for (const [index, token] of tokens.entries()) {
+      await runtime.addOrUpdateApnsToken(`s${index}`, token);
+    }
+
+    fetchMock.mockClear();
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_1'], badge: 3 });
+
+    const clearCalls = fetchMock.mock.calls.filter(isClear);
+    const requests = clearCalls.map(([, init]) => JSON.parse(init.body));
+    expect(requests.map((request) => request.tokens.length)).toEqual([100, 100, 1]);
+    expect(new Set(requests.flatMap((request) => request.tokens))).toEqual(new Set(tokens));
+    for (const sent of requests) {
+      expect(sent).toMatchObject({ tags: ['ready-ses_1'], badge: 3, env: 'production' });
+      const message = `${sent.ts}.${[...sent.tokens].sort().join(',')}.clear.${sent.tags.join(',')}`;
+      expect(await verifyRelaySignature(sent.publicKeyJwk, message, sent.sig)).toBe(true);
+    }
+  });
+
+  it('still clears later chunks after a failed chunk (#2615)', async () => {
+    let clearAttempts = 0;
+    const fetchMock = vi.fn(async (url) => {
+      if (isRegister([url])) return jsonResponse({ ok: true });
+      clearAttempts += 1;
+      return clearAttempts === 1 ? new Response('boom', { status: 500 }) : jsonResponse({ ok: true, results: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+    const runtime = createApnsRuntime(makeDeps());
+    for (let index = 0; index < 201; index += 1) {
+      await runtime.addOrUpdateApnsToken(`s${index}`, `token-${index}`);
+    }
+
+    fetchMock.mockClear();
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_1'] });
+
+    expect(fetchMock.mock.calls.filter(isClear)).toHaveLength(3);
+  });
+
+  it('drops nothing when the clear response streams past the relay cap with no declared length (#2615)', async () => {
+    const head = '{"results":[{"token":"tokenA","ok":false,"drop":true}],"pad":"';
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(head));
+        const chunk = new Uint8Array(64 * 1024).fill(120);
+        for (let sent = 0; sent < 2 * 1024 * 1024; sent += chunk.byteLength) controller.enqueue(chunk);
+        controller.enqueue(new TextEncoder().encode('"}'));
+        controller.close();
+      },
+    });
+    let clears = 0;
+    const fetchMock = vi.fn(async (url) => {
+      if (isRegister([url])) return jsonResponse({ ok: true });
+      clears += 1;
+      return clears === 1
+        ? new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } })
+        : jsonResponse({ ok: true, results: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+    const runtime = createApnsRuntime(makeDeps());
+    await runtime.addOrUpdateApnsToken('s1', 'tokenA');
+
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_1'] });
+
+    fetchMock.mockClear();
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_2'] });
+    // tokenA survived: the oversized body was never acted on.
+    expect(JSON.parse(fetchMock.mock.calls.find(isClear)[1].body).tokens).toEqual(['tokenA']);
+  });
+
+  it('drops nothing when the clear response declares a length past the relay cap (#2615)', async () => {
+    const fetchMock = vi.fn(async (url) =>
+      isRegister([url])
+        ? jsonResponse({ ok: true })
+        : new Response(JSON.stringify({ results: [{ token: 'tokenA', ok: false, drop: true }] }), {
+            status: 200,
+            headers: { 'content-type': 'application/json', 'content-length': String(2 * 1024 * 1024) },
+          }));
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+    const runtime = createApnsRuntime(makeDeps());
+    await runtime.addOrUpdateApnsToken('s1', 'tokenA');
+
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_1'] });
+
+    fetchMock.mockClear();
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_2'] });
+    expect(JSON.parse(fetchMock.mock.calls.find(isClear)[1].body).tokens).toEqual(['tokenA']);
+  });
+
+  it('drops nothing on a malformed clear response and only drops string tokens (#2615)', async () => {
+    const fetchMock = vi.fn(async (url) => (isRegister([url]) ? jsonResponse({ ok: true }) : new Response('not json', { status: 200 })));
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.OPENCHAMBER_PUSH_RELAY_URL = 'https://relay.test/v1/push/send';
+    const runtime = createApnsRuntime(makeDeps());
+    await runtime.addOrUpdateApnsToken('s1', 'tokenA');
+    await runtime.addOrUpdateApnsToken('s2', 'tokenDead');
+
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_1'] });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url) =>
+        isRegister([url])
+          ? jsonResponse({ ok: true })
+          : jsonResponse({ results: [{ token: 12345, ok: false, drop: true }, { token: 'tokenDead', ok: false, drop: true }] })),
+    );
+    const fetchMock2 = globalThis.fetch;
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_2'] });
+
+    fetchMock2.mockClear();
+    await runtime.clearApnsNotifications({ tags: ['ready-ses_3'] });
+    // The numeric token matched nothing and tokenDead is gone; tokenA remains.
+    expect(JSON.parse(fetchMock2.mock.calls.find(isClear)[1].body).tokens).toEqual(['tokenA']);
+  });
+
   it('sends a background push without an alert in direct mode', async () => {
     process.env.OPENCHAMBER_PUSH_RELAY_DISABLED = 'true';
     const requests = [];
