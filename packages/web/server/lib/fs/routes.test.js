@@ -1271,6 +1271,26 @@ describe('fs rename', () => {
     expect(fsPromises.link).not.toHaveBeenCalled();
   });
 
+  it('returns a conflict when a directory destination appears between the check and the commit', async () => {
+    const exists = () => Object.assign(new Error('exists'), { code: 'EEXIST' });
+    const fsPromises = {
+      lstat: vi.fn(async (targetPath) => {
+        if (targetPath === '/repo/dir') return { dev: 1, ino: 10, isDirectory: () => true, isSymbolicLink: () => false };
+        throw missing();
+      }),
+      link: vi.fn(async () => undefined),
+      unlink: vi.fn(async () => undefined),
+      rename: vi.fn(async () => undefined),
+      renameDirNoReplace: vi.fn(async () => { throw exists(); }),
+    };
+    const res = createMockResponse();
+    await registerRename(fsPromises)({ body: { oldPath: '/repo/dir', newPath: '/repo/dir-renamed' } }, res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'Destination path already exists', reason: 'already-exists' });
+    expect(fsPromises.rename).not.toHaveBeenCalled();
+  });
+
   it('fails closed with 500 when the no-replace directory rename is unavailable', async () => {
     const emptyPrebuilds = await mkdtemp(path.join(tmpdir(), 'oc-empty-prebuilds-'));
     const previousOverride = process.env.OPENCHAMBER_NOREPLACE_PREBUILDS;
