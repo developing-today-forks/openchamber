@@ -14,8 +14,9 @@ module and implements its own quota reader.
 - Account files accept an accounts array and select the active index, falling
   back to the first account only when the indexed value is nullish. A selected
   account without a truthy refresh token does not try another account.
-- A truthy non-string refresh token still reaches Google's existing token parser
-  and resolves to null. Email remains unchecked and retains its original value.
+- A non-string or whitespace-only keyring refresh token resolves to no
+  credential before Google's parser runs. Email remains unchecked and retains
+  its original value.
 - Request order, timeout, headers and endpoint fallback remain unchanged.
 
 ## Decisions

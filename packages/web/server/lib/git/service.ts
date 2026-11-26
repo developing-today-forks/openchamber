@@ -2327,14 +2327,10 @@ const createCommandFailure = (message: string) => Object.assign(new Error(messag
 // stripped before the output becomes a user-facing failure message.
 const stripTerminalSequences = (value: string) =>
   String(value || '')
-    // oxlint-disable-next-line no-control-regex -- ANSI escape sequences start with ESC.
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    // oxlint-disable-next-line no-control-regex -- ANSI CSI sequences use control bytes.
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    // oxlint-disable-next-line no-control-regex -- ANSI single-byte sequences use ESC.
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    // oxlint-disable-next-line no-control-regex -- Remove control bytes from displayed command output.
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // oxlint-disable-line no-control-regex -- Strip OSC sequences from terminal output.
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') // oxlint-disable-line no-control-regex -- Strip CSI sequences from terminal output.
+    .replace(/\x1b[@-Z\\-_]/g, '') // oxlint-disable-line no-control-regex -- Strip single-byte terminal sequences.
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ''); // oxlint-disable-line no-control-regex -- Remove control bytes from displayed output.
 
 const shownCommandFailure = (result: StartCommandResult, maxChars: number) => {
   const message = stripTerminalSequences(String(result.message || '')).trim();
