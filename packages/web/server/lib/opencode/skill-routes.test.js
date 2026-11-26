@@ -745,6 +745,61 @@ describe('skill-routes directory soft fallback', () => {
     expect(fs.existsSync(path.join(skillDir, 'flat.md'))).toBe(false);
   });
 
+  it('refuses symlink escapes through GET, PUT, and DELETE', async () => {
+    projectRoot = createTempProject();
+    const skillDir = path.join(projectRoot, '.agents', 'skills', 'files-skill');
+    const outsideDir = path.join(projectRoot, 'outside');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: files-skill\ndescription: Has files\n---\nBody\n');
+    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'outside-secret');
+    fs.symlinkSync(path.join(outsideDir, 'secret.txt'), path.join(skillDir, 'secret-link.txt'), process.platform === 'win32' ? 'file' : undefined);
+    fs.symlinkSync(outsideDir, path.join(skillDir, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    appHandle = await startSkillsApp({ projectRoot });
+    const query = `?directory=${encodeURIComponent(projectRoot)}`;
+    const base = `${appHandle.baseUrl}/api/config/skills/files-skill/files`;
+    for (const relativePath of ['secret-link.txt', 'outside-link/secret.txt']) {
+      for (const method of ['GET', 'PUT', 'DELETE']) {
+        const options = { method };
+        if (method === 'PUT') {
+          options.headers = { 'content-type': 'application/json' };
+          options.body = JSON.stringify({ content: 'pwned' });
+        }
+        const response = await fetch(`${base}/${relativePath}${query}`, options);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toEqual({ error: 'Access to file denied' });
+      }
+    }
+    expect(fs.readFileSync(path.join(outsideDir, 'secret.txt'), 'utf8')).toBe('outside-secret');
+  });
+
+  it('prevalidates every supporting-file update before applying the first one', async () => {
+    projectRoot = createTempProject();
+    const skillDir = path.join(projectRoot, '.agents', 'skills', 'files-skill');
+    const outsideDir = path.join(projectRoot, 'outside');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: files-skill\ndescription: Has files\n---\nBody\n');
+    fs.writeFileSync(path.join(skillDir, 'keep.txt'), 'original');
+    fs.symlinkSync(outsideDir, path.join(skillDir, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    appHandle = await startSkillsApp({ projectRoot });
+    const query = `?directory=${encodeURIComponent(projectRoot)}`;
+    const response = await fetch(`${appHandle.baseUrl}/api/config/skills/files-skill${query}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ supportingFiles: [
+        { path: 'keep.txt', content: 'changed' },
+        { path: 'outside-link/pwned.txt', content: 'pwned' },
+      ] }),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: 'Access to file denied' });
+    expect(fs.readFileSync(path.join(skillDir, 'keep.txt'), 'utf8')).toBe('original');
+    expect(fs.existsSync(path.join(outsideDir, 'pwned.txt'))).toBe(false);
+  });
+
   it('refuses an over-cap supporting-file write and leaves the file unchanged (#1444)', () => {
     projectRoot = createTempProject();
     const skillDir = path.join(projectRoot, '.agents', 'skills', 'write-capped-skill');

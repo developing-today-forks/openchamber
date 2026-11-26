@@ -5,6 +5,30 @@ import { fakeGerrit, fixtures, gerritBase64, ORIGIN, replay } from './fixtures/f
 const noDelay = async () => {};
 const basic = (login, password) => `Basic ${Buffer.from(`${login}:${password}`).toString('base64')}`;
 
+const MiB = 1024 * 1024;
+// A body streamed in 64 KiB chunks with no content-length, recording how much
+// was pulled and whether the reader cancelled it. Oracle: an over-cap answer
+// is refused after pulling little more than the cap, and its stream is
+// cancelled instead of drained whole.
+const streamedBody = (totalBytes) => {
+  const state = { pulled: 0, cancelled: false };
+  const chunk = new Uint8Array(64 * 1024).fill(0x61);
+  const body = new ReadableStream({
+    pull(controller) {
+      if (state.pulled >= totalBytes) {
+        controller.close();
+        return;
+      }
+      state.pulled += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { body, state };
+};
+
 describe('Gerrit client', () => {
   it('keeps an explicitly undefined fetch body on reads', async () => {
     const fetch = vi.fn(async () => new Response('null'));
@@ -148,5 +172,48 @@ describe('Gerrit client', () => {
 
   it('refuses an origin that is not normalized', () => {
     expect(() => createGerritClient({ origin: `${ORIGIN}/r`, fetch: vi.fn() })).toThrow('normalized instance origin');
+  });
+  it.each([
+    ['a JSON read', (client) => client.get('/accounts/self')],
+    ['a base64 file read', (client) => client.base64('/changes/x~1/revisions/current/patch')],
+  ])('refuses an over-cap success body on %s without buffering it or retrying', async (_name, read) => {
+    const { body, state } = streamedBody(32 * MiB);
+    const fetch = vi.fn(async () => new Response(body, { status: 200 }));
+    const client = createGerritClient({ origin: ORIGIN, login: 'alice', password: 'pw', fetch, delay: noDelay });
+
+    const error = await read(client).catch((failure) => failure);
+    expect(error).toBeInstanceOf(GerritRequestError);
+    expect(error).toMatchObject({ kind: 'provider-error', status: 200 });
+    expect(error.message).toContain('more than');
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(17 * MiB);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a success body whose declared length is over the cap before reading it', async () => {
+    const { body, state } = streamedBody(32 * MiB);
+    const fetch = vi.fn(async () => new Response(body, { status: 200, headers: { 'content-length': String(32 * MiB) } }));
+    const client = createGerritClient({ origin: ORIGIN, login: 'alice', password: 'pw', fetch });
+
+    await expect(client.get('/accounts/self')).rejects.toMatchObject({ kind: 'provider-error' });
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it('keeps the status of a refusal whose error body is over the cap, without its text', async () => {
+    const { body, state } = streamedBody(4 * MiB);
+    const fetch = vi.fn(async () => new Response(body, { status: 409 }));
+    const client = createGerritClient({ origin: ORIGIN, login: 'alice', password: 'pw', fetch });
+
+    const error = await client.post('/changes/x~1/submit').catch((failure) => failure);
+    expect(error).toMatchObject({ status: 409, kind: 'provider-error', message: 'Gerrit request failed with status 409' });
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(MiB);
+  });
+
+  it('still reads an in-cap answer that starts with a byte order mark', async () => {
+    const fetch = vi.fn(async () => new Response(`\uFEFF)]}'\n{"username":"alice"}`));
+    const client = createGerritClient({ origin: ORIGIN, login: 'alice', password: 'pw', fetch });
+    await expect(client.get('/accounts/self')).resolves.toEqual({ username: 'alice' });
   });
 });

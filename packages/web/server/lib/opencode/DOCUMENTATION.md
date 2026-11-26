@@ -30,10 +30,21 @@ OpenChamber's own server features live beside it: settings persistence in `../se
 - Running-image checks stop counting jobs older than OpenCode's image timeout plus a minute. An interrupted generation can remain listed after an OpenCode restart and otherwise hold a goal indefinitely.
 - Skill-list fetch failure remains distinct from an authoritative empty list. Partial local discovery reports its incompleteness, and process-level discovery flags travel with the list because browsers cannot infer which external roots OpenCode enables. Built-in skill IDs remain separate from display names because policy statements use IDs.
 - Skill installation provenance refines the Installed badge; provenance-write failure cannot fail a completed installation or deletion. Roots discovered in both user and project scope share disk reads while retaining discovery order and project precedence.
-- Skill supporting-file walks and repeated ancestor probes stay out of list enrichment because bundled environments can contain thousands of files. Skill mutation serialization and exclusive creation protect the check-then-write interval against concurrent requests and processes.
+- Skill supporting-file walks and repeated ancestor probes stay out of list enrichment because bundled environments can contain thousands of files. Skill mutation serialization and exclusive creation protect the check-then-write interval against concurrent requests and processes. Supporting-file read, write, and delete resolve existing path components under the real skill root; escaping symlinks fail with `EACCES`, and update batches validate all paths before changing files.
 - Installer options come only from host-owned callers. Commands, destinations, versions, URLs, and environments are never request-controlled, and installer output is discarded because it can contain registry or environment secrets. Windows extraction uses the system `tar.exe` because Git Bash tar interprets a drive-letter path as a remote host.
 
 ## Decisions
+
+### Why supporting-file sinks resolve each path component
+
+Project-owned skills can contain links, so checking only the path's lexical
+spelling leaves read, write, and delete exposed through intermediate links.
+The sink resolves existing components, follows link targets even when the
+remaining file is missing, and checks the result against the real skill root.
+It operates on the requested path after validation, so deleting an in-root
+final symlink removes the link entry and keeps its target. Update batches
+validate every supporting path before applying file operations. The VS Code
+twin uses the same rule.
 
 ### Why the retired opencode-claude plugin is removed, and Bun is not shimmed
 

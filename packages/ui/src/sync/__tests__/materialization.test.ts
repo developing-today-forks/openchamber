@@ -196,6 +196,7 @@ describe("materializeSessionSnapshots", () => {
     )
 
     expect(result.part.msg_1[0]).toBe(livePart)
+    // SAFETY: the part under test was materialized from this test's own text fixture above, and the read is optional-chained so a missing field fails the expectation instead of throwing.
     expect((result.part.msg_1[0] as { text?: string })?.text).toBe("First chunk ")
   })
 
@@ -274,6 +275,7 @@ describe("materializeSessionSnapshots", () => {
   })
 
   test("does not preserve omitted optimistic user text parts beside server snapshot parts", () => {
+    // SAFETY: test fixture — the literal is constructed in full here as an optimistic text part; the assertion only bridges the fixture's literal type to Part.
     const optimisticPart = { id: "prt_optimistic", messageID: "msg_1", type: "text", text: "Hello" } as Part
     const serverPart = part("prt_server", "msg_1", "text", "Hello")
     const state = {
@@ -291,6 +293,7 @@ describe("materializeSessionSnapshots", () => {
   })
 
   test("preserves state.time from existing part when snapshot drops it", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -298,6 +301,7 @@ describe("materializeSessionSnapshots", () => {
       type: "tool",
       state: { status: "completed", time: { start: 1000, end: 2000 } },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -316,6 +320,7 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures with numeric state.time values set above; the read only feeds the two expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { time?: { start?: number; end?: number } } }
     expect(mergedPart.state?.time?.start).toBe(1000)
     expect(mergedPart.state?.time?.end).toBe(2000)
@@ -324,6 +329,7 @@ describe("materializeSessionSnapshots", () => {
   test("does not regress a locally interrupted tool (error + end) when a stale running snapshot arrives", () => {
     // The #2577 mark writes status "error" + end time; a later stale refresh
     // that still reports the part as running must not undo it.
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const interruptedTool = {
       id: "prt_1",
       messageID: "msg_1",
@@ -331,6 +337,7 @@ describe("materializeSessionSnapshots", () => {
       type: "tool",
       state: { status: "error", error: "Interrupted", time: { start: 1000, end: 5000 } },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const staleRunningTool = {
       id: "prt_1",
       messageID: "msg_1",
@@ -351,6 +358,7 @@ describe("materializeSessionSnapshots", () => {
 
     expect(result.part.msg_1[0]).toBe(interruptedTool)
     expect(result.part.msg_1[0]).not.toBe(staleRunningTool)
+    // SAFETY: the preceding toBe assertion proves this is the test's interruptedTool fixture, whose state.status is the literal "error" set above.
     expect((result.part.msg_1[0] as { state: { status: string } }).state.status).toBe("error")
   })
 
@@ -405,6 +413,7 @@ describe("materializeSessionSnapshots", () => {
   })
 
   test("does not regress a completed tool when a stale running snapshot arrives", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const completedTool = {
       id: "prt_1",
       messageID: "msg_1",
@@ -412,6 +421,7 @@ describe("materializeSessionSnapshots", () => {
       type: "tool",
       state: { status: "completed", output: "done", time: { start: 1000, end: 2000 } },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const staleRunningTool = {
       id: "prt_1",
       messageID: "msg_1",
@@ -459,6 +469,7 @@ describe("materializeSessionSnapshots", () => {
   })
 
   test("preserves state.attachments from existing part when completed snapshot lacks them", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -471,6 +482,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-1", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -489,12 +501,15 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown> } }
     expect(mergedPart.state?.attachments).toHaveLength(1)
+    // SAFETY: attachments[0] is the fixture attachment object constructed in this test above, and the id read is optional-chained.
     expect((mergedPart.state?.attachments?.[0] as { id?: string })?.id).toBe("att-1")
   })
 
   test("preserves state.attachments during streaming merge when snapshot has no end time", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -506,6 +521,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-1", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -524,12 +540,15 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown> } }
     expect(mergedPart.state?.attachments).toHaveLength(1)
+    // SAFETY: attachments[0] is the fixture attachment object constructed in this test above, and the id read is optional-chained.
     expect((mergedPart.state?.attachments?.[0] as { id?: string })?.id).toBe("att-1")
   })
 
   test("preserves both state.attachments and state.time.start during streaming merge when snapshot lacks both", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -541,6 +560,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-1", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -559,13 +579,16 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown>; time?: { start?: number; end?: number } } }
     expect(mergedPart.state?.attachments).toHaveLength(1)
+    // SAFETY: attachments[0] is the fixture attachment object constructed in this test above, and the id read is optional-chained.
     expect((mergedPart.state?.attachments?.[0] as { id?: string })?.id).toBe("att-1")
     expect(mergedPart.state?.time?.start).toBe(100)
   })
 
   test("does not merge existing state.attachments when snapshot has its own", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -578,6 +601,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-old", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -601,12 +625,15 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown> } }
     expect(mergedPart.state?.attachments).toHaveLength(1)
+    // SAFETY: attachments[0] is the fixture attachment object constructed in this test above, and the id read is optional-chained.
     expect((mergedPart.state?.attachments?.[0] as { id?: string })?.id).toBe("att-new")
   })
 
   test("treats empty state.attachments in completed snapshot as authoritative", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -619,6 +646,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-old", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -642,11 +670,13 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown> } }
     expect(mergedPart.state?.attachments).toEqual([])
   })
 
   test("treats empty state.attachments in streaming snapshot as authoritative", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const livePart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -658,6 +688,7 @@ describe("materializeSessionSnapshots", () => {
         attachments: [{ id: "att-old", type: "file", mime: "image/png", url: "data:image/png,..." }],
       },
     } as unknown as Part
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const snapshotPart = {
       id: "prt_1",
       messageID: "msg_1",
@@ -676,6 +707,7 @@ describe("materializeSessionSnapshots", () => {
       [{ info: message("msg_1"), parts: [snapshotPart] }],
     )
 
+    // SAFETY: the merged part derives from this test's own fixtures above; the optional-chained read only feeds the expectations below.
     const mergedPart = result.part.msg_1[0] as { state?: { attachments?: Array<unknown> } }
     expect(mergedPart.state?.attachments).toEqual([])
   })
@@ -712,6 +744,7 @@ describe("getSessionMaterializationStatus", () => {
 
   test("treats user-only cached state as renderable", () => {
     const state = {
+      // SAFETY: test fixture — message() builds a complete Message and only the role field is overridden, so the result is still a full Message shape.
       message: { ses_1: [{ ...message("msg_1"), role: "user" } as Message] },
       part: {},
     }
@@ -799,6 +832,7 @@ describe("isSessionMaterializationStillNeeded", () => {
   })
 
   test("recovers a settled session whose trailing assistant still has a running tool", () => {
+    // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
     const runningTool = {
       id: "prt_1",
       messageID: "msg_1",
@@ -817,6 +851,7 @@ describe("isSessionMaterializationStillNeeded", () => {
 
     const completedState = {
       ...state,
+      // SAFETY: test fixture — runningTool is a complete tool part fixture above and only its state is replaced with a completed state of the same shape.
       part: { msg_1: [{ ...runningTool, state: { status: "completed" } } as Part] },
     }
     expect(getStaleRunningToolMessageID(completedState, "ses_1")).toBe(undefined)
@@ -830,6 +865,7 @@ describe("isSessionMaterializationStillNeeded", () => {
     const state = {
       message: { ses_1: [message("msg_1"), userMessage("msg_2")] },
       part: {
+        // SAFETY: test fixture — this literal is constructed in full below with the exact fields the scenario exercises; the assertion only bridges the fixture's literal type to Part.
         msg_1: [{
           id: "prt_1",
           messageID: "msg_1",

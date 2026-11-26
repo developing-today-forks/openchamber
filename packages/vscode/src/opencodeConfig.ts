@@ -19,7 +19,9 @@ import {
 } from 'jsonc-parser';
 import { resolveNpmRegistryRequest } from '../../web/server/lib/npm/npm-registry-config.js';
 import { readBoundedResponseText } from '../../web/server/lib/shared/response-body.js';
+import { isString } from '../../web/server/lib/shared/object-guards.js';
 import { writeFileAtomic } from '../../web/server/lib/opencode/atomic-write.js';
+import { assertPathWithinSkillDir } from '../../web/server/lib/opencode/skill-supporting-file-path.js';
 import { toLoadablePluginSpec } from '../../web/server/lib/opencode/loadable-plugin-spec.js';
 import { isGitSpec, isPluginControlSpec } from '../../web/server/lib/opencode/plugin-spec.js';
 import { mergeCustomProviderConfig, validateCustomProviderConfig } from '../../web/server/lib/opencode/providers.js';
@@ -3600,18 +3602,7 @@ export const isUnsafeSkillRelativePath = (value: JsonValue): boolean => {
   return normalized.split('/').some((segment) => segment === '..');
 };
 
-export const assertPathWithinSkillDir = (skillDir: string, relativePath: string): string => {
-  const root = fs.realpathSync(skillDir);
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  const isWithin = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-
-  if (!isWithin) {
-    throw codedError('Access to file denied', 'EACCES');
-  }
-
-  return target;
-};
+export { assertPathWithinSkillDir };
 
 export const readSkillSupportingFile = (skillDir: string, relativePath: string): string | null => {
   const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
@@ -3797,7 +3788,12 @@ export const updateSkill = (skillName: string, updates: JsonObject, workingDirec
     // SAFETY: the Array.isArray check above establishes the element
     // shape this loop reads; each entry's fields are re-checked before use.
     for (const file of updates.supportingFiles as Array<{ delete?: boolean; path?: string; content?: string }>) {
-      if (!file.delete && file.path && file.content !== undefined) {
+      if (file.delete && file.path) {
+        if (!isString(file.path)) throw new TypeError('Cannot read skill supporting file path');
+        assertPathWithinSkillDir(mdDir, file.path);
+      } else if (file.path && file.content !== undefined) {
+        if (!isString(file.path)) throw new TypeError('Cannot read skill supporting file path');
+        assertPathWithinSkillDir(mdDir, file.path);
         assertSkillSupportingFileWithinCap(file.path, file.content);
       }
     }

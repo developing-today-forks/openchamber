@@ -105,7 +105,7 @@ export const registerMessageSearchRoutes = (app: MessageSearchApp, { messageSear
     // dropping the paging cursor (#2594).
     for (const key of ['session', 'role', 'lifecycle', 'reasoning', 'order', 'before'] as const) {
       const raw: unknown = req.query[key];
-      if (raw !== undefined && typeof raw !== 'string') {
+      if (raw !== undefined && !z.string().safeParse(raw).success) {
         return res.status(400).json({ error: `Message search ${key} must be a single value` });
       }
     }

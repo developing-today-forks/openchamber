@@ -114,7 +114,6 @@ export const createTunnelRoutesRuntime = (dependencies: TunnelRoutesDependencies
     getRuntimeManagedRemoteTunnelToken,
     setRuntimeManagedRemoteTunnelToken,
     getActiveTunnelController,
-    setActiveTunnelController,
   } = dependencies;
 
   const resolveActiveNormalizedTunnelMode = () => normalizeTunnelMode(tunnelService.resolveActiveMode());

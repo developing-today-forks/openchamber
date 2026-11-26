@@ -4,7 +4,10 @@ export type BoundedResponseText = { tooLarge: false; text: string } | { tooLarge
 
 export type BoundedResponseBytes = { tooLarge: false; bytes: Buffer } | { tooLarge: true };
 
-export type BoundedReadable = Pick<Response, 'headers' | 'body'>;
+export type BoundedReadable = {
+  headers: Headers;
+  body: ReadableStream<Uint8Array<ArrayBufferLike>> | null;
+};
 
 /**
  * Reads a proxied answer for a guest, refusing anything over `maxBytes`.

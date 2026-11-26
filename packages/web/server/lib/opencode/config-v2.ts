@@ -60,7 +60,10 @@ export function readSectionEntry<Config>(config: Config, kind: SectionKind, name
 export function writeSectionEntry<Value>(config: ReadableConfig, kind: SectionKind, name: string, value: Value) {
   const { v2, v1 } = sectionKeys(kind);
   const native = isRecord(config[v2]) ? config[v2] : (config[v2] = {});
-  native[name] = value;
+  // Assignment to `__proto__` invokes Object.prototype's legacy setter
+  // instead of creating a section entry. Define an ordinary own data property
+  // so prototype-like names persist without changing the section prototype.
+  Object.defineProperty(native, name, { value, configurable: true, enumerable: true, writable: true });
   const legacy = config[v1];
   if (isRecord(legacy) && hasSectionEntry(legacy, name)) {
     delete legacy[name];
