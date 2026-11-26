@@ -194,10 +194,6 @@ describe('tunnel start failure cleanup', () => {
       getRuntimeManagedRemoteTunnelToken: () => '',
       setRuntimeManagedRemoteTunnelToken: () => {},
       getActiveTunnelController: () => activeController,
-      setActiveTunnelController: (value) => {
-        events.push(value ? 'controller-set' : 'controller-null');
-        activeController = value;
-      },
     });
 
     const routes = new Map();
@@ -271,6 +267,5 @@ describe('tunnel start failure cleanup', () => {
     expect(harness.getStopCalls()).toBe(0);
     expect(harness.getClearCalls()).toBe(0);
     expect(harness.getActiveController()).toBe(harness.previousController);
-    expect(harness.events).not.toContain('controller-null');
   });
 });

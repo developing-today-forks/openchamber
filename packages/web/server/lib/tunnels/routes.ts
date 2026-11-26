@@ -40,7 +40,6 @@ export interface TunnelRoutesDependencies {
   getRuntimeManagedRemoteTunnelToken: () => string;
   setRuntimeManagedRemoteTunnelToken: (value: string) => void;
   getActiveTunnelController: () => TunnelController | null;
-  setActiveTunnelController: (value: TunnelController | null) => void;
 }
 
 export interface NormalizedTunnelRouteRequest {
@@ -114,7 +113,6 @@ export const createTunnelRoutesRuntime = (dependencies: TunnelRoutesDependencies
     getRuntimeManagedRemoteTunnelToken,
     setRuntimeManagedRemoteTunnelToken,
     getActiveTunnelController,
-    setActiveTunnelController,
   } = dependencies;
 
   const resolveActiveNormalizedTunnelMode = () => normalizeTunnelMode(tunnelService.resolveActiveMode());

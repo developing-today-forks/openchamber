@@ -74,7 +74,6 @@ export const createTunnelWiringRuntime = (dependencies: TunnelWiringDependencies
       getRuntimeManagedRemoteTunnelToken,
       setRuntimeManagedRemoteTunnelToken,
       getActiveTunnelController,
-      setActiveTunnelController,
     });
 
     tunnelRoutesRuntime.registerRoutes(app);
