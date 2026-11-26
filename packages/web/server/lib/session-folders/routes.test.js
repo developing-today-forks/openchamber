@@ -772,6 +772,81 @@ describe('session folders routes', () => {
     });
   });
 
+  describe('prototype-sensitive scope keys (#2649)', () => {
+    // An object literal cannot hold a __proto__ entry, so build these
+    // maps the way a JSON request body arrives: through JSON.parse.
+    const protoFoldersMap = (folders) => JSON.parse(`{"__proto__":${JSON.stringify(folders)}}`);
+
+    it('stores a __proto__ scope from a POST merge and serves it back', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('f1', 'One', ['s1'])] },
+      });
+
+      const response = await routes.post({
+        ...folderPayload(30),
+        foldersMap: protoFoldersMap([folder('f2', 'Two', ['s2'])]),
+      });
+
+      expect(response.body).toEqual({ success: true });
+      const saved = JSON.parse(routes.state.persisted);
+      expect(Object.keys(saved.foldersMap).sort()).toEqual(['/repo', '__proto__']);
+      expect(saved.foldersMap['__proto__']).toEqual([folder('f2', 'Two', ['s2'])]);
+      const served = await routes.get();
+      expect(Object.keys(served.foldersMap).sort()).toEqual(['/repo', '__proto__']);
+      expect(served.foldersMap['__proto__']).toEqual([folder('f2', 'Two', ['s2'])]);
+    });
+
+    it('creates a folder in a __proto__ scope via PATCH and persists it', async () => {
+      const routes = createPersistingRoutes(undefined, { now: () => 1_000 });
+
+      const response = await routes.patch([
+        { type: 'create', scopeKey: '__proto__', folder: { id: 'f1', name: 'Work', parentId: null, createdAt: 1 } },
+      ]);
+
+      expect(response.statusCode).toBe(200);
+      expect(Object.keys(response.body.foldersMap)).toEqual(['__proto__']);
+      expect(response.body.foldersMap['__proto__']).toEqual([
+        { id: 'f1', name: 'Work', sessionIds: [], createdAt: 1, parentId: null },
+      ]);
+      expect(Object.keys(JSON.parse(routes.state.persisted).foldersMap)).toEqual(['__proto__']);
+      expect((await routes.get()).foldersMap['__proto__']).toHaveLength(1);
+    });
+
+    it('imports folders under a __proto__ scope via PATCH', async () => {
+      const routes = createPersistingRoutes(undefined, { now: () => 1_000 });
+
+      const response = await routes.patch([
+        { type: 'import', foldersMap: protoFoldersMap([folder('f1', 'Local', ['s1'])]) },
+      ]);
+
+      expect(response.statusCode).toBe(200);
+      expect(Object.keys(response.body.foldersMap)).toEqual(['__proto__']);
+      expect(response.body.foldersMap['__proto__']).toEqual([
+        { id: 'f1', name: 'Local', sessionIds: ['s1'], createdAt: 1, parentId: null },
+      ]);
+      expect(Object.keys(JSON.parse(routes.state.persisted).foldersMap)).toEqual(['__proto__']);
+    });
+
+    it('assigns and forgets sessions in a __proto__ scope without touching other scopes', async () => {
+      const routes = createPersistingRoutes({
+        ...folderPayload(20),
+        foldersMap: { '/repo': [folder('f1', 'One', ['s1'])] },
+      }, { now: () => 1_000 });
+
+      await routes.patch([
+        { type: 'create', scopeKey: '__proto__', folder: { id: 'pf', name: 'Proto', parentId: null, createdAt: 1 } },
+        { type: 'assign', scopeKey: '__proto__', folderId: 'pf', sessionIds: ['s9'] },
+      ]);
+      const afterAssign = await routes.get();
+      expect(afterAssign.foldersMap['__proto__'][0].sessionIds).toEqual(['s9']);
+      expect(afterAssign.foldersMap['/repo']).toEqual([folder('f1', 'One', ['s1'])]);
+
+      const forgotten = await routes.patch([{ type: 'forget-scopes', scopeKeys: ['__proto__'] }]);
+      expect(Object.keys(forgotten.body.foldersMap)).toEqual(['/repo']);
+    });
+  });
+
   describe('import of folders a device kept on its own', () => {
     const imported = (foldersMap, deletedFolderIds) => [{ type: 'import', foldersMap, deletedFolderIds }];
 
