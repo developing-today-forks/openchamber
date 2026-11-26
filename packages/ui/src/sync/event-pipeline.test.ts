@@ -569,8 +569,11 @@ describe("createEventPipeline turn boundaries", () => {
       heartbeatTimeoutMs: 60_000,
     })
     try {
-      jest.advanceTimersByTime(10_000)
       await flushMicrotasks()
+      for (const delay of [250, 500]) {
+        jest.advanceTimersByTime(delay)
+        await flushMicrotasks()
+      }
       expect(attempts).toBe(3)
     } finally {
       pipeline.cleanup()
@@ -738,8 +741,11 @@ describe("createEventPipeline over the WebSocket transport", () => {
       await flushMicrotasks()
       clearRuntimeUrlAuthToken()
       sockets[0].onclose?.({ code: 1006, reason: "" })
-      jest.advanceTimersByTime(10_000)
       await flushMicrotasks()
+      for (const delay of [250, 500, 1_000]) {
+        jest.advanceTimersByTime(delay)
+        await flushMicrotasks()
+      }
       expect(authTokenFailures).toBe(3)
       expect(sseStreams).toBe(1)
     } finally {
