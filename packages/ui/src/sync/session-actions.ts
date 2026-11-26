@@ -88,6 +88,7 @@ import { createChatDraftIdentity, type ChatDraftIdentity } from "@/lib/chatDraft
 import { LOCATION_SCOPED_FORM_SESSION_ID } from "./location-scoped-forms"
 import { cancelSessionTitleGeneration } from "./session-title-generation"
 import { recordSessionActionFailure } from "./session-action-failures"
+import { resolveSessionOwnedDirectory } from "./session-directory-resolution"
 import { planOpenSessionLeave, type PlannedSessionLeave } from "./session-leave-navigation"
 import { applyForkInheritance } from "@/lib/sessionForkInheritance"
 import { getSessionGoal } from "@/lib/sessionGoalMetadata"
@@ -817,20 +818,6 @@ function restoreContextPartsToInput(
     const draft = draftFromContextPayload(payload)
     if (draft) store.addDraft(target, draft, { written: true })
   }
-}
-
-function resolveSessionOwnedDirectory(session: Session): string | null {
-  // SAFETY: the record adds only optional directory and project fields, which are read through typeof checks, so the Session value is only widened.
-  const record = session as Session & {
-    directory?: string | null
-    project?: { worktree?: string | null } | null
-  }
-  const raw = typeof record.directory === "string" && record.directory.trim().length > 0
-    ? record.directory
-    : typeof record.project?.worktree === "string" && record.project.worktree.trim().length > 0
-      ? record.project.worktree
-      : null
-  return raw ? normalizePath(raw) : null
 }
 
 function resolveDirectoryForBlockingRequest(

@@ -8,6 +8,7 @@ import { createTurnBoundaryOrder, wireEventSchema, type StaleWireEventCheck } fr
 import type { Metadata } from "@/lib/opencode/model"
 import { getRuntimeUrlResolver } from "@/lib/runtime-url"
 import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from "@/lib/runtime-auth"
+import { describeStreamFailure, extractStatus, isAbortError } from "./event-pipeline-errors"
 import { useAuthSessionStore, waitForAuthSession } from "@/lib/runtime-auth-expiry"
 import { type RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
 import { openRuntimeWebSocket } from "@/lib/relay/runtime-socket"
@@ -543,32 +544,11 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   }
 
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-  const isAbortError = (error: unknown): boolean => {
-    if (error instanceof DOMException && error.name === "AbortError") return true
-    if (typeof error !== "object" || error === null) return false
-    // SAFETY: the guards above establish a non-null object before the name read; only its string literal value can classify it as an abort.
-    return (error as { name?: unknown }).name === "AbortError"
-  }
-
   const isOffline = (): boolean =>
     typeof navigator === "object" && navigator !== null && navigator.onLine === false
 
   const isHidden = (): boolean =>
     typeof document !== "undefined" && document.visibilityState !== "visible"
-
-  const extractStatus = (error: unknown): number | undefined => {
-    if (!error || typeof error !== "object") return undefined
-    // SAFETY: error is narrowed to a non-null object above; the status field is typeof-checked as a number before the branch returns it.
-    const direct = (error as { status?: unknown }).status
-    if (typeof direct === "number") return direct
-    // SAFETY: error is narrowed to a non-null object above; the response field is walk-safe and its status is typeof-checked as a number before use.
-    const fromResponse = (error as { response?: { status?: unknown } }).response?.status
-    if (typeof fromResponse === "number") return fromResponse
-    // SAFETY: error is narrowed to a non-null object above; the cause field is walk-safe and its status is typeof-checked as a number before use.
-    const fromCause = (error as { cause?: { status?: unknown } }).cause?.status
-    if (typeof fromCause === "number") return fromCause
-    return undefined
-  }
 
   const isPermanentHttpStatus = (status: number): boolean => {
     if (status < 400 || status >= 500) return false
@@ -783,11 +763,9 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       const wrapped = error instanceof Error ? error : new Error("Message stream WebSocket auth token unavailable")
       const shouldFallback = transport === "auto" && wsOpenFailureFallsBack()
       // SAFETY: wrapped is an Error by construction above, and `code` and `reason` are the module's own marker properties, read by the fallback branch and the reconnect logging below.
-      const tagged = Object.assign(wrapped, {
-        ...(shouldFallback ? { code: "WS_FALLBACK" } : {}),
-        reason: "ws_auth_token_unavailable",
-      }) as Error & { code?: string; reason?: string }
+      const tagged = Object.assign(wrapped, { reason: "ws_auth_token_unavailable" }) as Error & { code?: string; reason?: string }
       if (shouldFallback) {
+        tagged.code = "WS_FALLBACK"
         wsFallbackUntil = Date.now() + WS_FALLBACK_WINDOW_MS
       }
       throw tagged
@@ -994,8 +972,9 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           await runSseAttempt(attempt.signal)
         }
       } catch (error) {
-        // SAFETY: error is narrowed to a non-null object by the guard, and `code` is a marker this module sets on its own thrown Errors; it is compared by === before use.
-        const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined
+        const errorRecord = typeof error === "object" && error !== null ? error : null
+        // SAFETY: the guard above narrows errorRecord to a non-null object; `code` is this module's marker and is compared by === before use.
+        const code = errorRecord ? (errorRecord as { code?: unknown }).code : undefined
         if (currentTransport === "ws" && code === "WS_FALLBACK") {
           retryDelayMs = 0
           onTransportSwitch?.()
@@ -1005,25 +984,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
             streamErrorLogged = true
             console.error("[event-pipeline] stream failed", error)
           }
-          const reasonOf = (candidate: unknown): string | undefined => {
-            // SAFETY: candidate is narrowed to a non-null object above, and the read value is typeof-checked as a string before use.
-            const marker = typeof candidate === "object" && candidate !== null
-              ? (candidate as { reason?: unknown }).reason
-              : undefined
-            return typeof marker === "string" ? marker : undefined
-          }
-          const messageOf = (candidate: unknown): string | undefined => {
-            // SAFETY: candidate is narrowed to a non-null object above, and only the message field flows into the log line.
-            const value = typeof candidate === "object" && candidate !== null
-              ? (candidate as { message?: unknown }).message
-              : undefined
-            return typeof value === "string" ? value : undefined
-          }
-          // SAFETY: reasonOf and messageOf return only validated strings; the message is truncated before it is embedded in the reason.
-          const messagePart = messageOf(error)
-          const reason = reasonOf(error) ?? (messagePart === undefined
-            ? `${currentTransport}_error:unknown`
-            : `${currentTransport}_error:${messagePart.slice(0, 80)}`)
+          const reason = describeStreamFailure(errorRecord, currentTransport)
           notifyDisconnected(reason)
 
           const status = extractStatus(error)
