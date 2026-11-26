@@ -298,4 +298,92 @@ describe('OpenCode global config paths', () => {
 
     fs.rmSync(root, { recursive: true, force: true });
   });
+  it('creates the AGENTS.md temp sibling owner-only and exclusively', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-agents-md-mode-'));
+    process.env.XDG_CONFIG_HOME = path.join(root, 'xdg');
+    delete process.env.OPENCODE_CONFIG;
+
+    const [, , , , , , routes] = await loadOpenCodeModules();
+    const handlers = new Map();
+    const app = {
+      get(route, ...callbacks) { handlers.set(`GET ${route}`, callbacks.at(-1)); },
+      put(route, ...callbacks) { handlers.set(`PUT ${route}`, callbacks.at(-1)); },
+      post() {},
+      delete() {},
+      use() {},
+    };
+    routes.registerOpenCodeRoutes(app, {});
+
+    const agentsMdPath = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'AGENTS.md');
+    fs.mkdirSync(path.dirname(agentsMdPath), { recursive: true });
+    fs.writeFileSync(agentsMdPath, 'Old content');
+
+    const originalWriteFile = fs.promises.writeFile.bind(fs.promises);
+    let capturedOptions;
+    let capturedMode;
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (...args) => {
+      const result = await originalWriteFile(...args);
+      if (typeof args[0] === 'string' && args[0].startsWith(`${agentsMdPath}.tmp-`)) {
+        capturedOptions = args[2];
+        capturedMode = fs.statSync(args[0]).mode;
+      }
+      return result;
+    });
+    try {
+      const response = { json: vi.fn(), status: vi.fn(() => response) };
+      await handlers.get('PUT /api/behavior/agents-md')({ body: { content: 'New content' } }, response);
+      expect(fs.readFileSync(agentsMdPath, 'utf8')).toBe('New content');
+      expect(capturedOptions).toMatchObject({ mode: 0o600, flag: 'wx' });
+      expect(capturedMode).toBeDefined();
+      expect(capturedMode & 0o077).toBe(0);
+      expect(capturedMode & 0o777).toBe(0o600);
+    } finally {
+      writeSpy.mockRestore();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not follow or overwrite a pre-existing AGENTS.md temp path', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-agents-md-collision-'));
+    process.env.XDG_CONFIG_HOME = path.join(root, 'xdg');
+    delete process.env.OPENCODE_CONFIG;
+
+    const [, , , , , , routes] = await loadOpenCodeModules();
+    const handlers = new Map();
+    const app = {
+      get(route, ...callbacks) { handlers.set(`GET ${route}`, callbacks.at(-1)); },
+      put(route, ...callbacks) { handlers.set(`PUT ${route}`, callbacks.at(-1)); },
+      post() {},
+      delete() {},
+      use() {},
+    };
+    routes.registerOpenCodeRoutes(app, {});
+
+    const agentsMdPath = path.join(process.env.XDG_CONFIG_HOME, 'opencode', 'AGENTS.md');
+    const victimPath = path.join(root, 'victim.md');
+    fs.mkdirSync(path.dirname(agentsMdPath), { recursive: true });
+    fs.writeFileSync(agentsMdPath, 'Old content');
+    fs.writeFileSync(victimPath, 'Victim content');
+
+    const originalWriteFile = fs.promises.writeFile.bind(fs.promises);
+    let planted = false;
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile').mockImplementation(async (...args) => {
+      if (!planted && typeof args[0] === 'string' && args[0].startsWith(`${agentsMdPath}.tmp-`)) {
+        planted = true;
+        fs.symlinkSync(victimPath, args[0]);
+      }
+      return originalWriteFile(...args);
+    });
+    try {
+      const response = { json: vi.fn(), status: vi.fn(() => response) };
+      await handlers.get('PUT /api/behavior/agents-md')({ body: { content: 'New content' } }, response);
+      expect(planted).toBe(true);
+      expect(response.status).toHaveBeenLastCalledWith(500);
+      expect(fs.readFileSync(victimPath, 'utf8')).toBe('Victim content');
+      expect(fs.readFileSync(agentsMdPath, 'utf8')).toBe('Old content');
+    } finally {
+      writeSpy.mockRestore();
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
 });
