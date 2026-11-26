@@ -265,4 +265,24 @@ describe('skill supporting-file sink containment', () => {
     expect(fs.existsSync(link)).toBe(false);
     expect(fs.readFileSync(target, 'utf8')).toBe('inside');
   });
+  it('refuses a read through a link whose target climbs out via another symlink', () => {
+    // Oracle: kernel resolution of alias.txt lands outside (pivot is resolved
+    // first, then `..` climbs from outside/subdir); lexical normalization of
+    // the link text would wrongly judge it to be the in-skill secret.txt.
+    fs.mkdirSync(path.join(outsideDir, 'subdir'));
+    fs.writeFileSync(path.join(skillDir, 'secret.txt'), 'inside');
+    linkDirectory(path.join(outsideDir, 'subdir'), path.join(skillDir, 'pivot'));
+    linkFile('pivot/../secret.txt', path.join(skillDir, 'alias.txt'));
+
+    denied(() => readSkillSupportingFile(skillDir, 'alias.txt'));
+    expect(fs.readFileSync(path.join(outsideDir, 'secret.txt'), 'utf8')).toBe('secret');
+    expect(fs.readFileSync(path.join(skillDir, 'secret.txt'), 'utf8')).toBe('inside');
+  });
+
+  it('does not hang on a self-referential dangling symlink', () => {
+    // Oracle: the containment walk terminates and the read fails instead of
+    // expanding `missing/../loop` back to the same link forever.
+    linkFile('missing/../loop', path.join(skillDir, 'loop'));
+    expect(() => readSkillSupportingFile(skillDir, 'loop')).toThrow();
+  });
 });

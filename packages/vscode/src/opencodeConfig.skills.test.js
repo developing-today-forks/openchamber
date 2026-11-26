@@ -514,6 +514,31 @@ describe('VS Code skill supporting-file sink containment (#2304)', () => {
     });
   });
 
+  test('refuses a link whose target climbs out via another symlink', () => {
+    withFixture((dir, skillDir) => {
+      // Oracle: kernel resolution resolves pivot first, so alias.txt lands on
+      // the outside secret.txt; lexical normalization would judge it inside.
+      const outside = path.join(dir, 'outside');
+      fs.mkdirSync(path.join(outside, 'subdir'), { recursive: true });
+      fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside-secret');
+      fs.writeFileSync(path.join(skillDir, 'secret.txt'), 'inside-secret');
+      fs.symlinkSync(path.join(outside, 'subdir'), path.join(skillDir, 'pivot'), process.platform === 'win32' ? 'junction' : 'dir');
+      fs.symlinkSync('pivot/../secret.txt', path.join(skillDir, 'alias.txt'), process.platform === 'win32' ? 'file' : undefined);
+
+      expectEacces(() => readSkillSupportingFile(skillDir, 'alias.txt'));
+      expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe('outside-secret');
+    });
+  });
+
+  test('does not hang on a self-referential dangling symlink', () => {
+    withFixture((_dir, skillDir) => {
+      // Oracle: the containment walk terminates and the read fails instead of
+      // expanding `missing/../loop` back to the same link forever.
+      fs.symlinkSync('missing/../loop', path.join(skillDir, 'loop'), process.platform === 'win32' ? 'file' : undefined);
+      expect(() => readSkillSupportingFile(skillDir, 'loop')).toThrow();
+    });
+  });
+
   test('read refuses a ../.. escape with EACCES', () => {
     withFixture((dir, skillDir) => {
       expectEacces(() => readSkillSupportingFile(skillDir, '../../secret.txt'));

@@ -7,6 +7,14 @@ const isMissingPathError = (error: NodeJS.ErrnoException): boolean => (
   error.code === 'ENOENT' || error.code === 'ENOTDIR'
 );
 
+// Canonicalize the way the kernel will: the JS realpath implementation
+// normalizes symlink text lexically, so a link whose target climbs with `..`
+// past another symlink is judged by the wrong directory. The native binding
+// follows filesystem semantics, matching the open() that happens later.
+const realpathSync: typeof fs.realpathSync = fs.realpathSync.native ?? fs.realpathSync;
+
+const MAX_SYMLINK_EXPANSIONS = 40;
+
 const isWithin = (root: string, target: string): boolean => {
   const relative = path.relative(root, target);
   if (relative === '' || path.isAbsolute(relative)) return relative === '';
@@ -16,10 +24,12 @@ const isWithin = (root: string, target: string): boolean => {
 const resolveExistingPath = (target: string): string => {
   let probe = target;
   const suffix: string[] = [];
+  const seenProbes = new Set<string>();
+  let expansions = 0;
 
   while (true) {
     try {
-      return path.resolve(fs.realpathSync(probe), ...suffix);
+      return path.resolve(realpathSync(probe), ...suffix);
     } catch (error) {
       // SAFETY: Node realpath errors carry ErrnoException.code; this parser
       // accepts only the two missing-path codes before continuing the walk.
@@ -36,7 +46,19 @@ const resolveExistingPath = (target: string): string => {
         if (!isMissingPathError(lstatPathError)) throw lstatError;
       }
       if (isSymlink) {
-        probe = path.resolve(path.dirname(probe), fs.readlinkSync(probe));
+        expansions += 1;
+        // A dangling link can expand back to itself (e.g. a link to
+        // `missing/../loop`): without a bound this walk never terminates.
+        if (expansions > MAX_SYMLINK_EXPANSIONS || seenProbes.has(probe)) {
+          throw Object.assign(new Error('Too many levels of symbolic links'), { code: 'ELOOP' });
+        }
+        seenProbes.add(probe);
+        // Keep the link text un-normalized: `..` in a link target applies to
+        // the directory the link chain reaches, not to the link's parent, so
+        // resolving it lexically here would misjudge where the path lands.
+        // The next iteration's native realpath applies kernel semantics.
+        const linkText = fs.readlinkSync(probe);
+        probe = path.isAbsolute(linkText) ? linkText : `${path.dirname(probe)}${path.sep}${linkText}`;
         continue;
       }
 
@@ -54,7 +76,7 @@ export const assertPathWithinSkillDir = (skillDir: string, relativePath: string)
   if (!isString(relativePath)) {
     throw Object.assign(new TypeError('The skill file path must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
   }
-  const root = fs.realpathSync(skillDir);
+  const root = realpathSync(skillDir);
   const target = path.resolve(root, relativePath);
   if (!isWithin(root, target)) throw accessDenied();
 
