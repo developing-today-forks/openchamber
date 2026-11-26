@@ -554,6 +554,7 @@ describe("createEventPipeline turn boundaries", () => {
                 }
                 signal?.addEventListener("abort", () => resolve(), { once: true })
               })
+              yield* []
             },
           }
         },
