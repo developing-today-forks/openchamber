@@ -3,7 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { SKILL_SUPPORTING_FILE_MAX_BYTES, walkSkillMdFiles, writeSkillSupportingFile } from './skill-files.js';
+import {
+  SKILL_SUPPORTING_FILE_MAX_BYTES,
+  deleteSkillSupportingFile,
+  readSkillSupportingFile,
+  walkSkillMdFiles,
+  writeSkillSupportingFile
+} from './skill-files.js';
 
 const FIXTURE_DIR = path.join(os.tmpdir(), `openchamber-skill-files-test-${process.pid}`);
 
@@ -202,5 +208,61 @@ describe('writeSkillSupportingFile', () => {
     const big = 'x'.repeat(SKILL_SUPPORTING_FILE_MAX_BYTES + 1);
     expect(() => writeSkillSupportingFile(skillDir, 'big.txt', big)).toThrow(/too large/);
     expect(fs.existsSync(path.join(skillDir, 'big.txt'))).toBe(false);
+  });
+});
+
+describe('skill supporting-file sink containment', () => {
+  const root = path.join(os.tmpdir(), `openchamber-skill-containment-${process.pid}`);
+  let skillDir;
+  let outsideDir;
+
+  beforeEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    skillDir = path.join(root, 'skills', 'test-skill');
+    outsideDir = path.join(root, 'outside');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'secret');
+  });
+
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const denied = (operation) => expect(operation).toThrow(expect.objectContaining({ code: 'EACCES' }));
+  const linkFile = (target, link) => fs.symlinkSync(target, link, process.platform === 'win32' ? 'file' : undefined);
+  const linkDirectory = (target, link) => fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+
+  it('refuses outside reads and writes through final and intermediate symlinks', () => {
+    linkFile(path.join(outsideDir, 'secret.txt'), path.join(skillDir, 'secret-link.txt'));
+    linkDirectory(outsideDir, path.join(skillDir, 'outside-link'));
+
+    denied(() => readSkillSupportingFile(skillDir, 'secret-link.txt'));
+    denied(() => readSkillSupportingFile(skillDir, 'outside-link/secret.txt'));
+    denied(() => writeSkillSupportingFile(skillDir, 'secret-link.txt', 'changed'));
+    denied(() => writeSkillSupportingFile(skillDir, 'outside-link/new.txt', 'created'));
+    expect(fs.readFileSync(path.join(outsideDir, 'secret.txt'), 'utf8')).toBe('secret');
+    expect(fs.existsSync(path.join(outsideDir, 'new.txt'))).toBe(false);
+  });
+
+  it('refuses outside deletes and dangling-link writes, while deleting an in-root link entry', () => {
+    const outsideFile = path.join(outsideDir, 'secret.txt');
+    const outsideLink = path.join(skillDir, 'outside-link');
+    linkFile(outsideFile, path.join(skillDir, 'secret-link.txt'));
+    linkDirectory(outsideDir, outsideLink);
+    denied(() => deleteSkillSupportingFile(skillDir, 'secret-link.txt'));
+    denied(() => deleteSkillSupportingFile(skillDir, 'outside-link/secret.txt'));
+    expect(fs.readFileSync(outsideFile, 'utf8')).toBe('secret');
+
+    const missingOutside = path.join(root, 'missing-outside');
+    linkDirectory(missingOutside, path.join(skillDir, 'dangling-link'));
+    denied(() => writeSkillSupportingFile(skillDir, 'dangling-link/nested/new.txt', 'created'));
+    expect(fs.existsSync(missingOutside)).toBe(false);
+
+    const target = path.join(skillDir, 'target.txt');
+    const link = path.join(skillDir, 'inside-link.txt');
+    fs.writeFileSync(target, 'inside');
+    linkFile(target, link);
+    deleteSkillSupportingFile(skillDir, 'inside-link.txt');
+    expect(fs.existsSync(link)).toBe(false);
+    expect(fs.readFileSync(target, 'utf8')).toBe('inside');
   });
 });

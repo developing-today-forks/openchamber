@@ -444,6 +444,7 @@ describe('VS Code skill update Markdown cap ordering (#1444)', () => {
 });
 
 describe('VS Code skill supporting-file sink containment (#2304)', () => {
+  // Oracle: escaping symlinks raise EACCES and leave outside files unchanged.
   const withFixture = (run) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-sink-containment-'));
     try {
@@ -466,6 +467,52 @@ describe('VS Code skill supporting-file sink containment (#2304)', () => {
     }
     throw new Error('expected an EACCES refusal');
   };
+
+  test('refuses escaping final and intermediate symlinks for reads, writes, and deletes', () => {
+    withFixture((dir, skillDir) => {
+      const outside = path.join(dir, 'outside');
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(outside, 'nested.txt'), 'outside-content');
+      const fileLink = path.join(skillDir, 'secret-link.txt');
+      const dirLink = path.join(skillDir, 'outside-link');
+      fs.symlinkSync(path.join(dir, 'secret.txt'), fileLink, process.platform === 'win32' ? 'file' : undefined);
+      fs.symlinkSync(outside, dirLink, process.platform === 'win32' ? 'junction' : 'dir');
+
+      expectEacces(() => readSkillSupportingFile(skillDir, 'secret-link.txt'));
+      expectEacces(() => readSkillSupportingFile(skillDir, 'outside-link/nested.txt'));
+      expectEacces(() => writeSkillSupportingFile(skillDir, 'secret-link.txt', 'overwrite'));
+      expectEacces(() => writeSkillSupportingFile(skillDir, 'outside-link/pwned.txt', 'pwned'));
+      expectEacces(() => deleteSkillSupportingFile(skillDir, 'secret-link.txt'));
+      expectEacces(() => deleteSkillSupportingFile(skillDir, 'outside-link/nested.txt'));
+      expect(fs.readFileSync(path.join(dir, 'secret.txt'), 'utf8')).toBe('outside-secret');
+      expect(fs.readFileSync(path.join(outside, 'nested.txt'), 'utf8')).toBe('outside-content');
+      expect(fs.existsSync(path.join(outside, 'pwned.txt'))).toBe(false);
+    });
+  });
+
+  test('refuses a dangling intermediate symlink before creating its target', () => {
+    withFixture((dir, skillDir) => {
+      const outside = path.join(dir, 'missing-outside');
+      fs.symlinkSync(outside, path.join(skillDir, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+
+      expectEacces(() => writeSkillSupportingFile(skillDir, 'outside-link/nested/pwned.txt', 'pwned'));
+      expect(fs.existsSync(outside)).toBe(false);
+    });
+  });
+
+  test('deletes an in-root final symlink without deleting its target', () => {
+    withFixture((_dir, skillDir) => {
+      const target = path.join(skillDir, 'target.txt');
+      const link = path.join(skillDir, 'link.txt');
+      fs.writeFileSync(target, 'inside-target');
+      fs.symlinkSync(target, link, process.platform === 'win32' ? 'file' : undefined);
+
+      deleteSkillSupportingFile(skillDir, 'link.txt');
+
+      expect(fs.existsSync(link)).toBe(false);
+      expect(fs.readFileSync(target, 'utf8')).toBe('inside-target');
+    });
+  });
 
   test('read refuses a ../.. escape with EACCES', () => {
     withFixture((dir, skillDir) => {
