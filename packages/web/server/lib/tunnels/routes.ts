@@ -40,6 +40,7 @@ export interface TunnelRoutesDependencies {
   getRuntimeManagedRemoteTunnelToken: () => string;
   setRuntimeManagedRemoteTunnelToken: (value: string) => void;
   getActiveTunnelController: () => TunnelController | null;
+  setActiveTunnelController: (value: TunnelController | null) => void;
 }
 
 export interface NormalizedTunnelRouteRequest {
