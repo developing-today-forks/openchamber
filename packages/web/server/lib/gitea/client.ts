@@ -165,7 +165,7 @@ export function createGiteaClient({
         if (response.ok) {
           const result = { status: response.status, headers: response.headers };
           if (response.status === 204) return { ...result, body: null };
-          const tooLarge = () => new GiteaRequestError('provider-error', `${label} answered with more than ${SUCCESS_BODY_MAX_BYTES} bytes`, response.status);
+          const tooLarge = () => new GiteaRequestError('provider-error', `${label} answered with more than ${SUCCESS_BODY_MAX_BYTES} bytes`, result.status);
           if (responseType === 'bytes') {
             const read = await readBoundedResponseBytes(response, SUCCESS_BODY_MAX_BYTES);
             if (read.tooLarge) throw tooLarge();
