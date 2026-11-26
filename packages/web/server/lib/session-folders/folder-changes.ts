@@ -22,10 +22,7 @@ const folderSchema = z.object({
  * instead and pass it through untouched.
  */
 const dataRecord = <Value>(valueSchema: z.ZodType<Value>) => z.custom<Record<string, Value>>((value) => (
-  typeof value === 'object'
-  && value !== null
-  && !Array.isArray(value)
-  && Object.values(value).every((entry) => valueSchema.safeParse(entry).success)
+  z.record(z.string(), valueSchema).safeParse(value).success
 ));
 
 const folderChangeSchema = z.discriminatedUnion('type', [
