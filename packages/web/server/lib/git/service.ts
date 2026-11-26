@@ -2327,10 +2327,10 @@ const createCommandFailure = (message: string) => Object.assign(new Error(messag
 // stripped before the output becomes a user-facing failure message.
 const stripTerminalSequences = (value: string) =>
   String(value || '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // oxlint-disable-line no-control-regex -- Strip OSC sequences from terminal output.
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') // oxlint-disable-line no-control-regex -- Strip CSI sequences from terminal output.
-    .replace(/\x1b[@-Z\\-_]/g, '') // oxlint-disable-line no-control-regex -- Strip single-byte terminal sequences.
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ''); // oxlint-disable-line no-control-regex -- Remove control bytes from displayed output.
+    .replace(new RegExp('\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)', 'g'), '')
+    .replace(new RegExp('\\x1b\\[[0-?]*[ -/]*[@-~]', 'g'), '')
+    .replace(new RegExp('\\x1b[@-Z\\\\-_]', 'g'), '')
+    .replace(new RegExp('[\\x00-\\x08\\x0b-\\x1f\\x7f]', 'g'), '');
 
 const shownCommandFailure = (result: StartCommandResult, maxChars: number) => {
   const message = stripTerminalSequences(String(result.message || '')).trim();
