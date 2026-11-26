@@ -552,7 +552,7 @@ describe("createEventPipeline turn boundaries", () => {
                   resolve()
                   return
                 }
-                signal?.addEventListener("abort", resolve, { once: true })
+                signal?.addEventListener("abort", () => resolve(), { once: true })
               })
             },
           }
