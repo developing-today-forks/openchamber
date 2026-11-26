@@ -1,5 +1,6 @@
 import { isPlainObject, isString } from '../shared/guards.js';
 import type { JsonValue } from '../shared/json-values.js';
+import { readBoundedResponseBytes, readBoundedResponseText, type BoundedResponseText } from '../shared/response-body.js';
 
 export interface GiteaFailure {
   kind?: unknown;
@@ -51,6 +52,15 @@ const hasStringCode = (value: unknown): value is { code: string } => isGiteaFail
 const RETRY_STATUSES = new Set([429, 502]);
 const MAX_READ_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_MS = 15_000;
+// The instance answering is user-configured and possibly self-managed, and
+// the deadline bounds stalls, not bytes, so every body is read through the
+// bounded reader, which cancels the stream once it crosses the cap. Success
+// answers are paginated lists, details and raw files, so they get the same
+// 16 MiB cap as the GitLab client; an error answer only ever feeds a
+// message, so 64 KiB is ample.
+const SUCCESS_BODY_MAX_BYTES = 16 * 1024 * 1024;
+const ERROR_BODY_MAX_BYTES = 64 * 1024;
+const BOM = /^\uFEFF/;
 const defaultDelay = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
 export class GiteaRequestError extends Error {
@@ -83,7 +93,8 @@ const kindOfStatus = (status: number) => {
 };
 
 async function errorFromResponse(response: Response, label: string) {
-  const text = await response.text().catch(() => '');
+  const read = await readBoundedResponseText(response, ERROR_BODY_MAX_BYTES).catch((): BoundedResponseText => ({ tooLarge: true }));
+  const text = read.tooLarge ? '' : read.text.replace(BOM, '');
   let message = '';
   try {
     const payload: unknown = JSON.parse(text);
@@ -154,9 +165,16 @@ export function createGiteaClient({
         if (response.ok) {
           const result = { status: response.status, headers: response.headers };
           if (response.status === 204) return { ...result, body: null };
-          if (responseType === 'text') return { ...result, body: await response.text() };
-          if (responseType === 'bytes') return { ...result, body: Buffer.from(await response.arrayBuffer()) };
-          const text = await response.text();
+          const tooLarge = () => new GiteaRequestError('provider-error', `${label} answered with more than ${SUCCESS_BODY_MAX_BYTES} bytes`, response.status);
+          if (responseType === 'bytes') {
+            const read = await readBoundedResponseBytes(response, SUCCESS_BODY_MAX_BYTES);
+            if (read.tooLarge) throw tooLarge();
+            return { ...result, body: read.bytes };
+          }
+          const read = await readBoundedResponseText(response, SUCCESS_BODY_MAX_BYTES);
+          if (read.tooLarge) throw tooLarge();
+          const text = read.text.replace(BOM, '');
+          if (responseType === 'text') return { ...result, body: text };
           const body: JsonValue = text ? JSON.parse(text) : null;
           return { ...result, body };
         }
