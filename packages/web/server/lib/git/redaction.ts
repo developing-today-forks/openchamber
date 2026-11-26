@@ -1,14 +1,14 @@
 import { isString } from '../shared/guards.js';
+import {
+  sensitiveAssignmentRegExp,
+  sensitiveQuotedValueRegExp,
+  sensitiveSchemeValueRegExp,
+} from '../shared/redaction-patterns.js';
 
 const DEFAULT_MAX_CHARS = 8_192;
 const REDACTED = '[redacted]';
 const SENSITIVE_QUERY_KEYS = /^(?:access_token|auth|authorization|credential|key|oauth_token|password|private_token|secret|token)$/i;
 const URL_PATTERN = /[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi;
-// Converged with the source-control redactor's sensitive key set
-// (lib/source-control/url-redaction.js, #1920/#2074): the same key/value
-// and header shapes must not survive on one surface while the other
-// strips them.
-const SENSITIVE_TEXT_KEY_PATTERN = 'x-api-key|access[-_]token|api[-_]key|client[-_]secret|oauth[-_]token|private[-_]token|authorization|password|secret|token';
 
 interface GitOutput {
   stdout?: unknown;
@@ -78,8 +78,8 @@ export function redactGitText<Value>(value: Value, { secrets = [], maxChars = DE
     // the credential after the scheme word here just as they did in
     // redactSensitiveText — redact inside the quotes / after the scheme,
     // preserving structure and the scheme word.
-    .replace(new RegExp(`\\b(${SENSITIVE_TEXT_KEY_PATTERN})(["']?\\s*[:=]\\s*["'])((?:bearer|basic)\\s+)?[^\\s"',;]+`, 'gi'), `$1$2$3${REDACTED}`)
-    .replace(new RegExp(`\\b(${SENSITIVE_TEXT_KEY_PATTERN})(\\s*[:=]\\s*(?:bearer|basic))\\s+[^\\s,;]+`, 'gi'), `$1$2 ${REDACTED}`)
+    .replace(sensitiveQuotedValueRegExp(), `$1$2$3${REDACTED}`)
+    .replace(sensitiveSchemeValueRegExp(), `$1$2 ${REDACTED}`)
     // #2463: ordinary mid-line assignments (fatal: api_key=..., msg: access_token: ...)
     // — the generic sensitive-key rule redactSensitiveText carries; without it an
     // echoed credential after other text on the line survived every pattern above.
@@ -91,7 +91,7 @@ export function redactGitText<Value>(value: Value, { secrets = [], maxChars = DE
     // '&ref=main'; and a value that is already the redaction marker — raw or
     // URL-encoded by the URL pass above — is left exactly as it is.
     .replace(
-      new RegExp(`\\b(${SENSITIVE_TEXT_KEY_PATTERN})\\s*[:=]\\s*(?!(?:bearer|basic)\\s)([^\\s"',;&]+)`, 'gi'),
+      sensitiveAssignmentRegExp('&'),
       (match, key: string, value: string) =>
         value === REDACTED || value === encodeURIComponent(REDACTED) ? match : `${key}=${REDACTED}`,
     )
