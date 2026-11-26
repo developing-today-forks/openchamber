@@ -138,6 +138,7 @@ const isResumable = (entry: PersistedStart, now: number): boolean => (
 
 const parseEntry = (value: unknown): PersistedStart | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  // SAFETY: value is a non-array object here; start and seen are read as unknown and typeof/isFinite checked before they are returned.
   const { start, seen } = value as { start?: unknown; seen?: unknown };
   if (typeof start !== 'number' || !Number.isFinite(start)) return null;
   if (typeof seen !== 'number' || !Number.isFinite(seen)) return null;
@@ -163,6 +164,7 @@ const readRestoredStarts = (): Map<string, PersistedStart> => {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return restored;
 
   const now = Date.now();
+  // SAFETY: parsed is a non-array object per the guard above; each value is passed to parseEntry, which validates its shape before use.
   for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
     const entry = parseEntry(value);
     if (entry && isResumable(entry, now)) restored.set(sessionId, entry);

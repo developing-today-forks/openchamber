@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test"
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client"
 import type { SyncEvent } from "@/lib/opencode/events"
 import type { JsonValue } from "@/lib/opencode/model"
@@ -12,6 +12,16 @@ import { classifyStreamPayload, createEventPipeline } from "./event-pipeline"
 const failAfter = (ms: number) => new Promise<never>((_, reject) => {
   setTimeout(() => reject(new Error("Timed out waiting for event pipeline flush")), ms)
 })
+
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+const flushMicrotasks = async () => {
+  for (let turn = 0; turn < 20; turn += 1) await Promise.resolve()
+}
 
 const base = { id: "evt_1", created: 1000, location: { directory: "/repo" } }
 const durable = { aggregateID: "ses_1", seq: 1, version: 1 as const }
@@ -39,9 +49,19 @@ function statusEvent(type: "busy" | "retry"): OpenCodeEvent {
 type StreamPayload = OpenCodeEvent | { type: string; properties: Record<string, JsonValue> }
 
 /** `keepalives` counts SSE comments sent before the events. They are activity without an event. */
-function createSdk(events: StreamPayload[], streamFinished: () => void, keepalives = 0): OpenCodeClient {
+function createSdk(
+  events: StreamPayload[],
+  streamFinished: () => void,
+  keepalives = 0,
+  failures: readonly (null | undefined)[] = [],
+  onSubscribe?: () => void,
+): OpenCodeClient {
+  let subscriptions = 0
   const subscribe = ({ signal, onActivity }: { signal?: AbortSignal; onActivity?: () => void }) => ({
     async *[Symbol.asyncIterator]() {
+      const attempt = subscriptions++
+      onSubscribe?.()
+      if (attempt < failures.length) throw failures[attempt]
       for (let sent = 0; sent < keepalives; sent += 1) {
         onActivity?.()
       }
@@ -536,6 +556,30 @@ describe("createEventPipeline turn boundaries", () => {
     ], 7)
     expect(describeTurns(events)).toEqual(["ses_1 busy", "ses_1 failed at 2", "ses_1 busy", "ses_1 failed at 4", "ses_2 failed at 1"])
   })
+
+  test("null and undefined stream rejections are not misclassified as aborts", async () => {
+    jest.useFakeTimers()
+    let attempts = 0
+    const sdk = createSdk([], () => undefined, 0, [null, undefined], () => { attempts += 1 })
+    const pipeline = createEventPipeline({
+      sdk,
+      onEvents: () => undefined,
+      transport: "sse",
+      reconnectDelayMs: 1,
+      heartbeatTimeoutMs: 60_000,
+    })
+    try {
+      await flushMicrotasks()
+      for (const delay of [250, 500]) {
+        jest.advanceTimersByTime(delay)
+        await flushMicrotasks()
+      }
+      expect(attempts).toBe(3)
+    } finally {
+      pipeline.cleanup()
+      jest.useRealTimers()
+    }
+  })
 })
 
 describe("createEventPipeline over the WebSocket transport", () => {
@@ -657,6 +701,57 @@ describe("createEventPipeline over the WebSocket transport", () => {
     const unproven = await run(false)
     expect(unproven.paths).toHaveLength(1)
     expect(unproven.sseStreams).toBe(1)
+  })
+
+  test("counts each post-ready URL-token mint failure once before falling back", async () => {
+    jest.useFakeTimers()
+    let authTokenFailures = 0
+    const sockets: RelayTunnelWebSocket[] = []
+    const opened = deferred<RelayTunnelWebSocket>()
+    const tunnel: RelayTunnelClient = {
+      async fetch() {
+        authTokenFailures += 1
+        throw new Error("URL auth token unavailable")
+      },
+      openWebSocket() {
+        const socket = createFakeSocket()
+        sockets.push(socket)
+        opened.resolve(socket)
+        return socket
+      },
+      getStatus: () => ({ state: "connected" }),
+      subscribeStatus: () => () => undefined,
+      retry: () => undefined,
+      close: () => undefined,
+    }
+    adoptRelayTunnel({ relayUrl: "wss://relay.test", serverId: "fixture", hostEncPubJwk: {} }, tunnel)
+    let sseStreams = 0
+    const pipeline = createEventPipeline({
+      sdk: createSdk([], () => { sseStreams += 1 }),
+      onEvents: () => undefined,
+      transport: "auto",
+      reconnectDelayMs: 1,
+      heartbeatTimeoutMs: 60_000,
+    })
+    try {
+      await opened.promise
+      expect(sockets).toHaveLength(1)
+      sockets[0].onmessage?.({ data: JSON.stringify({ type: "ready", headEventId: "c1" }) })
+      jest.advanceTimersByTime(2_100)
+      await flushMicrotasks()
+      clearRuntimeUrlAuthToken()
+      sockets[0].onclose?.({ code: 1006, reason: "" })
+      await flushMicrotasks()
+      for (const delay of [250, 500, 1_000]) {
+        jest.advanceTimersByTime(delay)
+        await flushMicrotasks()
+      }
+      expect(authTokenFailures).toBe(3)
+      expect(sseStreams).toBe(1)
+    } finally {
+      pipeline.cleanup()
+      jest.useRealTimers()
+    }
   })
 
   test("a failure replayed after the stream's upstream reconnect does not end the turn that started since", async () => {
