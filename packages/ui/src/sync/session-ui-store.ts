@@ -2327,7 +2327,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     while (firstSyntheticIndex > 0 && messages[firstSyntheticIndex - 1]?.role === "synthetic") {
       firstSyntheticIndex -= 1
     }
-    // SAFETY: the synthetic metadata is passed through unvalidated as the ContextPartMetadata OpenCode persisted; this is a trust-boundary assumption, not a checked invariant, and no field is read here.
+    // SAFETY: the role filter narrows only the message variant; metadata shape and provenance are not checked here and the value is forwarded unchanged as a trust-boundary assumption.
     const syntheticParts = messages
       .slice(firstSyntheticIndex, Math.max(0, targetIndex))
       .filter((message): message is Extract<typeof message, { role: "synthetic" }> => message.role === "synthetic")
