@@ -14,6 +14,20 @@ const folderSchema = z.object({
   parentId: z.string().nullable().optional(),
 });
 
+/**
+ * A record schema that keeps keys as data. z.record assigns parsed
+ * entries onto a plain object, so a `__proto__` key invokes the
+ * prototype setter and the entry is silently lost before the change
+ * is ever applied (#2649). Validate the incoming value in place
+ * instead and pass it through untouched.
+ */
+const dataRecord = <Value>(valueSchema: z.ZodType<Value>) => z.custom<Record<string, Value>>((value) => (
+  typeof value === 'object'
+  && value !== null
+  && !Array.isArray(value)
+  && Object.values(value).every((entry) => valueSchema.safeParse(entry).success)
+));
+
 const folderChangeSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('create'),
@@ -28,8 +42,8 @@ const folderChangeSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('forget-scopes'), scopeKeys: ids.min(1) }),
   z.object({
     type: z.literal('import'),
-    foldersMap: z.record(z.string(), z.array(folderSchema)),
-    deletedFolderIds: z.record(z.string(), z.number().finite()).optional(),
+    foldersMap: dataRecord(z.array(folderSchema)),
+    deletedFolderIds: dataRecord(z.number().finite()).optional(),
   }),
 ]);
 
