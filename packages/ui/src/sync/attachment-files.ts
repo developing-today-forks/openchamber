@@ -172,7 +172,7 @@ const notebookText = (value: unknown, filename: string): string | undefined => {
     const outputs: string[] = []
     for (const rawOutput of cell.outputs) {
       if (!rawOutput || typeof rawOutput !== "object") continue
-      // SAFETY: rawOutput is a non-null object per the guard above; each field is read as unknown and checked (sourceText, typeof or truthiness) before use.
+      // SAFETY: rawOutput is a non-null object per the guard above; text/traceback/data use sourceText or object guards, while ename/evalue are unchecked String coercions.
       const output = rawOutput as { text?: unknown; traceback?: unknown; data?: unknown; ename?: unknown; evalue?: unknown }
       const text = sourceText(output.text) || sourceText(output.traceback)
       if (text) {

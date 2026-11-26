@@ -67,6 +67,7 @@ function readCache<T>(directory: string, key: CacheKey): T | undefined {
     const currentKey = cacheKey(directory, key)
     if (key === "sessions") {
       const pending = pendingSessionWrites.get(currentKey)
+      // SAFETY: pending entries are created only by scheduleSessionCacheWrite for this exact storage key, carrying the Session[] value that the key's writer persists.
       if (pending) return pending.sessions as T
     }
     const raw = localStorage.getItem(currentKey)
