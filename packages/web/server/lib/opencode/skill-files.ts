@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import { OPENCODE_CONFIG_DIR, getAncestors, findWorktreeRoot } from './config-files.js';
 import { isString } from '../shared/object-guards.js';
+import { assertPathWithinSkillDir } from './skill-supporting-file-path.js';
 import { writeFileAtomic } from './atomic-write.js';
 import { createTraversalBudget } from '../shared/traversal-budget.js';
 import type { MarkdownDocument } from './markdown-files.js';
@@ -241,24 +242,6 @@ async function listSkillSupportingFiles(skillDir: string) {
   return { files, truncated: budget.truncated };
 }
 
-function assertPathWithinSkillDir<Path>(skillDir: string, relativePath: Path) {
-  const root = fs.realpathSync(skillDir);
-  if (!isString(relativePath)) {
-    throw Object.assign(new TypeError('The skill file path must be a string'), { code: 'ERR_INVALID_ARG_TYPE' });
-  }
-  const target = path.resolve(root, relativePath);
-  const relative = path.relative(root, target);
-  const isWithin = relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-
-  if (!isWithin) {
-    const error: NodeJS.ErrnoException = new Error('Access to file denied');
-    error.code = 'EACCES';
-    throw error;
-  }
-
-  return target;
-}
-
 function readSkillSupportingFile(skillDir: string, relativePath: string) {
   const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
   const createTooLargeError = () => Object.assign(
@@ -323,7 +306,7 @@ function readSkillSupportingFile(skillDir: string, relativePath: string) {
 // capped reader would refuse, so a save cannot strand the file. Callers
 // that write several files as one operation (skill create/update)
 // assert every file up front, so a refusal cannot leave a partial set.
-function assertSkillSupportingFileWithinCap<Path, Content>(relativePath: Path, content: Content) {
+function assertSkillSupportingFileWithinCap<Content>(relativePath: string, content: Content) {
   if (isString(content) && Buffer.byteLength(content, 'utf8') > SKILL_SUPPORTING_FILE_MAX_BYTES) {
     throw Object.assign(
       new Error(`Skill file is too large to write: ${relativePath} exceeds the ${SKILL_SUPPORTING_FILE_MAX_BYTES} byte limit`),
@@ -332,7 +315,28 @@ function assertSkillSupportingFileWithinCap<Path, Content>(relativePath: Path, c
   }
 }
 
-function writeSkillSupportingFile<Path, Content>(skillDir: string, relativePath: Path, content: Content) {
+function validateSkillSupportingFileContent(file: { path?: unknown; content?: unknown }): void {
+  if (file.path && file.content !== undefined) {
+    if (!isString(file.path)) throw new TypeError('Cannot read skill supporting file path');
+    assertSkillSupportingFileWithinCap(file.path, file.content);
+  }
+}
+
+function validateSkillSupportingFileUpdate(
+  skillDir: string,
+  file: { delete?: unknown; path?: unknown; content?: unknown },
+): void {
+  if (file.delete && file.path) {
+    if (!isString(file.path)) throw new TypeError('Cannot read skill supporting file path');
+    assertPathWithinSkillDir(skillDir, file.path);
+  } else if (file.path && file.content !== undefined) {
+    if (!isString(file.path)) throw new TypeError('Cannot read skill supporting file path');
+    assertPathWithinSkillDir(skillDir, file.path);
+    assertSkillSupportingFileWithinCap(file.path, file.content);
+  }
+}
+
+function writeSkillSupportingFile<Content>(skillDir: string, relativePath: string, content: Content) {
   const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
   assertSkillSupportingFileWithinCap(relativePath, content);
   const dir = path.dirname(fullPath);
@@ -343,7 +347,7 @@ function writeSkillSupportingFile<Path, Content>(skillDir: string, relativePath:
   writeFileAtomic(fullPath, content);
 }
 
-function deleteSkillSupportingFile<Path>(skillDir: string, relativePath: Path) {
+function deleteSkillSupportingFile(skillDir: string, relativePath: string) {
   const root = fs.realpathSync(skillDir);
   const fullPath = assertPathWithinSkillDir(skillDir, relativePath);
   if (fs.existsSync(fullPath)) {
@@ -373,6 +377,8 @@ export {
   listSkillSupportingFiles,
   SKILL_SUPPORTING_FILE_MAX_BYTES,
   assertSkillSupportingFileWithinCap,
+  validateSkillSupportingFileContent,
+  validateSkillSupportingFileUpdate,
   SKILL_SUPPORTING_FILE_TOO_LARGE_CODE,
   readSkillSupportingFile,
   writeSkillSupportingFile,

@@ -1011,6 +1011,46 @@ describe('VS Code config bridge skill supporting-file traversal (#2304)', () => 
     expect(fs.readFileSync(path.join(root, 'secret.txt'), 'utf8')).toBe('sibling-secret');
   });
 
+  test('refuses symlink escapes through GET, PUT, and DELETE', async () => {
+    const root = createProjectSkillWithSecret();
+    const skillDir = path.join(root, '.opencode', 'skills', 'traversal-test-skill');
+    const outsideDir = path.join(root, 'outside');
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(outsideDir, 'secret.txt'), 'outside-secret');
+    fs.symlinkSync(path.join(root, 'secret.txt'), path.join(skillDir, 'secret-link.txt'), process.platform === 'win32' ? 'file' : undefined);
+    fs.symlinkSync(outsideDir, path.join(skillDir, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    for (const relativePath of ['secret-link.txt', 'outside-link/secret.txt']) {
+      for (const method of ['GET', 'PUT', 'DELETE']) {
+        const response = await callFiles(root, method, relativePath, 'pwned');
+        expect(response?.success).toBe(false);
+        expect(response?.error).toBe('Access to file denied');
+      }
+    }
+    expect(fs.readFileSync(path.join(root, 'secret.txt'), 'utf8')).toBe('sibling-secret');
+    expect(fs.readFileSync(path.join(outsideDir, 'secret.txt'), 'utf8')).toBe('outside-secret');
+  });
+
+  test('prevalidates every supporting-file update before applying the first one', async () => {
+    const root = createProjectSkillWithSecret();
+    const skillDir = path.join(root, '.opencode', 'skills', 'traversal-test-skill');
+    const outsideDir = path.join(root, 'outside');
+    fs.mkdirSync(outsideDir);
+    fs.writeFileSync(path.join(skillDir, 'keep.txt'), 'original');
+    fs.symlinkSync(outsideDir, path.join(skillDir, 'outside-link'), process.platform === 'win32' ? 'junction' : 'dir');
+
+    await expect(handleConfigBridgeMessage({
+      id: 'skill-update-symlink-batch',
+      type: 'api:config/skills',
+      payload: { method: 'PATCH', name: 'traversal-test-skill', body: { supportingFiles: [
+        { path: 'keep.txt', content: 'changed' },
+        { path: 'outside-link/pwned.txt', content: 'pwned' },
+      ] } },
+    }, createCtx(root), deps)).rejects.toMatchObject({ code: 'EACCES' });
+    expect(fs.readFileSync(path.join(skillDir, 'keep.txt'), 'utf8')).toBe('original');
+    expect(fs.existsSync(path.join(outsideDir, 'pwned.txt'))).toBe(false);
+  });
+
   test('still serves a legitimate nested supporting file', async () => {
     const root = createProjectSkillWithSecret();
     const skillDir = path.join(root, '.opencode', 'skills', 'traversal-test-skill');
