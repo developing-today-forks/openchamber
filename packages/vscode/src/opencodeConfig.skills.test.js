@@ -532,10 +532,19 @@ describe('VS Code skill supporting-file sink containment (#2304)', () => {
 
   test('does not hang on a self-referential dangling symlink', () => {
     withFixture((_dir, skillDir) => {
-      // Oracle: the containment walk terminates and the read fails instead of
-      // expanding `missing/../loop` back to the same link forever.
+      // Oracle: the containment walk terminates instead of expanding
+      // `missing/../loop` back to the same link forever, and no content comes
+      // back. The kernel resolves the link to a missing path, and this twin
+      // reads a missing supporting file as null where the web twin throws, so
+      // either outcome is a failed read; a hang would time the test out.
       fs.symlinkSync('missing/../loop', path.join(skillDir, 'loop'), process.platform === 'win32' ? 'file' : undefined);
-      expect(() => readSkillSupportingFile(skillDir, 'loop')).toThrow();
+      let content;
+      try {
+        content = readSkillSupportingFile(skillDir, 'loop');
+      } catch {
+        content = null;
+      }
+      expect(content).toBeNull();
     });
   });
 
