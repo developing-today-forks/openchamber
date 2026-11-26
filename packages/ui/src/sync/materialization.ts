@@ -120,6 +120,7 @@ export function getStaleRunningToolMessageID(
     if (message.role !== "assistant") continue
     const hasActiveTool = (state.part[message.id] ?? []).some((part) => {
       if (part.type !== "tool") return false
+      // SAFETY: part is narrowed to tool parts by the type check above, and the status read here is typeof-checked before it is used.
       const status = (part as { state?: { status?: unknown } }).state?.status
       return typeof status === "string" && ACTIVE_TOOL_STATUSES.has(status)
     })
@@ -175,21 +176,25 @@ function haveEquivalentPartSnapshots(left: Part[] | undefined, right: Part[]): b
 }
 
 function getPartEndTime(part: Part): number | undefined {
+  // SAFETY: not every Part variant carries state.time; the end value is only returned after the typeof check below confirms it is a number.
   const stateEnd = (part as { state?: { time?: { end?: unknown } } }).state?.time?.end
   if (typeof stateEnd === "number") {
     return stateEnd
   }
 
+  // SAFETY: same optional-shape read for parts that carry time directly; the value is typeof-checked before it is returned.
   const timeEnd = (part as { time?: { end?: unknown } }).time?.end
   return typeof timeEnd === "number" ? timeEnd : undefined
 }
 
 function getStringField(part: Part, field: "text" | "output"): string | undefined {
+  // SAFETY: field is restricted to the two literal names in the signature, and the value read is typeof-checked before it is returned.
   const value = (part as Record<string, unknown>)[field]
   return typeof value === "string" ? value : undefined
 }
 
 function getPartStateAttachments(part: Part): Array<unknown> | undefined {
+  // SAFETY: state is checked for presence on the next line before use, and attachments is only returned after the Array.isArray check below.
   const state = (part as Record<string, unknown>).state as Record<string, unknown> | undefined
   if (!state) return undefined
   const attachments = state.attachments
@@ -205,6 +210,7 @@ function hasLiveStreamingField(part: Part): boolean {
 }
 
 function getPartStateTime(part: Part): { start?: number; end?: number } | undefined {
+  // SAFETY: state.time is verified to be a non-null object on the next line, and start/end are each typeof-checked before they are read.
   const stateTime = (part as { state?: { time?: { start?: unknown; end?: unknown } } }).state?.time
   if (!stateTime || typeof stateTime !== "object") return undefined
   const start = typeof stateTime.start === "number" ? stateTime.start : undefined
@@ -239,7 +245,9 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     ) {
       return existing
     }
+    // SAFETY: this status read is only consumed by the typeof check in the condition below, which confirms it is a string before any comparison.
     const existingStatus = (existing as { state?: { status?: unknown } }).state?.status
+    // SAFETY: this status read is only consumed by the typeof check in the condition below, which confirms it is a string before any comparison.
     const nextStatus = (next as { state?: { status?: unknown } }).state?.status
     if (
       typeof existingStatus === "string"
@@ -266,8 +274,9 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     const existingAttachments = getPartStateAttachments(existing)
     if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
       const nextRecord = { ...next }
+      // SAFETY: next is only read here; the spread tolerates a missing state via the ?? {} fallback and produces a fresh object, so no unchecked property is trusted.
       const nextState = { ...((next as Record<string, unknown>).state as Record<string, unknown> ?? {}), attachments: existingAttachments }
-      ;(nextRecord as Record<string, unknown>).state = nextState
+      ;(/* SAFETY: nextRecord is the fresh shallow copy created above, so writing its state field cannot mutate the caller's part. */ nextRecord as Record<string, unknown>).state = nextState
       return nextRecord
     }
     return next
@@ -283,6 +292,7 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     if (typeof nextValue === "string" && nextValue.length > 0 && !existingValue.startsWith(nextValue)) continue
 
     if (merged === next) merged = { ...next }
+    // SAFETY: merged is a fresh copy of next at this point (copied on the line above when still identical), and field iterates the fixed STREAMING_PART_FIELDS list, so the write lands on the copy under a known key.
     const mergedRecord = merged as Record<string, unknown>
     mergedRecord[field] = existingValue
   }
@@ -290,7 +300,9 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
   const existingAttachments = getPartStateAttachments(existing)
   if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
     if (merged === next) merged = { ...next }
+    // SAFETY: merged is a fresh copy of next at this point (copied on the line above when still identical), so assigning its state field below cannot mutate the caller's part.
     const mergedRecord = merged as Record<string, unknown>
+    // SAFETY: the state read is only spread into a fresh object with a ?? {} fallback; no property of the unchecked shape is read directly.
     const nextState = (next as Record<string, unknown>).state as Record<string, unknown> | undefined
     const newState = { ...(nextState ?? {}), attachments: existingAttachments }
     mergedRecord.state = newState
@@ -303,7 +315,9 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     const preservedEnd = nextTime?.end ?? existingTime.end
     if (preservedStart !== nextTime?.start || preservedEnd !== nextTime?.end) {
       if (merged === next) merged = { ...next }
+      // SAFETY: merged is a fresh copy of next at this point (copied on the line above when still identical), so assigning its state field below cannot mutate the caller's part.
       const mergedRecord = merged as Record<string, unknown>
+      // SAFETY: both state reads are only spread into a fresh object with ?? {} fallbacks; no property of the unchecked shapes is read directly.
       const currentState = (mergedRecord.state as Record<string, unknown> | undefined) ?? (next as Record<string, unknown>).state as Record<string, unknown> | undefined
       const newState = { ...(currentState ?? {}), time: { start: preservedStart, end: preservedEnd } }
       mergedRecord.state = newState

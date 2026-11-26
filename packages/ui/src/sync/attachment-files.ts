@@ -148,7 +148,7 @@ const sourceText = (source: unknown): string => {
 
 const notebookText = (value: unknown, filename: string): string | undefined => {
   if (!value || typeof value !== "object") return
-  // SAFETY: value is narrowed to a non-null object above; cells is Array-checked and the metadata language is typeof-checked before use.
+  // SAFETY: value is a non-null object per the guard above; cells and kernelspec.language are read as unknown and Array.isArray or typeof checked before use.
   const notebook = value as { cells?: unknown; metadata?: { kernelspec?: { language?: unknown } } }
   if (!Array.isArray(notebook.cells)) return
   const language = typeof notebook.metadata?.kernelspec?.language === "string"
@@ -158,7 +158,7 @@ const notebookText = (value: unknown, filename: string): string | undefined => {
 
   notebook.cells.forEach((rawCell, index) => {
     if (!rawCell || typeof rawCell !== "object") return
-    // SAFETY: rawCell is narrowed to a non-null object above; cell_type is compared by === and source passes through sourceText's own guards.
+    // SAFETY: rawCell is a non-null object per the guard above; each field is read as unknown and checked (typeof or Array.isArray) before use.
     const cell = rawCell as { cell_type?: unknown; source?: unknown; outputs?: unknown }
     const content = sourceText(cell.source).trimEnd()
     if (cell.cell_type === "markdown") {
@@ -172,7 +172,7 @@ const notebookText = (value: unknown, filename: string): string | undefined => {
     const outputs: string[] = []
     for (const rawOutput of cell.outputs) {
       if (!rawOutput || typeof rawOutput !== "object") continue
-      // SAFETY: rawOutput is narrowed to a non-null object above; every field read is typeof-checked or passed through sourceText's own guards.
+      // SAFETY: rawOutput is a non-null object per the guard above; each field is read as unknown and checked (sourceText, typeof or truthiness) before use.
       const output = rawOutput as { text?: unknown; traceback?: unknown; data?: unknown; ename?: unknown; evalue?: unknown }
       const text = sourceText(output.text) || sourceText(output.traceback)
       if (text) {
@@ -180,7 +180,7 @@ const notebookText = (value: unknown, filename: string): string | undefined => {
         continue
       }
       if (output.data && typeof output.data === "object") {
-        // SAFETY: output.data is typeof-checked as an object on the enclosing branch; values are read through sourceText's guards or enumerated by key only.
+        // SAFETY: output.data is checked as a non-null object above; Object.keys and the text/plain lookup accept any value, and sourceText checks its type.
         const data = output.data as Record<string, unknown>
         const plain = sourceText(data["text/plain"])
         if (plain) outputs.push(plain.trimEnd())
@@ -215,7 +215,7 @@ const sanitizeHarValue = (value: unknown, key?: string): unknown => {
   if (key === "cookies" && Array.isArray(value)) {
     return value.map((cookie) => {
       if (!cookie || typeof cookie !== "object") return cookie
-      // SAFETY: cookie is narrowed to a non-null object above; the assertion only enables the spread, and the value field is unconditionally replaced.
+      // SAFETY: cookie is a non-null object per the guard above; the spread copies its fields and only the value field is replaced.
       return { ...(cookie as Record<string, unknown>), value: REDACTED }
     })
   }
@@ -224,7 +224,7 @@ const sanitizeHarValue = (value: unknown, key?: string): unknown => {
   if (Array.isArray(value)) return value.map((item) => sanitizeHarValue(item))
   if (!value || typeof value !== "object") return value
 
-  // SAFETY: value is narrowed to a non-null object above; the record is only traversed with Object.entries and each value recursed through this function's guards.
+  // SAFETY: value is a non-null, non-string, non-array object here; its entries are read as unknown and each is passed through sanitizeHarValue.
   const record = value as Record<string, unknown>
   const sensitiveEntry = typeof record.name === "string" && SENSITIVE_NAMES.test(record.name)
   return Object.fromEntries(Object.entries(record).map(([entryKey, entryValue]) => [

@@ -115,7 +115,7 @@ describe('runWorkflowSandbox', () => {
     await expect(sandbox.result).resolves.toEqual(['undefined', 'undefined', 'undefined', 'undefined']);
   });
 
-  it.each(['Math.random()', 'Date.now()', 'new Date()'])('refuses %s, which would break a replay', async (expression) => {
+  it.each(['Math.random()', 'Date.now()', 'new Date()', 'Date()'])('refuses %s, which would break a replay', async (expression) => {
     const { sandbox } = run(`return ${expression}`);
     await expect(sandbox.result).rejects.toThrow(/not available in a workflow/);
   });

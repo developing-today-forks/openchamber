@@ -1,4 +1,5 @@
 import { isString } from '../shared/guards.js';
+import { readBoundedResponseText, type BoundedResponseText } from '../shared/response-body.js';
 import type { GerritJson, GerritQuery } from './contracts.js';
 
 export type GerritFailure = 'invalid-token' | 'temporarily-unavailable' | 'provider-error' | 'unreachable';
@@ -22,6 +23,15 @@ const RETRY_STATUSES = new Set([429, 502]);
 const MAX_READ_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_ERROR_MESSAGE = 500;
+// The instance answering is user-configured and possibly self-managed, and
+// the deadline bounds stalls, not bytes, so every body is read through the
+// bounded reader, which cancels the stream once it crosses the cap. Success
+// answers include file blobs fetched as base64 text, so they get the same
+// 16 MiB cap as the GitLab client; an error answer only ever feeds a
+// 500-character message, so 64 KiB is ample.
+const SUCCESS_BODY_MAX_BYTES = 16 * 1024 * 1024;
+const ERROR_BODY_MAX_BYTES = 64 * 1024;
+const BOM = /^\uFEFF/;
 const XSSI_PREFIX = /^\)\]\}'[^\n]*\n?/;
 const defaultDelay = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms); });
 
@@ -71,7 +81,8 @@ function errorText(body: string) {
 }
 
 async function errorFromResponse(response: Response) {
-  const text = errorText(await response.text().catch(() => ''));
+  const read = await readBoundedResponseText(response, ERROR_BODY_MAX_BYTES).catch((): BoundedResponseText => ({ tooLarge: true }));
+  const text = errorText(read.tooLarge ? '' : read.text.replace(BOM, ''));
   const message = text.length > MAX_ERROR_MESSAGE ? `${text.slice(0, MAX_ERROR_MESSAGE)}…` : text;
   return new GerritRequestError(kindOfStatus(response.status), message || `Gerrit request failed with status ${response.status}`, response.status);
 }
@@ -138,7 +149,11 @@ export function createGerritClient({
         }
         if (response.ok) {
           if (response.status === 204) return null;
-          const text = await response.text();
+          const read = await readBoundedResponseText(response, SUCCESS_BODY_MAX_BYTES);
+          if (read.tooLarge) {
+            throw new GerritRequestError('provider-error', `Gerrit answered with more than ${SUCCESS_BODY_MAX_BYTES} bytes`, response.status);
+          }
+          const text = read.text.replace(BOM, '');
           if (responseType === 'text') return text;
           return parseGerritJson(text);
         }

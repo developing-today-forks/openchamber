@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 const MISSING_UPDATE_FEED_RE =
   /404|ENOTFOUND|Cannot find (?:channel|latest)|latest-linux(?:-arm64)?\.yml|HttpError:\s*404|status code 404/i;
 
@@ -47,10 +49,11 @@ export const checkForDesktopUpdate = async ({ autoUpdater, currentVersion, pendi
   }
 
   const updateInfo = updateResult?.updateInfo;
+  const parsedVersion = z.string().safeParse(updateInfo?.version);
   const available = updateResult?.isUpdateAvailable === true
-    && typeof updateInfo?.version === 'string'
-    && updateInfo.version.length > 0;
-  const nextVersion = available ? updateInfo.version : currentVersion;
+    && parsedVersion.success
+    && parsedVersion.data.length > 0;
+  const nextVersion = available ? parsedVersion.data : currentVersion;
   const downgrade = available && isDowngrade(nextVersion, currentVersion);
   const sameVersion = pendingUpdate?.version === nextVersion;
   return {

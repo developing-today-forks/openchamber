@@ -46,6 +46,16 @@ const isSessionFoldersMap = (foldersMap: unknown): foldersMap is SessionFoldersM
   && Object.values(foldersMap).every(isSessionFolderList)
 );
 
+/**
+ * Write a scope entry as data. Plain assignment with a scope key like
+ * `__proto__` invokes the inherited prototype setter instead of
+ * creating an entry, so the scope is acknowledged and then silently
+ * dropped from the persisted snapshot (#2649).
+ */
+const setScopeFolders = (foldersMap: SessionFoldersMap, scope: string, folders: SessionFolder[]) => {
+  Object.defineProperty(foldersMap, scope, { value: folders, writable: true, enumerable: true, configurable: true });
+};
+
 const isFolderTombstones = (tombstones: unknown): tombstones is FolderTombstones | undefined => (
   tombstones === undefined
   || (isObjectRecord(tombstones)
@@ -87,12 +97,12 @@ const mergeSnapshots = (current: StoredFolderSnapshot, incoming: StoredFolderSna
     const incomingFolders = incomingMap[scope];
     if (!Array.isArray(incomingFolders) || incomingFolders.length === 0) {
       if (Array.isArray(currentFolders) && currentFolders.length > 0) {
-        mergedScopes[scope] = currentFolders;
+        setScopeFolders(mergedScopes, scope, currentFolders);
       }
       continue;
     }
     if (!Array.isArray(currentFolders) || currentFolders.length === 0) {
-      mergedScopes[scope] = incomingFolders;
+      setScopeFolders(mergedScopes, scope, incomingFolders);
       continue;
     }
     const foldersById = new Map(currentFolders.map((folder) => [folder.id, folder]));
@@ -110,12 +120,12 @@ const mergeSnapshots = (current: StoredFolderSnapshot, incoming: StoredFolderSna
       }
       foldersById.set(folder.id, folder);
     }
-    mergedScopes[scope] = [...foldersById.values()];
+    setScopeFolders(mergedScopes, scope, [...foldersById.values()]);
   }
   for (const [scope, folders] of Object.entries(mergedScopes)) {
     const kept = folders.filter((folder) => deletedFolderIds[folder.id] === undefined);
     if (kept.length > 0) {
-      mergedScopes[scope] = kept;
+      setScopeFolders(mergedScopes, scope, kept);
     } else {
       delete mergedScopes[scope];
     }

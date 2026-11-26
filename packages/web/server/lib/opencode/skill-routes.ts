@@ -923,6 +923,9 @@ export const registerSkillRoutes = (app: Application, dependencies: SkillRouteOp
       if (hasErrorCode(error, 'skill_supporting_file_too_large')) {
         return res.status(413).json({ error: 'File too large to write' });
       }
+      if (isAccessError(error)) {
+        return res.status(403).json({ error: 'Access to file denied' });
+      }
       console.error('[Server] Failed to update skill:', error);
       res.status(500).json({ error: errorMessage(error) || 'Failed to update skill' });
     }

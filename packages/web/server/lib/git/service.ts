@@ -2327,10 +2327,10 @@ const createCommandFailure = (message: string) => Object.assign(new Error(messag
 // stripped before the output becomes a user-facing failure message.
 const stripTerminalSequences = (value: string) =>
   String(value || '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '');
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // eslint-disable-line no-control-regex -- Strip OSC sequences from terminal output.
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') // eslint-disable-line no-control-regex -- Strip CSI sequences from terminal output.
+    .replace(/\x1b[@-Z\\-_]/g, '') // eslint-disable-line no-control-regex -- Strip single-byte terminal sequences.
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ''); // eslint-disable-line no-control-regex -- Remove control bytes from displayed output.
 
 const shownCommandFailure = (result: StartCommandResult, maxChars: number) => {
   const message = stripTerminalSequences(String(result.message || '')).trim();
@@ -4330,10 +4330,11 @@ const extractPatchTargetPath = (patch: string) => {
   return realTargets.at(-1) || null;
 };
 
-const writeTempPatchFile = async (patch: string) => {
+export const writeTempPatchFile = async (patch: string) => {
   const tmpDir = os.tmpdir();
   const tmpPath = path.join(tmpDir, `openchamber-hunk-${Date.now()}-${Math.random().toString(36).slice(2)}.patch`);
-  await fsp.writeFile(tmpPath, patch, 'utf8');
+  await fsp.writeFile(tmpPath, patch, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  await fsp.chmod(tmpPath, 0o600);
   return tmpPath;
 };
 

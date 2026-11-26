@@ -486,7 +486,7 @@ export function handleEvent(
       if (partSessionID) markDirectorySessionPartChanged(store, partSessionID, eventMessageID)
     }
     if (batch) {
-      // SAFETY: draft starts as a shallow copy of this store's own current state and is mutated only by this dispatch path before being handed back to the same store.
+      // SAFETY: draft is the Immer draft of this store's state, which is the DirectoryStore state that batch.states holds.
       batch.states.set(store, draft as DirectoryStore)
       batch.changedStores.add(store)
       if (newlyClonedFields.length > 0) {
@@ -585,7 +585,7 @@ export function handleEvent(
           draft.part[interrupted.messageID] = interrupted.parts
         }
         if (batch) {
-          // SAFETY: draft starts as a shallow copy of this store's own current state and is mutated only by this dispatch path before being handed back to the same store.
+          // SAFETY: draft is the Immer draft of this store's state, which is the DirectoryStore state that batch.states holds.
           batch.states.set(store, draft as DirectoryStore)
           batch.changedStores.add(store)
         } else {

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
+import { z } from 'zod';
 
 import { DEFAULT_SSH_OUTPUT_TIMEOUT_MS, ElectronSshManager, MAX_SSH_OUTPUT_BYTES } from './ssh-manager.mjs';
 
@@ -42,9 +43,9 @@ const createChild = () => {
 const listen = async (server) => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   servers.push(server);
-  const address = server.address();
-  if (!address || typeof address === 'string') throw new Error('Expected TCP server address');
-  return `http://127.0.0.1:${address.port}`;
+  const parsedAddress = z.object({ port: z.number() }).safeParse(server.address());
+  if (!parsedAddress.success) throw new Error('Expected TCP server address');
+  return `http://127.0.0.1:${parsedAddress.data.port}`;
 };
 
 const readBody = async (req) => {

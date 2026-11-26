@@ -21,7 +21,8 @@ import {
   resolveSkillSearchDirectories,
   listSkillSupportingFiles,
   writeSkillSupportingFile,
-  assertSkillSupportingFileWithinCap,
+  validateSkillSupportingFileContent,
+  validateSkillSupportingFileUpdate,
   deleteSkillSupportingFile,
   pathExists,
 } from './skill-files.js';
@@ -584,9 +585,8 @@ async function createSkillNow(skillName: string, config: SkillConfig, workingDir
   // failed create leaves no partial skill behind (#1444, Codex review).
   if (supportingFiles && Array.isArray(supportingFiles)) {
     for (const file of supportingFiles) {
-      if (file.path && file.content !== undefined) {
-        assertSkillSupportingFileWithinCap(file.path, file.content);
-      }
+      if (!hasSupportingFields(file)) throw new TypeError('Cannot read skill supporting file');
+      validateSkillSupportingFileContent(file);
     }
   }
 
@@ -608,7 +608,7 @@ async function createSkillNow(skillName: string, config: SkillConfig, workingDir
   if (supportingFiles && isUnknownList(supportingFiles)) {
     for (const file of supportingFiles) {
       if (!hasSupportingFields(file)) throw new TypeError('Cannot read skill supporting file');
-      if (file.path && file.content !== undefined) {
+      if (isString(file.path) && file.path && file.content !== undefined) {
         writeSkillSupportingFile(targetDir, file.path, file.content);
       }
     }
@@ -650,9 +650,8 @@ async function updateSkillNow<Updates>(skillName: string, updates: Updates, work
   const requestedFiles = hasRequestedFiles(updates) ? updates.supportingFiles : undefined;
   if (isUnknownList(requestedFiles)) {
     for (const file of requestedFiles) {
-      if (hasSupportingFields(file) && !file.delete && isString(file.path) && file.path && file.content !== undefined) {
-        assertSkillSupportingFileWithinCap(file.path, file.content);
-      }
+      if (!hasSupportingFields(file)) throw new TypeError('Cannot read skill supporting file');
+      validateSkillSupportingFileUpdate(mdDir, file);
     }
   }
 
@@ -680,10 +679,10 @@ async function updateSkillNow<Updates>(skillName: string, updates: Updates, work
       if (isUnknownList(value)) {
         for (const file of value) {
           if (!hasSupportingFields(file)) throw new TypeError('Cannot read skill supporting file');
-          if (file.delete && file.path) {
+          if (file.delete && isString(file.path) && file.path) {
             const target = file.path;
             supportingOps.push(() => deleteSkillSupportingFile(mdDir, target));
-          } else if (file.path && file.content !== undefined) {
+          } else if (isString(file.path) && file.path && file.content !== undefined) {
             const target = file.path;
             const content = file.content;
             supportingOps.push(() => writeSkillSupportingFile(mdDir, target, content));

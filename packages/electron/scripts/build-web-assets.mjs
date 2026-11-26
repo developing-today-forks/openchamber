@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,8 +34,9 @@ const run = (cmd, args, cwd) => {
 };
 
 const resolveBun = () => {
-  if (typeof process.env.BUN === 'string' && process.env.BUN.trim()) {
-    return process.env.BUN.trim();
+  const parsedBun = z.string().safeParse(process.env.BUN);
+  if (parsedBun.success && parsedBun.data.trim()) {
+    return parsedBun.data.trim();
   }
   if (process.platform === 'win32') {
     const result = spawnSync('where.exe', ['bun'], { encoding: 'utf8' });

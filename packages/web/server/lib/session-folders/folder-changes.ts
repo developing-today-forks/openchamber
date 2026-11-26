@@ -14,6 +14,17 @@ const folderSchema = z.object({
   parentId: z.string().nullable().optional(),
 });
 
+/**
+ * A record schema that keeps keys as data. z.record assigns parsed
+ * entries onto a plain object, so a `__proto__` key invokes the
+ * prototype setter and the entry is silently lost before the change
+ * is ever applied (#2649). Validate the incoming value in place
+ * instead and pass it through untouched.
+ */
+const dataRecord = <Value>(valueSchema: z.ZodType<Value>) => z.custom<Record<string, Value>>((value) => (
+  z.record(z.string(), valueSchema).safeParse(value).success
+));
+
 const folderChangeSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('create'),
@@ -28,14 +39,30 @@ const folderChangeSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('forget-scopes'), scopeKeys: ids.min(1) }),
   z.object({
     type: z.literal('import'),
-    foldersMap: z.record(z.string(), z.array(folderSchema)),
-    deletedFolderIds: z.record(z.string(), z.number().finite()).optional(),
+    foldersMap: dataRecord(z.array(folderSchema)),
+    deletedFolderIds: dataRecord(z.number().finite()).optional(),
   }),
 ]);
 
 export const folderChangesBodySchema = z.object({ changes: z.array(folderChangeSchema).min(1).max(1_000) });
 
 export const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Read and write scope entries as data. Plain access with a scope key
+ * like `__proto__` reaches the inherited prototype instead of a stored
+ * entry: assignment invokes the prototype setter (the scope is
+ * acknowledged and then silently dropped, #2649), and a read for a
+ * scope that was never stored returns Object.prototype rather than
+ * undefined.
+ */
+const getScopeFolders = (foldersMap: SessionFoldersMap, scopeKey: string): SessionFolder[] | undefined => (
+  Object.prototype.hasOwnProperty.call(foldersMap, scopeKey) ? foldersMap[scopeKey] : undefined
+);
+
+const setScopeFolders = (foldersMap: SessionFoldersMap, scopeKey: string, folders: SessionFolder[]) => {
+  Object.defineProperty(foldersMap, scopeKey, { value: folders, writable: true, enumerable: true, configurable: true });
+};
 
 const sameName = (left: string, right: string) => left.trim().toLowerCase() === right.trim().toLowerCase();
 
@@ -84,7 +111,7 @@ const importFolders = (foldersMap: SessionFoldersMap, deletedFolderIds: FolderTo
     deletedFolderIds[folderId] = Math.max(deletedFolderIds[folderId] ?? 0, deletedAt);
   }
   for (const [scopeKey, incomingFolders] of Object.entries(incomingMap)) {
-    const folders = [...(foldersMap[scopeKey] ?? [])].filter((folder) => deletedFolderIds[folder.id] === undefined);
+    const folders = [...(getScopeFolders(foldersMap, scopeKey) ?? [])].filter((folder) => deletedFolderIds[folder.id] === undefined);
     const folderIdsInOtherScopes = new Set(Object.entries(foldersMap)
       .filter(([storedScopeKey]) => storedScopeKey !== scopeKey)
       .flatMap(([, storedFolders]) => storedFolders.map((folder) => folder.id)));
@@ -127,11 +154,11 @@ const importFolders = (foldersMap: SessionFoldersMap, deletedFolderIds: FolderTo
       idMap.set(folder.id, storedId);
       folders.push({ id: storedId, name: folder.name.trim(), sessionIds: unfiled, createdAt: folder.createdAt, parentId });
     }
-    foldersMap[scopeKey] = folders;
+    setScopeFolders(foldersMap, scopeKey, folders);
   }
   for (const [scopeKey, folders] of Object.entries(foldersMap)) {
     const kept = folders.filter((folder) => deletedFolderIds[folder.id] === undefined);
-    if (kept.length > 0) foldersMap[scopeKey] = kept;
+    if (kept.length > 0) setScopeFolders(foldersMap, scopeKey, kept);
     else delete foldersMap[scopeKey];
   }
 };
@@ -148,11 +175,11 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
   const before = JSON.stringify([foldersMap, deletedFolderIds]);
 
   const setScope = (scopeKey: string, folders: SessionFolder[]) => {
-    if (folders.length > 0) foldersMap[scopeKey] = folders;
+    if (folders.length > 0) setScopeFolders(foldersMap, scopeKey, folders);
     else delete foldersMap[scopeKey];
   };
   const removeFolders = (scopeKey: string, folderIds: string[]) => {
-    const folders = foldersMap[scopeKey] ?? [];
+    const folders = getScopeFolders(foldersMap, scopeKey) ?? [];
     const removed = descendantIds(folders, folderIds);
     for (const folderId of removed) deletedFolderIds[folderId] = now;
     setScope(scopeKey, folders.filter((folder) => !removed.has(folder.id)));
@@ -161,7 +188,7 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
   for (const change of changes) {
     switch (change.type) {
       case 'create': {
-        const folders = foldersMap[change.scopeKey] ?? [];
+        const folders = getScopeFolders(foldersMap, change.scopeKey) ?? [];
         if (Object.values(foldersMap).some((scopeFolders) => scopeFolders.some((folder) => folder.id === change.folder.id))) break;
         delete deletedFolderIds[change.folder.id];
         const parentId = change.folder.parentId && folders.some((folder) => folder.id === change.folder.parentId)
@@ -172,7 +199,7 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
         break;
       }
       case 'rename': {
-        const folders = foldersMap[change.scopeKey] ?? [];
+        const folders = getScopeFolders(foldersMap, change.scopeKey) ?? [];
         if (!folders.some((folder) => folder.id === change.folderId && folder.name !== change.name)) break;
         setScope(change.scopeKey, folders.map((folder) => (folder.id === change.folderId ? { ...folder, name: change.name } : folder)));
         break;
@@ -181,7 +208,7 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
         removeFolders(change.scopeKey, change.folderIds);
         break;
       case 'assign': {
-        const folders = foldersMap[change.scopeKey] ?? [];
+        const folders = getScopeFolders(foldersMap, change.scopeKey) ?? [];
         const target = folders.find((folder) => folder.id === change.folderId);
         if (!target) break;
         const moving = new Set(chatsStillInPlace(folders, change.sessionIds, change.from));
@@ -194,7 +221,7 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
         break;
       }
       case 'unassign': {
-        const folders = foldersMap[change.scopeKey] ?? [];
+        const folders = getScopeFolders(foldersMap, change.scopeKey) ?? [];
         setScope(change.scopeKey, withoutSessions(folders, new Set(chatsStillInPlace(folders, change.sessionIds, change.from))));
         break;
       }
@@ -205,7 +232,7 @@ export const applyFolderChanges = (snapshot: StoredFolderSnapshot, changes: Fold
       }
       case 'forget-scopes':
         for (const scopeKey of change.scopeKeys) {
-          removeFolders(scopeKey, (foldersMap[scopeKey] ?? []).map((folder) => folder.id));
+          removeFolders(scopeKey, (getScopeFolders(foldersMap, scopeKey) ?? []).map((folder) => folder.id));
         }
         break;
       case 'import':

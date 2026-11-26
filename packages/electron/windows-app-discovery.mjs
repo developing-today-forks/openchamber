@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { z } from 'zod';
 
 
 const execFileAsync = promisify(execFile);
@@ -122,7 +123,7 @@ export const createWindowsAppDiscovery = ({ run = execFileAsync, getFileIcon, en
     }
 
     const programFilesRoots = [env.ProgramW6432, env.ProgramFiles, 'C:\\Program Files']
-      .filter((value, index, values) => typeof value === 'string' && value && values.indexOf(value) === index);
+      .filter((value, index, values) => z.string().safeParse(value).success && value && values.indexOf(value) === index);
     for (const root of programFilesRoots) {
       const windowsAppsPath = path.join(root, 'WindowsApps');
       let entries = [];

@@ -104,4 +104,25 @@ describe('handoff target resolution', () => {
     expect(compareHandoffVersions('2.0.0', '2.0.0-rc.10')).toBe(1);
     expect(compareHandoffVersions('latest', '2.0.0')).toBeNull();
   });
+
+  it('compares numeric prerelease identifiers beyond Number precision', () => {
+    // Both pairs collapse to equal values under Number() — the first by
+    // rounding to 1e21, the second at the MAX_SAFE_INTEGER boundary — so a
+    // Number()-based comparator returns 1 in both directions for them.
+    const smaller = '1.0.0-999999999999999999999';
+    const larger = '1.0.0-1000000000000000000000';
+    expect(compareHandoffVersions(smaller, larger)).toBe(-1);
+    expect(compareHandoffVersions(larger, smaller)).toBe(1);
+    expect(compareHandoffVersions(smaller, smaller)).toBe(0);
+    expect(compareHandoffVersions('1.0.0-9007199254740993', '1.0.0-9007199254740992')).toBe(1);
+    expect(compareHandoffVersions('1.0.0-9007199254740992', '1.0.0-9007199254740993')).toBe(-1);
+  });
+
+  it('refuses a lower large-identifier prerelease handoff unless downgrades are allowed', () => {
+    const root = tempDir();
+    const entry = makeInstall(root, '2.0.0-999999999999999999999');
+    const request = { entry, execPath: process.execPath, version: '2.0.0-999999999999999999999', allowDowngrade: false };
+    expect(resolveHandoffTarget({ request, runningVersion: '2.0.0-1000000000000000000000' })).toEqual({ ok: false, reason: 'downgrade-refused' });
+    expect(resolveHandoffTarget({ request: { ...request, allowDowngrade: true }, runningVersion: '2.0.0-1000000000000000000000' }).ok).toBe(true);
+  });
 });
