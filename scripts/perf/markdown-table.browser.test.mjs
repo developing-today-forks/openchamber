@@ -79,6 +79,7 @@ test('chat Markdown tables expand into spare transcript width and show hidden-ed
   const server = await createServer({
     configFile: false,
     root: fixture,
+    cacheDir: path.join(fixture, '.vite'),
     logLevel: 'error',
     css: { postcss: repo },
     // The JSX transform adds this import after the dependency scan, so without
