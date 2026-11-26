@@ -682,7 +682,7 @@ export const resolveFileReadPath = async (targetPath: string, requestedRoot?: st
   }
 };
 
-export type FsListPathResolution =
+type FsListPathResolution =
   | { ok: true; resolvedPath: string }
   | { ok: false; status: number; error: string };
 
@@ -714,7 +714,7 @@ export const resolveDirectoryListPath = async (
   }
 };
 
-export type FsRevealPathResolution =
+type FsRevealPathResolution =
   | { ok: true; resolvedPath: string }
   | { ok: false; status: number; error: string };
 
@@ -753,7 +753,7 @@ export const resolveRevealPath = async (
   }
 };
 
-export type FsCreatePathResolution =
+type FsCreatePathResolution =
   | { ok: true; resolvedPath: string }
   | { ok: false; status: number; error: string };
 

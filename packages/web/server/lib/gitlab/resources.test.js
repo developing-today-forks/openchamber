@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createGitLabResourceService } from './resources.js';
+import { createGitLabClient } from './client.js';
 
 const origin = 'https://gitlab.example.com';
 const sourceProject = {
@@ -1391,17 +1392,68 @@ describe('GitLab merge request comparison reads', () => {
   });
 
   it('reads both sides of a file at the merge base and the head', async () => {
-    const showRaw = vi.fn(async (_project, path, ref) => `${path}@${ref.slice(0, 1)}`);
+    const get = vi.fn(async (_endpoint, { searchParams }) => ({ body: new Response(searchParams.ref.slice(0, 1)).body, headers: {} }));
     const { service } = setup({
-      MergeRequests: { ...setup().client.MergeRequests, show: vi.fn(async () => ({ ...openMR, diff_refs: diffRefs })) },
-      RepositoryFiles: { showRaw },
+      MergeRequests: { ...setup().client.MergeRequests, requester: { get }, show: vi.fn(async () => ({ ...openMR, diff_refs: diffRefs })) },
     });
     const project = { owner: 'team', name: 'repo' };
     await expect(service.changeRequestFileContents('/repo', 5, { project, remote: 'origin', path: 'b.ts', previousPath: 'a.ts', status: 'R' }))
-      .resolves.toEqual({ original: 'a.ts@a', modified: 'b.ts@b' });
+      .resolves.toEqual({ original: 'a', modified: 'b' });
     await expect(service.changeRequestFileContents('/repo', 5, { project, remote: 'origin', path: 'new.ts', status: 'A' }))
-      .resolves.toEqual({ original: '', modified: 'new.ts@b' });
-    expect(showRaw).toHaveBeenCalledWith('2', 'a.ts', diffRefs.base_sha);
+      .resolves.toEqual({ original: '', modified: 'b' });
+    expect(get).toHaveBeenCalledWith(expect.stringContaining('/repository/files/a.ts/raw'), expect.objectContaining({ searchParams: { ref: diffRefs.base_sha }, asStream: true }));
+  });
+
+  it('bounds text file reads while streaming and cancels after crossing 5 MiB', async () => {
+    // Oracle: the byte limit accepts exactly 5 MiB and cancels on the first
+    // crossing chunk, leaving the tail unread regardless of declared length.
+    const limit = 5 * 1024 * 1024;
+    const makeResponse = (chunks, contentLength) => {
+      let pulls = 0;
+      let cancelled = false;
+      const body = new ReadableStream({
+        pull(controller) {
+          if (pulls < chunks.length) controller.enqueue(chunks[pulls++]);
+          else controller.close();
+        },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 });
+      return {
+        body,
+        headers: contentLength === undefined ? {} : { 'content-length': String(contentLength) },
+        wasCancelled: () => cancelled,
+        pulls: () => pulls,
+      };
+    };
+    const exact = makeResponse([new Uint8Array(limit)], limit);
+    const rawClient = (response) => createGitLabClient({ origin, token: 'test', fetch: async () => new Response(response.body, { headers: { ...response.headers, 'content-type': 'text/plain' } }) });
+    const { service } = setup({
+      MergeRequests: {
+        ...setup().client.MergeRequests,
+        requester: rawClient(exact).MergeRequests.requester,
+        show: vi.fn(async () => ({ ...openMR, diff_refs: diffRefs })),
+      },
+      RepositoryFiles: rawClient(exact).RepositoryFiles,
+    });
+    await expect(service.changeRequestFileContents('/repo', 5, { project: { owner: 'team', name: 'repo' }, remote: 'origin', path: 'a.ts', status: 'A' }))
+        .resolves.toEqual({ original: '', modified: '\0'.repeat(limit) });
+    expect(exact.wasCancelled()).toBe(false);
+
+    for (const declaredLength of [undefined, limit - 1]) {
+      const oversized = makeResponse([new Uint8Array(limit), new Uint8Array(1), new Uint8Array(1)], declaredLength);
+      const overLimit = setup({
+        MergeRequests: {
+          ...setup().client.MergeRequests,
+          requester: rawClient(oversized).MergeRequests.requester,
+          show: vi.fn(async () => ({ ...openMR, diff_refs: diffRefs })),
+        },
+        RepositoryFiles: rawClient(oversized).RepositoryFiles,
+      });
+      await expect(overLimit.service.changeRequestFileContents('/repo', 5, { project: { owner: 'team', name: 'repo' }, remote: 'origin', path: 'a.ts', status: 'A' }))
+        .rejects.toMatchObject({ code: 'file-too-large', status: 413 });
+      expect(oversized.wasCancelled()).toBe(true);
+      expect(oversized.pulls()).toBeLessThan(3);
+    }
   });
 
   it('reads a merge request a link named outside the bound repository network', async () => {

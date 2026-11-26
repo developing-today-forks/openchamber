@@ -19,7 +19,7 @@ export const lookupSecretService = async (service: string, username: string): Pr
   // at a bus that is not the session's whenever the runtime dir is
   // non-canonical (opencode#2473). An address already present — even a
   // bogus one — is never overridden.
-  if (!process.env.DBUS_SESSION_BUS_ADDRESS && typeof process.getuid === 'function') {
+  if (!process.env.DBUS_SESSION_BUS_ADDRESS && process.getuid !== undefined) {
     const xdg = process.env.XDG_RUNTIME_DIR?.replace(/\/+$/, '');
     const path = xdg ? xdg + '/bus' : '/run/user/' + process.getuid() + '/bus';
     // D-Bus address values are percent-decoded by the bus parser, so a
@@ -37,9 +37,10 @@ export const lookupSecretService = async (service: string, username: string): Pr
     // Write the libc environment too where Bun provides the FFI for it;
     // under Node/Electron the assignment already propagates, so this is
     // skipped there.
-    if ((globalThis as { Bun?: unknown }).Bun !== undefined) {
+    if (process.versions.bun !== undefined) {
       try {
         const bunFfiSpecifier = 'bun:ffi';
+        // SAFETY: `bun:ffi` exports these documented FFI bindings in Bun.
         const { dlopen, FFIType } = (await import(bunFfiSpecifier)) as {
           dlopen: (
             path: string,

@@ -19,7 +19,7 @@ afterEach(() => {
 
 const tagged = (tag, message = tag) => Object.assign(new Error(message), { _tag: tag });
 
-const setup = ({ settings = { agentImageToolEnabled: true, agentImageModel: 'openrouter/openai/gpt-image-2' }, answer } = {}) => {
+const setup = ({ settings = { agentImageToolEnabled: true, agentImageModel: 'openrouter/openai/gpt-image-2' }, answer, randomSuffix } = {}) => {
   const requests = [];
   const client = {
     experimental: {
@@ -38,6 +38,7 @@ const setup = ({ settings = { agentImageToolEnabled: true, agentImageModel: 'ope
     fsPromises: fs.promises,
     // Local time: the file is named by the clock the user sees.
     now: () => new Date(2026, 9, 27, 17, 10, 25, 942),
+    ...(randomSuffix ? { randomSuffix } : {}),
   });
   return { generate, requests };
 };
@@ -63,8 +64,47 @@ describe('image.generate', () => {
 
     const unnamed = await generate({ prompt: 'one', count: '1' }, { directory });
     expect(path.dirname(unnamed.images[0].path)).toBe(GENERATED_IMAGE_DIRECTORY);
-    expect(path.basename(unnamed.images[0].path)).toBe('image-2026-10-27T17-10-25-942.png');
+    // The stamp is still there, but a random component follows it: the name
+    // must not be predictable from the clock alone (#2652).
+    expect(path.basename(unnamed.images[0].path)).toMatch(/^image-2026-10-27T17-10-25-942-[0-9a-f]{16}\.png$/);
     fs.rmSync(unnamed.images[0].path, { force: true });
+  });
+
+  it('gives same-millisecond default generations distinct owner-only files', async () => {
+    const directory = makeDir();
+    const { generate } = setup();
+
+    const first = await generate({ prompt: 'one' }, { directory });
+    const second = await generate({ prompt: 'two' }, { directory });
+    try {
+      expect(first.images[0].path).not.toBe(second.images[0].path);
+      expect(fs.readFileSync(first.images[0].path)).toEqual(PNG);
+      expect(fs.readFileSync(second.images[0].path)).toEqual(PNG);
+      expect(fs.statSync(first.images[0].path).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(second.images[0].path).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(GENERATED_IMAGE_DIRECTORY).mode & 0o777).toBe(0o700);
+    } finally {
+      fs.rmSync(first.images[0].path, { force: true });
+      fs.rmSync(second.images[0].path, { force: true });
+    }
+  });
+
+  it('refuses a pre-planted symlink at the default target instead of following it', async () => {
+    const directory = makeDir();
+    const victim = path.join(directory, 'victim.txt');
+    fs.writeFileSync(victim, 'ORIGINAL');
+    fs.mkdirSync(GENERATED_IMAGE_DIRECTORY, { recursive: true });
+    const target = path.join(GENERATED_IMAGE_DIRECTORY, 'image-2026-10-27T17-10-25-942-deadbeefdeadbeef.png');
+    fs.rmSync(target, { force: true });
+    fs.symlinkSync(victim, target);
+    const { generate } = setup({ randomSuffix: () => 'deadbeefdeadbeef' });
+    try {
+      await expect(generate({ prompt: 'x' }, { directory })).rejects.toThrow();
+      expect(fs.readFileSync(victim, 'utf8')).toBe('ORIGINAL');
+      expect(fs.lstatSync(target).isSymbolicLink()).toBe(true);
+    } finally {
+      fs.rmSync(target, { force: true });
+    }
   });
 
   it('sends reference images and refuses a file that is not an image', async () => {

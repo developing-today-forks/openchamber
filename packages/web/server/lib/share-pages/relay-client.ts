@@ -1,10 +1,12 @@
 
 import { z } from 'zod';
 import type { JsonValue, ShareRelaySettings } from './contracts.js';
+import type { JsonValue as BoundedJsonValue } from '../shared/json-values.js';
 import type { createRelayKeyStore } from '../relay/key-store.js';
 
 import { isEnterpriseMode } from '../enterprise-mode.js';
 import { normalizeRelayUrl, pinnedRelayUrl } from '../relay/service.js';
+import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
 import {
   canonicalPublicJwkString,
   deriveServerId,
@@ -13,6 +15,11 @@ import {
 } from '../relay/signing-key.js';
 
 const MAX_STATE_BATCH = 50;
+// Relay answers are bounded like every other proxied answer (#2634):
+// success bodies parse through the shared 16 MiB cap, error detail is
+// read through a 1 KiB cap and still truncated to 200 chars as before.
+const RELAY_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+const RELAY_ERROR_DETAIL_MAX_BYTES = 1_024;
 
 const shareStateSchema = z.object({
   id: z.string(),
@@ -108,10 +115,12 @@ type ShareHeaders = {
   'x-openchamber-share'?: string;
 };
 
+type RelayResponse = BoundedJsonValue;
+
 export type ShareState = z.infer<typeof shareStateSchema>;
 
 export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fetch(...args), now = Date.now }: RelayClientOptions) => {
-  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<JsonValue> => {
+  const call = async (base: string, path: string, body: Buffer<ArrayBuffer>, { meta = '', timeoutMs = REQUEST_TIMEOUT_MS }: { meta?: string; timeoutMs?: number } = {}): Promise<RelayResponse> => {
     const signer = await getSigner();
     const url = new URL(`${base}${path}`);
     const ts = now();
@@ -125,10 +134,13 @@ export const createShareRelayClient = ({ getSigner, fetchImpl = (...args) => fet
     if (meta) headers['x-openchamber-share'] = meta;
     const response = await fetchImpl(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).slice(0, 200);
+      const bounded = await readBoundedResponseText(response, RELAY_ERROR_DETAIL_MAX_BYTES).catch(() => ({ tooLarge: true as const }));
+      const detail = bounded.tooLarge ? '' : bounded.text.slice(0, 200);
       throw new ShareRelayError(`The relay answered ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
     }
-    return response.json();
+    const result = await readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
+    if (result === null) throw new ShareRelayError(`The relay answered ${response.status} without a valid response`, response.status);
+    return result;
   };
 
   const json = (value: JsonValue) => Buffer.from(JSON.stringify(value));
@@ -198,7 +210,8 @@ export const createShareViewerClient = ({ fetchImpl = (...args) => fetch(...args
   function readState(response: Response, route: 'status' | 'answer'): Promise<ViewerStateReply>;
   async function readState(response: Response, route: keyof typeof STATE_STATUSES): Promise<ViewerStateReply> {
     if (!STATE_STATUSES[route].includes(response.status)) throw new ShareRelayError(`The relay answered ${response.status}`, response.status);
-    const state = publicStateSchema.safeParse(await response.json().catch(() => null));
+    const result = await readBoundedResponseJson(response, RELAY_RESPONSE_MAX_BYTES);
+    const state = publicStateSchema.safeParse(result);
     if (!state.success) throw new ShareRelayError(`The relay answered ${response.status} without a share state`, response.status);
     return { ok: response.ok, httpStatus: response.status, state: state.data };
   }

@@ -101,7 +101,7 @@ export const registerMessageSearchRoutes = (app: MessageSearchApp, { messageSear
     // fall back to the widest value (all roles, all lifecycles) with a 200.
     for (const key of ['session', 'role', 'lifecycle'] as const) {
       const raw: unknown = req.query[key];
-      if (raw !== undefined && typeof raw !== 'string') {
+      if (raw !== undefined && !z.string().safeParse(raw).success) {
         return res.status(400).json({ error: `Message search ${key} must be a single value` });
       }
     }

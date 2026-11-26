@@ -70,6 +70,7 @@ export const writeScreenshot = async ({
       await fs.writeFile(absolutePath, data, { flag: 'wx' });
       return { path: relativePath.split(path.sep).join('/'), absolutePath };
     } catch (error) {
+      // SAFETY: `writeFile` reports Node errno codes; EEXIST means this attempt collided.
       if ((error as NodeJS.ErrnoException)?.code !== 'EEXIST') throw error;
     }
   }
