@@ -79,6 +79,7 @@ test('chat Markdown tables expand into spare transcript width and show hidden-ed
   const server = await createServer({
     configFile: false,
     root: fixture,
+    // Perf browser files run concurrently; keep Vite's optimizer cache per fixture.
     cacheDir: path.join(fixture, '.vite'),
     logLevel: 'error',
     css: { postcss: repo },
