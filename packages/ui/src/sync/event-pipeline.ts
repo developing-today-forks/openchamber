@@ -543,10 +543,12 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   }
 
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-  const isAbortError = (error: unknown): boolean =>
-    error instanceof DOMException && error.name === "AbortError" ||
-    // SAFETY: error is narrowed to a non-null object by the guard; only the name field is read and it is compared by === before it is trusted.
-    (error as { name?: string }).name === "AbortError"
+  const isAbortError = (error: unknown): boolean => {
+    if (error instanceof DOMException && error.name === "AbortError") return true
+    if (typeof error !== "object" || error === null) return false
+    // SAFETY: the guards above establish a non-null object before the name read; only its string literal value can classify it as an abort.
+    return (error as { name?: unknown }).name === "AbortError"
+  }
 
   const isOffline = (): boolean =>
     typeof navigator === "object" && navigator !== null && navigator.onLine === false
@@ -779,12 +781,13 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
       await refreshRuntimeUrlAuthToken()
     } catch (error) {
       const wrapped = error instanceof Error ? error : new Error("Message stream WebSocket auth token unavailable")
+      const shouldFallback = transport === "auto" && wsOpenFailureFallsBack()
       // SAFETY: wrapped is an Error by construction above, and `code` and `reason` are the module's own marker properties, read by the fallback branch and the reconnect logging below.
       const tagged = Object.assign(wrapped, {
-        ...(transport === "auto" && wsOpenFailureFallsBack() ? { code: "WS_FALLBACK" } : {}),
+        ...(shouldFallback ? { code: "WS_FALLBACK" } : {}),
         reason: "ws_auth_token_unavailable",
       }) as Error & { code?: string; reason?: string }
-      if (transport === "auto" && wsOpenFailureFallsBack()) {
+      if (shouldFallback) {
         wsFallbackUntil = Date.now() + WS_FALLBACK_WINDOW_MS
       }
       throw tagged

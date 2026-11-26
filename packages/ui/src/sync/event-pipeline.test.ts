@@ -536,6 +536,42 @@ describe("createEventPipeline turn boundaries", () => {
     ], 7)
     expect(describeTurns(events)).toEqual(["ses_1 busy", "ses_1 failed at 2", "ses_1 busy", "ses_1 failed at 4", "ses_2 failed at 1"])
   })
+
+  test("null and undefined stream rejections are not misclassified as aborts", async () => {
+    const failures: unknown[] = [null, undefined]
+    let attempts = 0
+    const sdk = {
+      event: {
+        subscribe: ({ signal }: { signal?: AbortSignal }) => {
+          const attempt = attempts++
+          return {
+            async *[Symbol.asyncIterator]() {
+              if (attempt < failures.length) throw failures[attempt]
+              await new Promise<void>((resolve) => {
+                if (signal?.aborted) {
+                  resolve()
+                  return
+                }
+                signal?.addEventListener("abort", resolve, { once: true })
+              })
+            },
+          }
+        },
+      },
+    } as unknown as OpenCodeClient
+    const pipeline = createEventPipeline({
+      sdk,
+      onEvents: () => undefined,
+      transport: "sse",
+      heartbeatTimeoutMs: 60_000,
+    })
+    try {
+      for (let i = 0; i < 400 && attempts < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(attempts).toBe(3)
+    } finally {
+      pipeline.cleanup()
+    }
+  })
 })
 
 describe("createEventPipeline over the WebSocket transport", () => {
@@ -657,6 +693,48 @@ describe("createEventPipeline over the WebSocket transport", () => {
     const unproven = await run(false)
     expect(unproven.paths).toHaveLength(1)
     expect(unproven.sseStreams).toBe(1)
+  })
+
+  test("counts each post-ready URL-token mint failure once before falling back", async () => {
+    let authTokenFailures = 0
+    const sockets: RelayTunnelWebSocket[] = []
+    const tunnel: RelayTunnelClient = {
+      async fetch() {
+        authTokenFailures += 1
+        throw new Error("URL auth token unavailable")
+      },
+      openWebSocket() {
+        const socket = createFakeSocket()
+        sockets.push(socket)
+        return socket
+      },
+      getStatus: () => ({ state: "connected" }),
+      subscribeStatus: () => () => undefined,
+      retry: () => undefined,
+      close: () => undefined,
+    }
+    adoptRelayTunnel({ relayUrl: "wss://relay.test", serverId: "fixture", hostEncPubJwk: {} }, tunnel)
+    let sseStreams = 0
+    const pipeline = createEventPipeline({
+      sdk: createSdk([], () => { sseStreams += 1 }),
+      onEvents: () => undefined,
+      transport: "auto",
+      reconnectDelayMs: 1,
+      heartbeatTimeoutMs: 60_000,
+    })
+    try {
+      for (let i = 0; i < 400 && sockets.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(sockets).toHaveLength(1)
+      sockets[0].onmessage?.({ data: JSON.stringify({ type: "ready", headEventId: "c1" }) })
+      await new Promise((resolve) => setTimeout(resolve, 2_100))
+      clearRuntimeUrlAuthToken()
+      sockets[0].onclose?.({ code: 1006, reason: "" })
+      for (let i = 0; i < 1_000 && sseStreams === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(authTokenFailures).toBe(3)
+      expect(sseStreams).toBe(1)
+    } finally {
+      pipeline.cleanup()
+    }
   })
 
   test("a failure replayed after the stream's upstream reconnect does not end the turn that started since", async () => {
