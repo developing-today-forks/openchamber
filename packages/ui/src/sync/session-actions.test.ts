@@ -140,6 +140,7 @@ mock.module("@/lib/opencode/client", () => ({
     }),
     createSession: mock(async (params: Record<string, unknown>, directory?: string | null): Promise<Session> => {
       replyCalls.push({ method: "session.create", params: { ...params, directory } })
+      // SAFETY: the fallback record carries the id the create flow reads from the reply; the directory and time fields are optional on this path and are read with fallbacks.
       return sessionRecords.get("created") ?? ({ id: "created" } as Session)
     }),
     deleteSession: mock(async (sessionId: string, directory?: string | null) => {
@@ -564,6 +565,7 @@ mock.module("../lib/runtime-switch", () => ({
 mock.module("@/lib/relay/transport-error", () => ({
   ...transportErrors,
   markAmbiguousTransportFailure: (error: Error) => Object.assign(error, { [AMBIGUOUS_TRANSPORT_FAILURE]: true }),
+  // SAFETY: the same expression checks error is a non-null object before this probe reads the optional failure marker.
   isAmbiguousTransportFailure: (error: unknown) => Boolean(
     error
     && typeof error === "object"
@@ -574,16 +576,20 @@ mock.module("@/lib/relay/transport-error", () => ({
 mock.module("./send-failure-classification", () => ({
   getErrorStatus: (error: unknown) => {
     if (!error || typeof error !== "object") return null
+    // SAFETY: the guard above has established error is a non-null object; the probe reads an optional status that is absent on other error shapes.
     const direct = (error as { status?: unknown }).status
     if (typeof direct === "number") return direct
+    // SAFETY: the guard above has established error is a non-null object; the probe reads an optional status that is absent on other error shapes.
     const response = (error as { response?: { status?: unknown } }).response
     return typeof response?.status === "number" ? response.status : null
   },
   isAmbiguousSendFailure: (error: unknown) => {
+    // SAFETY: the same expression checks error is a non-null object before this probe reads the optional failure marker.
     if (error && typeof error === "object" && (error as { [AMBIGUOUS_TRANSPORT_FAILURE]?: boolean })[AMBIGUOUS_TRANSPORT_FAILURE]) {
       return true
     }
 
+    // SAFETY: the condition on this statement checks error is a non-null object before the probes read its optional status fields, which are absent on other error shapes.
     const status = error && typeof error === "object"
       ? ((error as { status?: unknown }).status ?? (error as { response?: { status?: unknown } }).response?.status)
       : undefined
@@ -681,6 +687,7 @@ function createStore(
 }
 
 function createChildStores(entries: Array<[string, TestStoreApi<DirectoryStore>]>) {
+  // SAFETY: the stub implements the members the actions call on the child store manager: children, ensureChild, and getChild, each backed by the entries map built here.
   return {
     children: new Map(entries),
     ensureChild: (dir: string) => {
@@ -707,18 +714,21 @@ describe("moveSessionToDirectory", () => {
   })
 
   test("moves through the control plane and reconciles directory stores", async () => {
+    // SAFETY: test fixture; the store keys this record by id and sessionID, the fields the move reads.
     const message = {
       id: "message-a",
       sessionID: "session-a",
       role: "user",
       time: { created: 1 },
     } as Message
+    // SAFETY: test fixture; the store keys this part by id and messageID, the fields the move reads.
     const part = {
       id: "part-a",
       messageID: "message-a",
       type: "text",
       text: "hello",
     } as Part
+    // SAFETY: test fixtures; the session record carries id, title, and directory, the fields the move reads. The permission and form entries are placeholders under the session key: the move removes those slices whole and reads nothing inside them.
     const source = createStore({ "session-a": [{ id: "permission-a" }] as never }, {
       session: [{ id: "session-a", title: "Move me", directory: "/source" } as Session],
       sessionTotal: 1,
@@ -747,6 +757,7 @@ describe("moveSessionToDirectory", () => {
     expect(source.getState().part["message-a"]).toBe(undefined)
     expect(destination.getState().session[0]?.id).toBe("session-a")
     expect(destination.getState().sessionTotal).toBe(1)
+    // SAFETY: the destination store holds the record the move just wrote, built from the fixture above; the cast reads back its directory.
     expect((destination.getState().session[0] as SessionWithDirectory)?.directory).toBe("/destination")
     expect(destination.getState().session_status["session-a"]?.type).toBe("idle")
     expect(destination.getState().permission["session-a"]?.[0]?.id).toBe("permission-a")
@@ -755,6 +766,7 @@ describe("moveSessionToDirectory", () => {
     expect(destination.getState().part["message-a"]?.[0]?.id).toBe("part-a")
     expect(registeredSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/destination" }])
     expect(movedSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/destination" }])
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back its directory.
     expect((globalUpsertedSessions[0] as SessionWithDirectory).directory).toBe("/destination")
 
     await moveSessionToDirectory(destination.getState().session[0], "/destination", "/source")
@@ -769,9 +781,12 @@ describe("moveSessionToDirectory", () => {
   })
 
   test("keeps the move the session.moved event already applied", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const message = { id: "message-a", sessionID: "session-a", role: "user", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, title, and directory.
     const requested = { id: "session-a", title: "Before", directory: "/source" } as Session
     const source = createStore({}, {
+      // SAFETY: test fixture; the spread of the requested record above overrides title and directory, the fields the move reconciles.
       session: [{ ...requested, title: "Renamed", directory: "/destination" } as Session],
       sessionTotal: 1,
       message: { "session-a": [message] },
@@ -789,6 +804,7 @@ describe("moveSessionToDirectory", () => {
     expect(destination.getState().session[0]?.title).toBe("Renamed")
     expect(destination.getState().sessionTotal).toBe(1)
     expect(destination.getState().message["session-a"]?.[0]?.id).toBe("message-a")
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back its title.
     expect((globalUpsertedSessions.at(-1) as Session).title).toBe("Renamed")
   })
 
@@ -920,6 +936,7 @@ describe("confirmed session removal", () => {
   test("does not remove live or persisted state when delete fails", async () => {
     sessionDeleteError = new Error("delete failed")
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { deleteSession, setActionRefs } = await import("./session-actions")
@@ -933,6 +950,7 @@ describe("confirmed session removal", () => {
 
   test("cleans persisted state after the server confirms deletion", async () => {
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { deleteSession, setActionRefs } = await import("./session-actions")
@@ -950,6 +968,7 @@ describe("confirmed session removal", () => {
 
   test("scopes persisted cleanup to the runtime captured when the delete started", async () => {
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
@@ -967,6 +986,7 @@ describe("confirmed session removal", () => {
 
   test("rejects a delete response that arrives after a runtime switch", async () => {
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
@@ -988,6 +1008,7 @@ describe("confirmed session removal", () => {
   test("does not treat a 404 as an already-completed deletion after a runtime switch", async () => {
     sessionDeleteError = Object.assign(new Error("not found"), { status: 404 })
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
@@ -1009,6 +1030,7 @@ describe("confirmed session removal", () => {
   test("still treats a 404 as an already-completed deletion while the runtime is stable", async () => {
     sessionDeleteError = Object.assign(new Error("not found"), { status: 404 })
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { deleteSession, setActionRefs } = await import("./session-actions")
@@ -1022,6 +1044,7 @@ describe("confirmed session removal", () => {
 
   test("keeps committed deletions and fails the rest when the runtime changes mid-batch", async () => {
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [
         { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session,
         { id: "session-b", directory: "/test/project", time: { created: 1 } } as Session,
@@ -1103,6 +1126,7 @@ describe("confirmed session removal", () => {
 
   test("does not archive locally until the server returns the archived session", async () => {
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { archiveSession, setActionRefs } = await import("./session-actions")
@@ -1119,6 +1143,7 @@ describe("confirmed session removal", () => {
       body: { archived: [{ id: "session-a", archivedAt: 2 }], failedIds: [] },
     }
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { archiveSession, setActionRefs } = await import("./session-actions")
@@ -1126,6 +1151,7 @@ describe("confirmed session removal", () => {
 
     expect(await archiveSession("session-a")).toBe(true)
     expect(source.getState().session).toEqual([])
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back the archived stamp from the server reply.
     expect((globalUpsertedSessions[0] as Session)?.time?.archived).toBe(2)
   })
 
@@ -1135,6 +1161,7 @@ describe("confirmed session removal", () => {
       body: { archived: [{ id: "session-a", archivedAt: 2 }], failedIds: [] },
     }
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
@@ -1164,6 +1191,7 @@ describe("confirmed session removal", () => {
       },
     }
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [
         { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session,
         { id: "session-b", directory: "/test/project", time: { created: 1 } } as Session,
@@ -1199,6 +1227,7 @@ describe("confirmed session removal", () => {
       },
     }
     const source = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [
         { id: "session-a", directory: "/test/project", time: { created: 1 } } as Session,
         { id: "session-b", directory: "/test/project", time: { created: 1 } } as Session,
@@ -1218,6 +1247,7 @@ describe("confirmed session removal", () => {
 })
 
 /** A minimal active-session record: enough for the actions' store mirroring. */
+// SAFETY: the record carries id, directory, and time.created, plus the metadata a scenario passes; the batch archive path reads id and directory and mirrors the rest into the store untouched.
 const liveSession = (id: string, metadata?: Record<string, unknown>): Session => ({
   id,
   directory: "/test/project",
@@ -1495,6 +1525,7 @@ describe("session restore (unarchive)", () => {
   // The route answers with stamps; the full record comes from the archived
   // list the global store already holds.
   const restored = (id: string, directory: string, archivedAt: number | null = null) => {
+    // SAFETY: the archived record carries id, projectID, directory, title, and time stamps, the fields the restore path reads when it upserts the record after the route confirms.
     globalArchivedSessions.push({
       id,
       projectID: "project-main",
@@ -1548,7 +1579,9 @@ describe("session restore (unarchive)", () => {
     expect(openchamberRouteRequests).toHaveLength(1)
     expect(openchamberRouteRequests[0].path).toBe("/api/openchamber/sessions/unarchive")
     expect(openchamberRouteRequests[0].body).toMatchObject({ ids: ["session-a"] })
+    // SAFETY: the upsert mock records the exact record the action sent, built from the archived record above; the cast reads back its cleared archived stamp.
     expect((globalUpsertedSessions[0] as Session)?.time?.archived).toBeUndefined()
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back its title.
     expect((globalUpsertedSessions[0] as Session)?.title).toBe("Title session-a")
     expect(registeredSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/test/project" }])
     const { useSessionOrderingStore } = await import("./session-ordering")
@@ -1558,6 +1591,7 @@ describe("session restore (unarchive)", () => {
 
   test("restores a parent together with its archived subsessions", async () => {
     const parent = restored("parent", "/test/project")
+    // SAFETY: sessionFixture builds the complete record; each spread overrides directory, parentID, and time for the archived subsession, the fields the restore walk reads.
     globalArchivedSessions.push(
       { ...sessionFixture("child"), directory: "/test/project", parentID: "parent", time: { created: 1, updated: 1, archived: 5 } } as unknown as Session,
       { ...sessionFixture("grandchild"), directory: "/test/project", parentID: "child", time: { created: 1, updated: 1, archived: 5 } } as unknown as Session,
@@ -1615,6 +1649,7 @@ describe("session restore (unarchive)", () => {
   })
 
   test("never restores a subsession of an archived or unknown parent on its own", async () => {
+    // SAFETY: sessionFixture builds the complete record; each spread overrides directory, parentID, and time for the archived subsession, the fields the restore walk reads.
     globalArchivedSessions.push(
       { ...sessionFixture("child"), directory: "/test/project", parentID: "parent", time: { created: 1, updated: 1, archived: 5 } } as unknown as Session,
     )
@@ -1783,6 +1818,7 @@ describe("session restore (unarchive)", () => {
     expect(await unarchiveSession("session-worktree")).toBe(true)
     expect(movedSessionDirectories).toEqual([])
     expect(registeredSessionDirectories).toEqual([{ sessionID: "session-worktree", directory: worktreeDirectory }])
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back its directory.
     expect((globalUpsertedSessions[0] as SessionWithDirectory).directory).toBe(worktreeDirectory)
   })
 
@@ -1866,6 +1902,7 @@ describe("updateSessionTitle live state", () => {
     expect(renameCall?.params.directory).toBe("/test/project")
     // `session.update` answers with nothing, so the published record is the
     // re-read session rather than a locally patched copy.
+    // SAFETY: the upsert mock records the exact record the action sent; the cast reads back its title.
     expect((globalUpsertedSessions[0] as Session)?.title).toBe("New Title")
     expect(sessionStore.getState().session[0].title).toBe("New Title")
   })
@@ -1965,6 +2002,7 @@ describe("optimisticSend target directory", () => {
     })
 
     expect(optimisticAdd).not.toBeNull()
+    // SAFETY: the mocked optimistic refs recorded the exact call the action made; the cast names the recorded call shape defined at the top of this file.
     const add = optimisticAdd as unknown as OptimisticAddCall
     expect(add.directory).toBe("/target/project")
     expect(add.sessionID).toBe("session-new")
@@ -2003,11 +2041,15 @@ describe("optimisticSend target directory", () => {
   })
 
   test("commits the new branch locally and discards its optimistic shadow when sending after a revert", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const retainedMessage = { id: "msg_ffffffffffffRetained", role: "user", sessionID: "session-reverted", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const revertedMessage = { id: "msg_000000000000Reverted", role: "user", sessionID: "session-reverted", time: { created: 2 } } as Message
     const targetStore = createStore({}, {
+      // SAFETY: test fixture; the action reads id and the revert marker.
       session: [{ id: "session-reverted", revert: { messageID: revertedMessage.id } } as Session],
       message: { "session-reverted": [retainedMessage, revertedMessage] },
+      // SAFETY: test fixture; the action reads id, type, and text.
       part: { [revertedMessage.id]: [{ id: "part_2", type: "text", text: "old branch" } as Part] },
     })
     const childStores = createChildStores([["/target/project", targetStore]])
@@ -2039,10 +2081,12 @@ describe("optimisticSend target directory", () => {
     expect(targetStore.getState().session[0].revert).toBe(undefined)
     expect(targetStore.getState().message["session-reverted"].map((message) => message.id)).toEqual([
       retainedMessage.id,
+      // SAFETY: the mocked optimistic ref stored the exact message the action built for this send; the cast reads back its id.
       (optimisticMessage as unknown as Message).id,
     ])
     expect(targetStore.getState().part[revertedMessage.id]).toBe(undefined)
     expect(optimisticShadow.has(revertedMessage.id)).toBe(false)
+    // SAFETY: the mocked optimistic ref stored the exact message the action built for this send; the cast reads back its id.
     expect(optimisticShadow.has((optimisticMessage as unknown as Message).id)).toBe(true)
   })
 
@@ -2053,10 +2097,14 @@ describe("optimisticSend target directory", () => {
     { outcome: "after a lost commit response the server applied", commit: "lost", serverStaged: false, restored: false },
     { outcome: "after a lost commit response the server did not apply", commit: "lost", serverStaged: true, restored: true },
   ] as const) test(`${restored ? "restores" : "keeps dropped"} the reverted branch when sending fails ${outcome}`, async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const retainedMessage = { id: "msg_ffffffffffffRetained", role: "user", sessionID: "session-reverted", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const revertedMessage = { id: "msg_000000000000Reverted", role: "user", sessionID: "session-reverted", time: { created: 2 } } as Message
+    // SAFETY: test fixture; the action reads id, type, and text.
     const revertedPart = { id: "part_2", type: "text", text: "old branch" } as Part
     const targetStore = createStore({}, {
+      // SAFETY: test fixture; the action reads id and the revert marker.
       session: [{ id: "session-reverted", revert: { messageID: revertedMessage.id } } as Session],
       message: { "session-reverted": [retainedMessage, revertedMessage] },
       part: { [revertedMessage.id]: [revertedPart] },
@@ -2094,10 +2142,13 @@ describe("optimisticSend target directory", () => {
   })
 
   test("runs appendSubmissions before revert cleanup and optimistic insertion", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const revertedMessage = { id: "msg_000000000000Reverted", role: "user", sessionID: "session-reverted", time: { created: 2 } } as Message
     const targetStore = createStore({}, {
+      // SAFETY: test fixture; the action reads id and the revert marker.
       session: [{ id: "session-reverted", revert: { messageID: revertedMessage.id } } as Session],
       message: { "session-reverted": [revertedMessage] },
+      // SAFETY: test fixture; the action reads id, type, and text.
       part: { [revertedMessage.id]: [{ id: "part_2", type: "text", text: "old branch" } as Part] },
     })
     const childStores = createChildStores([["/target/project", targetStore]])
@@ -2295,6 +2346,7 @@ describe("optimisticSend target directory", () => {
           info: { id: messageID, role: "user", sessionID: "session-confirmed", time: { created: 1 } },
           parts: [{ id: "server-part", sessionID: "session-confirmed", messageID, type: "text", text: "hello" }],
         }])
+        // SAFETY: this error is built here and the next line assigns its status, the field the send failure classification reads.
         const error = new Error("Failed to send message (504): gateway timeout") as Error & { status?: number }
         error.status = 504
         throw error
@@ -2372,11 +2424,13 @@ describe("optimisticSend target directory", () => {
     }
 
     expect(caught).toBeInstanceOf(Error)
+    // SAFETY: the expectation above has just established caught is an Error; the cast reads back its message.
     expect((caught as Error).message).toContain("runtime changed")
 
     expect(optimisticAdd).not.toBeNull()
     expect(finalSendCalled).toBe(false)
     expect(optimisticRemove).not.toBeNull()
+    // SAFETY: the mocked remove ref recorded the exact call the action made, and the expectation above has established it is not null; the cast names the recorded call shape defined at the top of this file.
     expect((optimisticRemove as unknown as OptimisticRemoveCall).sessionID).toBe("session-race")
     expect(targetStore.getState().session_status["session-race"]?.type).toBe("idle")
   })
@@ -2410,6 +2464,7 @@ describe("optimisticSend target directory", () => {
           info: { id: messageID, role: "user", sessionID: "session-confirmed", time: { created: 1 } },
           parts: [{ id: "server-part", sessionID: "session-confirmed", messageID, type: "text", text: "hello" }],
         }])
+        // SAFETY: this error is built here and the next line assigns its status, the field the send failure classification reads.
         const error = new Error("Failed to send message (504): gateway timeout") as Error & { status?: number }
         error.status = 504
         throw error
@@ -2417,6 +2472,7 @@ describe("optimisticSend target directory", () => {
     })
 
     expect(optimisticRemove).toBe(null)
+    // SAFETY: the mocked confirm ref recorded the exact call the action made; the cast names the recorded call shape defined at the top of this file, and the optional chain covers the not-called case.
     expect((optimisticConfirm as OptimisticRemoveCall | null)?.messageID).toBe(sentMessageID)
     expect(replyCalls.find((call) => call.method === "session.messages")?.params.limit).toBe(30)
     expect(targetStore.getState().message["session-confirmed"]?.[0]?.id).toBe(sentMessageID)
@@ -2462,6 +2518,7 @@ describe("optimisticSend target directory", () => {
     })
 
     expect(optimisticRemove).toBe(null)
+    // SAFETY: the mocked confirm ref recorded the exact call the action made; the cast names the recorded call shape defined at the top of this file, and the optional chain covers the not-called case.
     expect((optimisticConfirm as OptimisticRemoveCall | null)?.messageID).toBe(sentMessageID)
     expect(targetStore.getState().message["session-tunnel"]?.[0]?.id).toBe(sentMessageID)
   })
@@ -2491,6 +2548,7 @@ describe("optimisticSend target directory", () => {
         directory: "/target/project",
         content: "hello",
         send: async () => {
+          // SAFETY: this error is built here and the next line assigns its status, the field the send failure classification reads.
           const error = new Error("Failed to send message (504): gateway timeout") as Error & { status?: number }
           error.status = 504
           throw error
@@ -2501,6 +2559,7 @@ describe("optimisticSend target directory", () => {
     }
 
     expect(caught).toBeInstanceOf(Error)
+    // SAFETY: the mocked remove ref recorded the exact call the action made; the cast names the recorded call shape defined at the top of this file, and the optional chain covers the not-called case.
     expect((optimisticRemove as OptimisticRemoveCall | null)?.sessionID).toBe("session-missing")
     expect(optimisticConfirm).toBe(null)
     expect(replyCalls.filter((call) => call.method === "session.messages").every((call) => call.params.limit === 30)).toBe(true)
@@ -2729,7 +2788,9 @@ describe("forkFromMessage composer restore", () => {
   }
 
   test("forks before the message's context carriers so the fork does not repeat them", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const carrier = { id: "message-ctx", sessionID: sourceSession.id, role: "synthetic", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const target = { id: "message-fork", sessionID: sourceSession.id, role: "user", time: { created: 2 } } as Message
     const source = createStore({}, {
       session: [sourceSession],
@@ -2872,6 +2933,7 @@ describe("forkAfterMessage", () => {
 
   for (const entrypoint of ["forkAfterMessage", "forkFromLastCompletedTurn"] as const) {
     test(`${entrypoint} retries a missing cut without copying a later turn`, async () => {
+      // SAFETY: each element is a record from the message factory above, or a spread of one carrying its completed time and finish; the fork cut reads id and role from each.
       const messages = [
         message("msg-user-1", "user"),
         { ...message("msg-answer-1", "assistant"), time: { created: 1, completed: 2 }, finish: "stop" },
@@ -2900,6 +2962,7 @@ describe("forkAfterMessage", () => {
     })
 
     test(`${entrypoint} leaves the source open after two 404s`, async () => {
+      // SAFETY: each element is a record from the message factory above, or a spread of one carrying its completed time and finish; the fork cut reads id and role from each.
       const messages = [
         message("msg-user-1", "user"),
         { ...message("msg-answer-1", "assistant"), time: { created: 1, completed: 2 }, finish: "stop" },
@@ -3825,7 +3888,9 @@ describe("revertToMessage passes session directory", () => {
   test("routes revert through the session directory instead of the current directory", async () => {
     const session = sessionFixture("session-a")
     sessionRecords.set(session.id, session)
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 2 } } as Message
+    // SAFETY: test fixture; the action reads id, messageID, type, and text.
     const targetPart = { id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part
     const sessionStore = createStore({}, {
       session: [session],
@@ -3843,6 +3908,7 @@ describe("revertToMessage passes session directory", () => {
     await revertToMessage("session-a", "msg_2")
 
     expect(replyCalls.find((call) => call.method === "session.revert.stage")?.params.directory).toBe("/test/project")
+    // SAFETY: the store holds the record the revert action wrote from the fixtures above; the cast reads back its revert marker.
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert?.messageID).toBe("msg_2")
     expect(currentStore.getState().session).toHaveLength(0)
     expect(inputState.pendingSessionRestores.get("session-a")).toBe("edit this")
@@ -3854,13 +3920,18 @@ describe("revertToMessage passes session directory", () => {
   test("cuts the transcript at the message's context carriers so they leave with it", async () => {
     const session = sessionFixture("session-a")
     sessionRecords.set(session.id, session)
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const earlier = { id: "msg_1", sessionID: "session-a", role: "user", time: { created: 1 } } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, time.created, and text.
     const firstCarrier = { id: "msg_ctx_1", sessionID: "session-a", role: "synthetic", time: { created: 2 }, text: "quoted selection" } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, time.created, and text.
     const secondCarrier = { id: "msg_ctx_2", sessionID: "session-a", role: "synthetic", time: { created: 3 }, text: "review comment" } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 4 } } as Message
     const sessionStore = createStore({}, {
       session: [session],
       message: { "session-a": [earlier, firstCarrier, secondCarrier, targetMessage] },
+      // SAFETY: test fixture; the action reads id, messageID, type, and text.
       part: { "msg_2": [{ id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part] },
     })
     const { setActionRefs, revertToMessage } = await import("./session-actions")
@@ -3870,13 +3941,16 @@ describe("revertToMessage passes session directory", () => {
     await revertToMessage("session-a", "msg_2")
 
     expect(replyCalls.find((call) => call.method === "session.revert.stage")?.params.messageID).toBe("msg_ctx_1")
+    // SAFETY: the store holds the record the revert action wrote from the fixtures above; the cast reads back its revert marker.
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert?.messageID).toBe("msg_ctx_1")
     expect(inputState.pendingSessionRestores.get("session-a")).toBe("edit this")
   })
 
   test("rolls back optimistic revert when the SDK returns an error", async () => {
     const session = sessionFixture("session-a")
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const targetMessage = { id: "msg_2", sessionID: "session-a", role: "user", time: { created: 2 } } as Message
+    // SAFETY: test fixture; the action reads id, messageID, type, and text.
     const targetPart = { id: "prt_2", messageID: "msg_2", type: "text", text: "edit this" } as Part
     const sessionStore = createStore({}, {
       session: [session],
@@ -3899,7 +3973,9 @@ describe("revertToMessage passes session directory", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error)
+    // SAFETY: the expectation above has just established thrown is an Error; the cast reads back its message.
     expect((thrown as Error).message).toContain("session.revert.stage failed (500)")
+    // SAFETY: the store holds the record the revert action wrote from the fixtures above; the cast reads back its revert marker.
     expect((sessionStore.getState().session[0] as Session & { revert?: { messageID?: string } }).revert).toBe(undefined)
     expect(inputState.pendingInputText).toBe("previous draft")
     expect(inputState.pendingSessionRestores.get("session-a")).toBe("earlier restore")
@@ -3907,7 +3983,9 @@ describe("revertToMessage passes session directory", () => {
   })
 
   test("reverts recursive descendants at their first user message on or after the parent cutoff", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const rootMessage = { id: "root-cutoff", sessionID: "root", role: "user", time: { created: 20 } } as Message
+    // SAFETY: sessionFixture builds each complete record; the spreads override directory, parentID, and time for the tree, the fields the recursive revert walk reads.
     const sessions = [
       { ...sessionFixture("root"), directory: "/tree", time: { created: 1, updated: 1 } },
       { ...sessionFixture("child"), parentID: "root", directory: "/tree", time: { created: 2, updated: 2 } },
@@ -3915,15 +3993,18 @@ describe("revertToMessage passes session directory", () => {
       { ...sessionFixture("old-child"), parentID: "root", directory: "/tree", time: { created: 4, updated: 4 } },
     ] as Session[]
     const store = createStore({}, { session: sessions, message: { root: [rootMessage] } })
+    // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
     sessionMessageRecords.set("child", [
       { info: { id: "child-before", sessionID: "child", role: "user", time: { created: 10 } } as Message, parts: [] },
       { info: { id: "child-boundary", sessionID: "child", role: "user", time: { created: 20 } } as Message, parts: [] },
       { info: { id: "child-later", sessionID: "child", role: "user", time: { created: 30 } } as Message, parts: [] },
     ])
+    // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
     sessionMessageRecords.set("grandchild", [
       { info: { id: "grandchild-assistant", sessionID: "grandchild", role: "assistant", time: { created: 20 } } as Message, parts: [] },
       { info: { id: "grandchild-user", sessionID: "grandchild", role: "user", time: { created: 21 } } as Message, parts: [] },
     ])
+    // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
     sessionMessageRecords.set("old-child", [
       { info: { id: "old-child-user", sessionID: "old-child", role: "user", time: { created: 19 } } as Message, parts: [] },
     ])
@@ -3944,7 +4025,9 @@ describe("revertToMessage passes session directory", () => {
   })
 
   test("reverting a subagent run report reverts its child from the start and leaves the composer alone", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, time.created, and text.
     const earlier = { id: "root-context", sessionID: "root", role: "synthetic", time: { created: 5 }, text: "ctx" } as Message
+    // SAFETY: test fixture; the action reads id, sessionID, role, time.created, text, and the subagent metadata that marks it as a run report.
     const report = {
       id: "root-report",
       sessionID: "root",
@@ -3953,11 +4036,13 @@ describe("revertToMessage passes session directory", () => {
       text: "done",
       metadata: { source: "subagent", childID: "child", state: "completed" },
     } as Message
+    // SAFETY: sessionFixture builds each complete record; the spreads override directory, parentID, and time for the tree, the fields the recursive revert walk reads.
     const sessions = [
       { ...sessionFixture("root"), directory: "/tree", time: { created: 1, updated: 1 } },
       { ...sessionFixture("child"), parentID: "root", directory: "/tree", time: { created: 10, updated: 10 } },
     ] as Session[]
     const store = createStore({}, { session: sessions, message: { root: [earlier, report] } })
+    // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
     sessionMessageRecords.set("child", [
       { info: { id: "child-prompt", sessionID: "child", role: "user", time: { created: 11 } } as Message, parts: [] },
     ])
@@ -3979,7 +4064,9 @@ describe("revertToMessage passes session directory", () => {
   })
 
   test("continues reverting other descendants and the parent when one child fails", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const rootMessage = { id: "root-cutoff", sessionID: "root", role: "user", time: { created: 20 } } as Message
+    // SAFETY: sessionFixture builds each complete record; the spreads override directory, parentID, and time for the tree, the fields the recursive revert walk reads.
     const sessions = [
       { ...sessionFixture("root"), directory: "/tree", time: { created: 1, updated: 1 } },
       { ...sessionFixture("failing-child"), parentID: "root", directory: "/tree", time: { created: 2, updated: 2 } },
@@ -3987,6 +4074,7 @@ describe("revertToMessage passes session directory", () => {
     ] as Session[]
     const store = createStore({}, { session: sessions, message: { root: [rootMessage] } })
     for (const id of ["failing-child", "healthy-child"]) {
+      // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
       sessionMessageRecords.set(id, [{
         info: { id: `${id}-target`, sessionID: id, role: "user", time: { created: 20 } } as Message,
         parts: [],
@@ -4007,7 +4095,9 @@ describe("revertToMessage passes session directory", () => {
   })
 
   test("aborts a busy descendant before reverting it", async () => {
+    // SAFETY: test fixture; the action reads id, sessionID, role, and time.created.
     const rootMessage = { id: "root-cutoff", sessionID: "root", role: "user", time: { created: 20 } } as Message
+    // SAFETY: sessionFixture builds each complete record; the spreads override directory, parentID, and time for the tree, the fields the recursive revert walk reads.
     const sessions = [
       { ...sessionFixture("root"), directory: "/tree", time: { created: 1, updated: 1 } },
       { ...sessionFixture("busy-child"), parentID: "root", directory: "/tree", time: { created: 2, updated: 2 } },
@@ -4019,6 +4109,7 @@ describe("revertToMessage passes session directory", () => {
       session_status: { "busy-child": { type: "busy" }, "idle-child": { type: "idle" } },
     })
     for (const id of ["busy-child", "idle-child"]) {
+      // SAFETY: each record's info carries id, sessionID, role, and time.created, the fields the cutoff walk reads; the parts lists are empty because this scenario reads no part content.
       sessionMessageRecords.set(id, [{
         info: { id: `${id}-target`, sessionID: id, role: "user", time: { created: 20 } } as Message,
         parts: [],
@@ -4104,6 +4195,7 @@ describe("revertToMessage paged message lookup", () => {
       ["/current/project", currentStore],
     ])
     // Every page offers a brand-new cursor and never the target message.
+    // SAFETY: each page record's info carries id, sessionID, role, and time.created, the fields the message scan reads; the parts lists are empty because this scenario reads no part content.
     cursorMessagePages = Array.from({ length: 600 }, (_, index) => ({
       items: [{ info: { id: `msg_page_${index}`, sessionID: "session-a", role: "user", time: { created: 1 } } as Message, parts: [] }],
       cursor: { next: String(index + 1) },
@@ -4862,6 +4954,7 @@ describe("blocking request reply routing and stale recovery (issue OPE-236)", ()
     // FormNotFoundError, leaving the session stuck on "asking for input".
     const form = buildForm("q-wt", "session-wt")
     const store = createStore({}, {
+      // SAFETY: test fixture; the action reads id and directory.
       session: [{ id: "session-wt", directory: "/test/project/wt" } as Session],
       form: { "session-wt": [form] },
     })
@@ -4884,6 +4977,7 @@ describe("blocking request reply routing and stale recovery (issue OPE-236)", ()
     const store = createStore(
       { "session-wt": [permission] },
       {
+        // SAFETY: test fixture; the action reads id and directory.
         session: [{ id: "session-wt", directory: "/test/project/wt" } as Session],
       },
     )
@@ -4902,6 +4996,7 @@ describe("blocking request reply routing and stale recovery (issue OPE-236)", ()
   test("falls back to the containing store key when the session record carries no directory", async () => {
     const form = buildForm("q-1", "session-a")
     const store = createStore({}, {
+      // SAFETY: test fixture; the action looks the record up by id, and it carries no directory.
       session: [{ id: "session-a" } as Session],
       form: { "session-a": [form] },
     })
@@ -4921,12 +5016,15 @@ describe("blocking request reply routing and stale recovery (issue OPE-236)", ()
   test("enqueues settled-running-tool tail recovery when the form reply is not found", async () => {
     const form = buildForm("q-stale", "session-a")
     const store = createStore({}, {
+      // SAFETY: test fixture; the action looks the record up by id, and it carries no directory.
       session: [{ id: "session-a" } as Session],
       form: { "session-a": [form] },
       message: {
+        // SAFETY: test fixture; the recovery reads id, sessionID, role, and time.created.
         "session-a": [{ id: "msg-1", sessionID: "session-a", role: "assistant", time: { created: 1 } } as Message],
       },
       part: {
+        // SAFETY: test fixture; the recovery reads id, messageID, type, tool, and state.status to find the trailing running question call.
         "msg-1": [{
           id: "prt-1",
           messageID: "msg-1",
@@ -4962,12 +5060,15 @@ describe("blocking request reply routing and stale recovery (issue OPE-236)", ()
   test("enqueues tail recovery on reject not-found but not on success", async () => {
     const form = buildForm("q-1", "session-a")
     const store = createStore({}, {
+      // SAFETY: test fixture; the action looks the record up by id, and it carries no directory.
       session: [{ id: "session-a" } as Session],
       form: { "session-a": [form] },
       message: {
+        // SAFETY: test fixture; the recovery reads id, sessionID, role, and time.created.
         "session-a": [{ id: "msg-1", sessionID: "session-a", role: "assistant", time: { created: 1 } } as Message],
       },
       part: {
+        // SAFETY: test fixture; the recovery reads id, messageID, type, tool, and state.status to find the trailing running question call.
         "msg-1": [{
           id: "prt-1",
           messageID: "msg-1",
@@ -5079,6 +5180,7 @@ describe("dismissOpenFormsForSession", () => {
   })
 
   test("returns false and rejects nothing when no forms are pending", async () => {
+    // SAFETY: test fixture; the store holds this record as the session, and the action reads it by id.
     const store = createStore({}, { session: [{ id: "session-a", time: { created: 1 } } as Session] })
     const childStores = createChildStores([["/test/project", store]])
 
@@ -5095,6 +5197,7 @@ describe("dismissOpenFormsForSession", () => {
     const rootForm = buildForm("q-root", "session-a")
     const childForm = buildForm("q-child", "session-child")
     const store = createStore({}, {
+      // SAFETY: test fixture; the action reads id, and parentID where a scenario sets it, to walk the session subtree.
       session: [
         { id: "session-a", time: { created: 1 } } as Session,
         { id: "session-child", parentID: "session-a", time: { created: 2 } } as Session,
@@ -5127,6 +5230,7 @@ describe("dismissOpenFormsForSession", () => {
   test("swallows FormNotFoundError so a stranded form never blocks the send", async () => {
     const staleForm = buildForm("q-stale", "session-a")
     const store = createStore({}, {
+      // SAFETY: test fixture; the store holds this record as the session, and the action reads it by id.
       session: [{ id: "session-a", time: { created: 1 } } as Session],
       form: { "session-a": [staleForm] },
     })
@@ -5773,6 +5877,7 @@ describe("dismissOpenPermissionsForSession", () => {
   })
 
   test("returns false and rejects nothing when no permissions are pending", async () => {
+    // SAFETY: test fixture; the store holds this record as the session, and the action reads it by id.
     const store = createStore({}, { session: [{ id: "session-a", time: { created: 1 } } as Session] })
     const childStores = createChildStores([["/test/project", store]])
 
@@ -5792,6 +5897,7 @@ describe("dismissOpenPermissionsForSession", () => {
       "session-a": [rootPermission],
       "session-child": [childPermission],
     }, {
+      // SAFETY: test fixture; the action reads id, and parentID where a scenario sets it, to walk the session subtree.
       session: [
         { id: "session-a", time: { created: 1 } } as Session,
         { id: "session-child", parentID: "session-a", time: { created: 2 } } as Session,
@@ -5821,6 +5927,7 @@ describe("dismissOpenPermissionsForSession", () => {
   test("swallows PermissionNotFoundError so a stranded permission never blocks the send", async () => {
     const stalePermission = buildPermission("perm-stale", "session-a")
     const store = createStore({ "session-a": [stalePermission] }, {
+      // SAFETY: test fixture; the store holds this record as the session, and the action reads it by id.
       session: [{ id: "session-a", time: { created: 1 } } as Session],
     })
     const childStores = createChildStores([["/test/project", store]])
@@ -5842,6 +5949,7 @@ describe("dismissOpenPermissionsForSession", () => {
   test("swallows and logs a non-not-found reject failure so the send is never blocked", async () => {
     const permission = buildPermission("perm-500", "session-a")
     const store = createStore({ "session-a": [permission] }, {
+      // SAFETY: test fixture; the store holds this record as the session, and the action reads it by id.
       session: [{ id: "session-a", time: { created: 1 } } as Session],
     })
     const childStores = createChildStores([["/test/project", store]])

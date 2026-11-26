@@ -17,7 +17,7 @@ try {
 }
 
 // Real CSS layout catches the unbounded viewport that happy-dom cannot measure.
-test('JSON tree stays bounded and its tail remains reachable', { skip: !chrome && 'Set OPENCHAMBER_TEST_CHROME to run the browser regression', timeout: 120_000 }, async (t) => {
+test('JSON tree stays bounded and its tail remains reachable', { skip: !chrome && 'Set OPENCHAMBER_TEST_CHROME to run the browser regression', timeout: 180_000 }, async (t) => {
   mkdirSync(path.join(repo, 'tmp'), { recursive: true });
   const fixture = mkdtempSync(path.join(repo, 'tmp/json-tree-'));
   writeFileSync(path.join(fixture, 'index.html'), '<!doctype html><html><body><div id="host" style="height:520px;width:320px;overflow:auto"></div><script type="module" src="/fixture.tsx"></script></body></html>');
@@ -45,6 +45,8 @@ test('JSON tree stays bounded and its tail remains reachable', { skip: !chrome &
     configFile: false,
     root: fixture,
     logLevel: 'error',
+    // Concurrent browser suites must not invalidate each other's optimized deps.
+    cacheDir: path.join(fixture, '.vite'),
     css: { postcss: repo },
     resolve: { alias: { '@': path.join(repo, 'packages/ui/src'), '@openchamber/sdk': path.join(repo, 'packages/sdk/src/index.ts') } },
     // Vite reads port 0 as its default 5173 and walks up from there; take a free one.
@@ -68,32 +70,34 @@ test('JSON tree stays bounded and its tail remains reachable', { skip: !chrome &
     await client.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     await client.send('Page.navigate', { url: server.resolvedUrls.local[0] });
 
-    const evaluate = async (expression) => {
-      const result = await client.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, { timeoutMs: 20_000 });
+    const evaluate = async (expression, { timeoutMs = 20_000 } = {}) => {
+      const result = await client.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, { timeoutMs });
       assert.equal(result.exceptionDetails, undefined, result.exceptionDetails?.exception?.description);
       return result.result.value;
     };
-    const fixtureReady = () => evaluate(`new Promise((resolve, reject) => {
-      const deadline = performance.now() + 15_000;
+    const fixtureReady = (timeoutMs = 15_000) => evaluate(`new Promise((resolve, reject) => {
+      const deadline = performance.now() + ${timeoutMs};
       const check = () => {
         if (window.renderFixture) resolve();
         else if (performance.now() > deadline) reject(new Error('Fixture did not load'));
         else requestAnimationFrame(check);
       };
       check();
-    })`);
+    })`, { timeoutMs: timeoutMs + 30_000 });
     // A reload can land while the page is being waited on; wait again then.
-    const waitForFixture = async () => {
+    const waitForFixture = async (timeoutMs = 15_000) => {
       for (let attempt = 0; ; attempt += 1) {
         try {
-          return await fixtureReady();
+          return await fixtureReady(timeoutMs);
         } catch (error) {
           if (attempt >= 5 || !/navigated|destroyed/i.test(String(error?.message))) throw error;
           await wait(500);
         }
       }
     };
-    await waitForFixture();
+    // The first load transforms the UI modules and compiles the stylesheet;
+    // with other browser suites running that took longer than 15 s.
+    await waitForFixture(90_000);
     // The first render pulls in modules the dev server had not seen yet, and
     // Vite's dependency optimizer may reload the page once for them, taking
     // `renderFixture` away mid-test. Render once and wait until a render

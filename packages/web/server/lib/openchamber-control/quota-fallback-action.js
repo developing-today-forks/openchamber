@@ -17,18 +17,18 @@ const totalCost = (option) => {
  * requires one action per kind, and each kind's target is derived, not
  * invented:
  *
- * - switch-provider: the first catalog provider other than the current
- *   one, at the current tier — configuration order is the preference
- *   order the directory already declares.
+ * - switch-provider: another candidate serving the current tier from a
+ *   different provider — tiers order is the preference order the agent
+ *   declares. The detail names the concrete model, like downgrade does.
  * - downgrade-tier: the priciest candidate still cheaper than the
  *   current tier's model (the nearest downgrade), priced from the
  *   catalog by the same assembly the tier chooser uses.
  * - wait-for-reset: the current provider and tier, with the reset time
  *   the error path reported when it knows one.
  *
- * A fallback that cannot be assembled (no other provider configured,
- * no cheaper tier priced) is a caller error named in the result, not
- * a card with a dead tile.
+ * A fallback that cannot be assembled (no other provider serves the
+ * current tier, no cheaper tier priced) is a caller error named in the
+ * result, not a card with a dead tile.
  */
 export const assembleFallbackActions = ({ tiers, catalog, currentTier, currentProvider, resetAt } = {}) => {
   const options = assembleTierOptions({ tiers, catalog });
@@ -49,10 +49,9 @@ export const assembleFallbackActions = ({ tiers, catalog, currentTier, currentPr
     );
   }
 
-  const providers = [...new Set((Array.isArray(catalog) ? catalog : []).map((model) => model.providerID))];
-  const switchProvider = providers.find((provider) => provider && provider !== currentProviderId);
-  if (!switchProvider) {
-    throw new OpenChamberControlError('no other provider is configured for this directory to switch to', 400);
+  const switchOption = options.find((option) => option.tier === currentName && providerOf(option) !== currentProviderId);
+  if (!switchOption) {
+    throw new OpenChamberControlError(`no other provider serves the '${currentName}' tier to switch to`, 400);
   }
 
   const currentCost = totalCost(current);
@@ -74,9 +73,9 @@ export const assembleFallbackActions = ({ tiers, catalog, currentTier, currentPr
     actions: [
       {
         kind: 'switch-provider',
-        provider: switchProvider,
+        provider: providerOf(switchOption),
         tier: currentName,
-        detail: `Continue on ${switchProvider} at the ${currentName} tier`,
+        detail: `Continue on ${switchOption.model}`,
       },
       {
         kind: 'downgrade-tier',
@@ -108,7 +107,10 @@ export const assembleFallbackActions = ({ tiers, catalog, currentTier, currentPr
  * it was. Like the tier chooser, the wait cannot live in this call:
  * the chat draws a page from the render.page call's own input html.
  */
-export const createQuotaFallbackAction = ({ listModels }) => async (input, context = {}) => {
+export const createQuotaFallbackAction = ({ isEnabled, listModels }) => async (input, context = {}) => {
+  if (!await isEnabled()) {
+    throw new OpenChamberControlError('The render tool is turned off in OpenChamber settings', 403);
+  }
   const catalog = await listModels(context.directory);
   const { current, actions } = assembleFallbackActions({
     tiers: input?.tiers,

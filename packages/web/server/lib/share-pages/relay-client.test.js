@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createRelayShareSigner,
   createShareRelayClient,
+  createShareViewerClient,
   isRelayBaseAllowed,
   isSharingAvailable,
   relayHttpBase,
@@ -40,6 +41,18 @@ const relayVerifies = async (request) => {
   return crypto.webcrypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, Buffer.from(headers['x-openchamber-sig'], 'base64url'), new TextEncoder().encode(payload));
 };
 
+const overflowingResponse = ({ status = 200, contentLength, maxBytes = 16 * 1024 * 1024 } = {}) => {
+  let cancelled = false;
+  const headers = contentLength === undefined ? {} : { 'content-length': String(contentLength) };
+  const response = new Response(new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new Uint8Array(Math.ceil(maxBytes / 2)));
+    },
+    cancel() { cancelled = true; },
+  }), { status, headers });
+  return { response, wasCancelled: () => cancelled };
+};
+
 describe('share relay client', () => {
   it('signs every call the way the relay verifies it', async () => {
     const requests = [];
@@ -64,6 +77,116 @@ describe('share relay client', () => {
     const states = await client.states('https://relay.test', Array.from({ length: 120 }, (_, index) => `s${index}`));
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(states).toHaveLength(120);
+  });
+
+  it('rejects an oversized success body with its relay status', async () => {
+    let cancelled = false;
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 200,
+        headers: { 'content-length': String(17 * 1024 * 1024) },
+      }),
+    });
+    await expect(client.states('https://relay.test', ['a'])).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a valid response',
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('rejects malformed successful relay JSON with its relay status', async () => {
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response('{', { status: 200 }),
+    });
+    await expect(client.states('https://relay.test', ['a'])).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a valid response',
+    });
+  });
+
+  it.each([
+    ['missing Content-Length', undefined],
+    ['understated Content-Length', 1],
+  ])('cancels streamed success overflow with %s', async (_label, contentLength) => {
+    const stream = overflowingResponse({ contentLength });
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => stream.response,
+    });
+    await expect(client.states('https://relay.test', ['a'])).rejects.toMatchObject({
+      name: 'ShareRelayError', status: 200,
+      message: 'The relay answered 200 without a valid response',
+    });
+    expect(stream.wasCancelled()).toBe(true);
+  });
+
+  it('bounds answer state reads and rejects an oversized response with its status', async () => {
+    let cancelled = false;
+    const client = createShareViewerClient({
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 200,
+        headers: { 'content-length': String(17 * 1024 * 1024) },
+      }),
+    });
+    await expect(client.answer('https://relay.test', 'a', 'auth', 'sealed')).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a share state',
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('rejects malformed answer state JSON with its relay status', async () => {
+    const client = createShareViewerClient({ fetchImpl: async () => new Response('{', { status: 200 }) });
+    await expect(client.answer('https://relay.test', 'a', 'auth', 'sealed')).rejects.toMatchObject({
+      name: 'ShareRelayError',
+      status: 200,
+      message: 'The relay answered 200 without a share state',
+    });
+  });
+
+  it('cancels streamed viewer answer overflow without Content-Length', async () => {
+    const stream = overflowingResponse();
+    const client = createShareViewerClient({ fetchImpl: async () => stream.response });
+    await expect(client.answer('https://relay.test', 'a', 'auth', 'sealed')).rejects.toMatchObject({
+      name: 'ShareRelayError', status: 200,
+      message: 'The relay answered 200 without a share state',
+    });
+    expect(stream.wasCancelled()).toBe(true);
+  });
+
+  it('bounds an oversized error body instead of buffering it for the detail', async () => {
+    let cancelled = false;
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 502,
+        headers: { 'content-length': '5000' },
+      }),
+    });
+    const error = await client.close('https://relay.test', 'a').catch((caught) => caught);
+    expect(error).toMatchObject({ status: 502 });
+    expect(error.message).toBe('The relay answered 502');
+    expect(cancelled).toBe(true);
+  });
+
+  it.each([
+    ['missing Content-Length', undefined],
+    ['understated Content-Length', 1],
+  ])('cancels streamed refusal overflow with %s and preserves status', async (_label, contentLength) => {
+    const stream = overflowingResponse({ status: 502, contentLength, maxBytes: 1_024 });
+    const client = createShareRelayClient({
+      getSigner: createRelayShareSigner({ crypto, relayKeyStore: memoryKeyStore() }),
+      fetchImpl: async () => stream.response,
+    });
+    await expect(client.close('https://relay.test', 'a')).rejects.toMatchObject({
+      name: 'ShareRelayError', status: 502, message: 'The relay answered 502',
+    });
+    expect(stream.wasCancelled()).toBe(true);
   });
 
   it('carries the relay status on a refusal', async () => {
