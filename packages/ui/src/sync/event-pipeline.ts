@@ -8,7 +8,7 @@ import { createTurnBoundaryOrder, wireEventSchema, type StaleWireEventCheck } fr
 import type { Metadata } from "@/lib/opencode/model"
 import { getRuntimeUrlResolver } from "@/lib/runtime-url"
 import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from "@/lib/runtime-auth"
-import { describeStreamFailure, extractStatus, isAbortError } from "./event-pipeline-errors"
+import { describeStreamFailure, extractStatus, isAbortError, type StreamFailureDetails } from "./event-pipeline-errors"
 import { useAuthSessionStore, waitForAuthSession } from "@/lib/runtime-auth-expiry"
 import { type RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
 import { openRuntimeWebSocket } from "@/lib/relay/runtime-socket"
@@ -972,9 +972,9 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
           await runSseAttempt(attempt.signal)
         }
       } catch (error) {
-        const errorRecord = typeof error === "object" && error !== null ? error : null
-        // SAFETY: the guard above narrows errorRecord to a non-null object; `code` is this module's marker and is compared by === before use.
-        const code = errorRecord ? (errorRecord as { code?: unknown }).code : undefined
+        // SAFETY: the guard above narrows error to a non-null object; this view only reads markers after === or typeof checks.
+        const errorRecord = typeof error === "object" && error !== null ? error as StreamFailureDetails : null
+        const code = errorRecord?.code
         if (currentTransport === "ws" && code === "WS_FALLBACK") {
           retryDelayMs = 0
           onTransportSwitch?.()
