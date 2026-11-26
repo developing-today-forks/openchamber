@@ -274,7 +274,7 @@ describe('createPrWatchRuntime', () => {
     const { runtime, openCode, emit } = await createRuntime();
     runtime.attach({ trackedItems: tracked, readers });
     await runtime.watch({ sessionID: SESSION, directory: DIRECTORY, url: URL_7 });
-    openCode.state.active = { [SESSION]: { type: 'busy' } };
+    openCode.state.active = { [SESSION]: { type: 'running' } };
 
     move(pull({ checks: { state: 'failure' } }));
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -317,7 +317,7 @@ describe('createPrWatchRuntime', () => {
   it('delivers a wake left pending across a restart once, with the same id', async () => {
     const dataDir = await makeDataDir();
     const openCode = createOpenCode();
-    openCode.state.active = { [SESSION]: { type: 'busy' } };
+    openCode.state.active = { [SESSION]: { type: 'running' } };
     const first = createTracked();
     const one = await createRuntime({ dataDir, openCode });
     one.runtime.attach({ trackedItems: first.tracked, readers: first.readers });
@@ -401,7 +401,7 @@ describe('createPrWatchRuntime', () => {
       }
       return fetchImpl(url, init);
     });
-    openCode.state.active = { [SESSION]: { type: 'busy' } };
+    openCode.state.active = { [SESSION]: { type: 'running' } };
     const { runtime, emit } = await createRuntime({ openCode });
     runtime.attach({ trackedItems: tracked, readers });
     await runtime.watch({ sessionID: SESSION, directory: DIRECTORY, url: URL_7 });
@@ -440,7 +440,7 @@ describe('createPrWatchRuntime', () => {
     openCode.fetchImpl = vi.fn(async (url, init) => {
       const response = await admit(url, init);
       // An admitted wake starts a turn.
-      if (new URL(url).pathname.endsWith('/synthetic')) openCode.state.active = { [SESSION]: { type: 'busy' } };
+      if (new URL(url).pathname.endsWith('/synthetic')) openCode.state.active = { [SESSION]: { type: 'running' } };
       return response;
     });
     const { runtime, broadcasts, emit } = await createRuntime({ openCode });

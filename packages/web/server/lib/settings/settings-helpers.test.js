@@ -242,6 +242,14 @@ describe('settings helpers', () => {
           cpSync(join(packagesWebDir, entry), join(stagedPackage, entry), { recursive: true });
         }
       }
+      if (!existsSync(join(stagedPackage, 'build', 'server', 'lib', 'settings', 'settings-helpers.js'))) {
+        // A checkout that never ran `build:server` has no build/ to archive:
+        // the nightly gates run the suite straight after `bun install`. Build
+        // the server into the staged package the way prepack would, so the
+        // published layout is still what gets imported.
+        const { buildServer } = await import(pathToFileURL(join(packagesWebDir, 'scripts', 'build-server.mjs')).href);
+        await buildServer(join(stagedPackage, 'build'));
+      }
       execFileSync('tar', ['-czf', join(packDir, 'openchamber-web.tgz'), '-C', stageRoot, 'package'], {
         stdio: 'pipe',
       });
@@ -300,7 +308,7 @@ describe('settings helpers', () => {
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
-  }, 120_000);
+  }, 240_000);
 
   it('accepts only booleans for draft starter visibility', () => {
     const helpers = createTestHelpers();
