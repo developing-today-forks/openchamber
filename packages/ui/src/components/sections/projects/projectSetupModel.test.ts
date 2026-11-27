@@ -132,7 +132,7 @@ describe('saveProjectAction', () => {
     };
     const openedRevisions = captureProjectActionBaseRevisions(opened);
     let currentRevision = 'sha256:agent-write';
-    let currentActions: SetupAction[] = [agentAction];
+    let currentActions: OpenChamberProjectAction[] = [agentAction];
     const write: ProjectSetupWriters = {
       ...recordingWriters().write,
       personalActions: async (actions, baseRevision) => {
