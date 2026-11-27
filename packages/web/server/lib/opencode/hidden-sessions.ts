@@ -1,5 +1,7 @@
 
 import { z } from 'zod';
+import { readBoundedResponseJson } from '../shared/response-body.js';
+import type { JsonValue } from '../shared/json-values.js';
 
 const hiddenRecordSchema = z.object({ metadata: z.object({ hidden: z.literal(true) }) });
 
@@ -82,4 +84,40 @@ export const createHiddenSessionRegistry = () => {
       }
     },
   };
+};
+
+export const HIDDEN_SESSION_SEED_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+export const HIDDEN_SESSION_SEED_TIMEOUT_MS = 15_000;
+
+export interface HiddenSessionSeedPageReaderOptions {
+  buildOpenCodeUrl: (path: string, prefix: string) => string;
+  getOpenCodeAuthHeaders: () => Record<string, string>;
+  timeoutMs?: number;
+  maxBytes?: number;
+  fetchImpl?: typeof fetch;
+}
+
+/**
+ * Reads one hidden-session seed page from the managed loopback OpenCode.
+ * The read is bounded in both time and size: a wedged connection is cut by
+ * the timeout, and an over-cap page returns null instead of buffering whole,
+ * so `seed` stops cleanly on that page (its safeParse rejects null).
+ */
+export const createHiddenSessionSeedPageReader = ({
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  timeoutMs = HIDDEN_SESSION_SEED_TIMEOUT_MS,
+  maxBytes = HIDDEN_SESSION_SEED_RESPONSE_MAX_BYTES,
+  fetchImpl = fetch,
+}: HiddenSessionSeedPageReaderOptions) => async (cursor: string | null): Promise<JsonValue> => {
+  const query = cursor ? `?limit=200&cursor=${encodeURIComponent(cursor)}` : '?limit=200';
+  const response = await fetchImpl(buildOpenCodeUrl(`/api/session${query}`, ''), {
+    headers: getOpenCodeAuthHeaders(),
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch(() => null);
+  if (!response?.ok) {
+    await response?.body?.cancel().catch(() => {});
+    return null;
+  }
+  return readBoundedResponseJson(response, maxBytes);
 };
