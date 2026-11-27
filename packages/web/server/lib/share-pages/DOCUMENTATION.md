@@ -222,6 +222,11 @@ Invariants:
   a failed read and changes nothing kept. No relay call, on either side,
   follows a redirect (`redirect: 'error'`): the signed body, the PIN proof and
   the sealed answer go to the relay the link or group names and nowhere else.
+- A received blob is downloaded through the shared bounded reader, capped at
+  the largest sealed page an upload can produce (32 MiB plus the seal
+  overhead). An over-cap body is cancelled while streaming and refused as a
+  failed read, so no partial blob reaches decrypt or disk: the relay is a
+  remote third party, and a deadline alone bounds time, not memory.
 - One answer per page: an answer sent from here stays the record's state,
   whatever the relay reports later (the author's collection deletes the
   relay's copy).

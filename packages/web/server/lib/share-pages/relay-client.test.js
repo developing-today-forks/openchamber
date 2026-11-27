@@ -11,6 +11,7 @@ import {
   relayHttpBase,
   resolveShareRelayBase,
 } from './relay-client.js';
+import { SEAL_OVERHEAD_BYTES } from './crypto.js';
 
 const saved = { mode: process.env.OPENCHAMBER_ENTERPRISE_MODE, relay: process.env.OPENCHAMBER_RELAY_URL };
 afterEach(() => {
@@ -157,6 +158,45 @@ describe('share relay client', () => {
       message: 'The relay answered 200 without a share state',
     });
     expect(stream.wasCancelled()).toBe(true);
+  });
+
+  it('opens a share blob under the cap', async () => {
+    const blob = new Uint8Array([1, 2, 3, 4]);
+    const client = createShareViewerClient({ fetchImpl: async () => new Response(blob, { status: 200 }) });
+    await expect(client.open('https://relay.test', 'a', 'auth')).resolves.toEqual({ ok: true, httpStatus: 200, state: null, blob });
+  });
+
+  it('keeps the bounded state handling for a non-200 open', async () => {
+    const client = createShareViewerClient({ fetchImpl: async () => new Response(JSON.stringify({ status: 'locked' }), { status: 403 }) });
+    await expect(client.open('https://relay.test', 'a', 'auth')).resolves.toEqual({ ok: false, httpStatus: 403, state: { status: 'locked' } });
+  });
+
+  it.each([
+    ['missing Content-Length', undefined],
+    ['understated Content-Length', 1],
+  ])('cancels a streamed blob overflow with %s and refuses it whole', async (_label, contentLength) => {
+    const stream = overflowingResponse({ contentLength, maxBytes: 32 * 1024 * 1024 + SEAL_OVERHEAD_BYTES });
+    const client = createShareViewerClient({ fetchImpl: async () => stream.response });
+    await expect(client.open('https://relay.test', 'a', 'auth')).rejects.toMatchObject({
+      name: 'ShareRelayError', status: 200,
+      message: 'The relay answered 200 with a share blob over the size limit',
+    });
+    expect(stream.wasCancelled()).toBe(true);
+  });
+
+  it('refuses a blob whose declared length is over the cap', async () => {
+    let cancelled = false;
+    const client = createShareViewerClient({
+      fetchImpl: async () => new Response(new ReadableStream({ cancel: () => { cancelled = true; } }), {
+        status: 200,
+        headers: { 'content-length': String(33 * 1024 * 1024) },
+      }),
+    });
+    await expect(client.open('https://relay.test', 'a', 'auth')).rejects.toMatchObject({
+      name: 'ShareRelayError', status: 200,
+      message: 'The relay answered 200 with a share blob over the size limit',
+    });
+    expect(cancelled).toBe(true);
   });
 
   it('bounds an oversized error body instead of buffering it for the detail', async () => {
