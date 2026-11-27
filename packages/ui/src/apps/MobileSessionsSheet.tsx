@@ -66,12 +66,11 @@ import {
   phoneSectionsInUse,
 } from './mobileSessionsSheetSections';
 import {
-  applyMobileSidebarViewMode,
-  MOBILE_VIEW_MODE_OPTIONS,
-  type MobileSidebarViewMode,
-  useMobileHeaderlessGroups,
-} from './mobileHeaderlessSessions';
-import { MobileHeaderlessList, ShowFewerRow, ShowMoreRow } from './MobileHeaderlessList';
+  MobileHeaderlessList,
+  MobileViewModeMenu,
+  ShowFewerRow,
+  ShowMoreRow,
+} from './MobileHeaderlessList';
 import { getDescendantIds, partitionSidebarSessions } from '@/components/session/sidebar/list/sessionCollection';
 import { rankByLatestActivity, sortProjectsByOrder } from '@/components/session/sidebar/list/projectSort';
 import { collectSessionSubtreeIds, runSessionSubtreeAction, type SessionSubtreeAction } from '@/components/session/sidebar/sessions/sessionSubtreeActions';
@@ -1804,11 +1803,6 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     if (order !== 'manual') setEditingOrder(false);
   };
 
-  // Per-surface profile setting: the phone's choice must not flip the desktop's.
-  const handleViewModeChange = (mode: MobileSidebarViewMode) => applyMobileSidebarViewMode(
-    mode, headerlessSidebar, setSidebarViewMode, setHeaderlessSidebar, setEditingOrder,
-  );
-
   const handleListSessionGroupingChange = (grouping: ListSessionGrouping) => {
     setListSessionGrouping(grouping);
     void updateDesktopSettings({ sidebarListSessionGrouping: grouping });
@@ -2158,24 +2152,6 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     },
     [chatsInListProjects, combinedListActive, orderedNodes, sidebarLayout.chatsGroupIndex],
   );
-
-  const headerlessGroups = useMobileHeaderlessGroups({
-    enabled: headerlessSidebar && !normalizedQuery && !editingOrder,
-    sections: sectionsInUse,
-    chats: chatsBucket.sessions.filter((session) => !getParentId(session)),
-    pinnedEntries: pinnedTimelineEntries,
-    workEntries: workTimelineEntries,
-    attentionEntries: attentionEntriesByZone,
-    viewMode: sidebarViewMode,
-    timeListActive,
-    timeListEntries,
-    combinedListActive,
-    combinedTimelineEntries,
-    chatsInListProjects,
-    projectNodes: projectNodesWithChats,
-    timelineEntriesByProject,
-    toTimelineEntries,
-  });
 
   /**
    * A worktree's or a space's header: the swipe row with its chevron, icon
@@ -2617,12 +2593,13 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuLabel>{t('mobile.sessions.viewMode.label')}</DropdownMenuLabel>
-        {MOBILE_VIEW_MODE_OPTIONS.map(([mode, labelKey]) => renderMenuChoice(
-          mode,
-          labelKey,
-          mode === 'headerless' ? headerlessSidebar : !headerlessSidebar && sidebarViewMode === mode,
-          () => handleViewModeChange(mode),
-        ))}
+        <MobileViewModeMenu
+          viewMode={sidebarViewMode}
+          headerless={headerlessSidebar}
+          setViewMode={setSidebarViewMode}
+          setHeaderless={setHeaderlessSidebar}
+          setEditingOrder={setEditingOrder}
+        />
         {sidebarViewMode === 'timeline' ? (
           <>
             <DropdownMenuSeparator />
@@ -2901,7 +2878,20 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
           ) : headerlessSidebar ? (
             <MobileHeaderlessList
               key={`${open}:${sidebarViewMode}:${listSessionGrouping}`}
-              groups={headerlessGroups}
+              sections={sectionsInUse}
+              chats={chatsBucket.sessions.filter((session) => !getParentId(session))}
+              pinnedEntries={pinnedTimelineEntries}
+              workEntries={workTimelineEntries}
+              attentionEntries={attentionEntriesByZone}
+              viewMode={sidebarViewMode}
+              timeListActive={timeListActive}
+              timeListEntries={timeListEntries}
+              combinedListActive={combinedListActive}
+              combinedTimelineEntries={combinedTimelineEntries}
+              chatsInListProjects={chatsInListProjects}
+              projectNodes={projectNodesWithChats}
+              timelineEntriesByProject={timelineEntriesByProject}
+              toTimelineEntries={toTimelineEntries}
               handlers={timelineHandlers}
               renderChat={(session) => renderBucketSessions(
                 `headerless:${session.id}`,
