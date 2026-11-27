@@ -123,6 +123,7 @@ interface CommandOptions {
   shellFlag: string;
   command: string;
   resolvedCwd: string;
+  canonicalBase?: string;
 }
 
 interface CommandResult {
@@ -140,6 +141,7 @@ interface ExecJob {
   success: boolean | null;
   commands: unknown[];
   resolvedCwd: string;
+  canonicalBase: string;
   shell: string;
   shellFlag: string;
   results: CommandResult[];
@@ -888,7 +890,7 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
     }
   };
 
-  const runCommandWithGitReadCache = async ({ shell, shellFlag, command, resolvedCwd }: CommandOptions) => {
+  const runCommandWithGitReadCache = async ({ shell, shellFlag, command, resolvedCwd, canonicalBase }: CommandOptions) => {
     const cacheable = gitReadCacheTtlMs > 0 && isCacheableGitReadCommand(command);
     const cacheKey = cacheable ? `${resolvedCwd}${normalizeCommand(command)}` : null;
 
@@ -910,19 +912,40 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
       }
     }
 
-    const runPromise = (async () => runCommandInDirectory({
-      shell,
-      shellFlag,
-      command,
-      resolvedCwd,
-      spawn,
-      execEnv: environmentRuntime
+    const runPromise = (async () => {
+      const execEnv = environmentRuntime
         ? await environmentRuntime.applyToDirectory(resolvedCwd, { ...process.env, PATH: buildAugmentedPath() }, { refresh: !isCacheableGitReadCommand(command) })
-        : { ...process.env, PATH: buildAugmentedPath() },
-      commandTimeoutMs,
-      execOutputMaxBytes,
-      platform,
-    }))().then((result) => {
+        : { ...process.env, PATH: buildAugmentedPath() };
+      // The request-time check canonicalized this cwd once, but spawn
+      // re-resolves the string path, so a symlink swapped in after that
+      // check would redirect execution outside the workspace (#2709).
+      // Re-canonicalize immediately before each spawn and fail the
+      // command closed when the real cwd now escapes the base the
+      // request was validated against. Spawning with the freshly
+      // canonicalized path keeps in-workspace symlinks working.
+      let spawnCwd = resolvedCwd;
+      if (canonicalBase !== undefined) {
+        try {
+          spawnCwd = await canonicalDirectoryPath(resolvedCwd, fsPromises, path);
+        } catch {
+          return { command, success: false, error: 'Working directory is outside of active workspace' };
+        }
+        if (!isPathWithinRoot(spawnCwd, canonicalBase, path, os)) {
+          return { command, success: false, error: 'Working directory is outside of active workspace' };
+        }
+      }
+      return runCommandInDirectory({
+        shell,
+        shellFlag,
+        command,
+        resolvedCwd: spawnCwd,
+        spawn,
+        execEnv,
+        commandTimeoutMs,
+        execOutputMaxBytes,
+        platform,
+      });
+    })().then((result) => {
       if (cacheKey && result && result.success) {
         setGitReadCacheEntry(cacheKey, result);
       }
@@ -957,6 +980,7 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
           shellFlag: job.shellFlag,
           command,
           resolvedCwd: job.resolvedCwd,
+          canonicalBase: job.canonicalBase,
         });
         results.push(result);
       } catch (error) {
@@ -2269,6 +2293,10 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
       // reject before queueing when the real cwd escapes that base.
       // Canonicalizing both sides keeps a symlinked workspace root and
       // in-workspace symlinks whose target stays inside the base working.
+      // This check alone is not the containment guarantee: spawn happens
+      // later, per command, and re-resolves the path, so runExecJob
+      // re-canonicalizes against this same base immediately before each
+      // spawn (#2709).
       const canonicalBase = await canonicalDirectoryPath(resolvedForWorkspace.base, fsPromises, path);
       const canonicalCwd = await canonicalDirectoryPath(resolvedForWorkspace.resolved, fsPromises, path);
       if (!isPathWithinRoot(canonicalCwd, canonicalBase, path, os)) {
@@ -2291,6 +2319,7 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
         success: null,
         commands,
         resolvedCwd,
+        canonicalBase,
         shell,
         shellFlag,
         results: [],
