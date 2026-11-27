@@ -4,6 +4,30 @@ import { fakeGitea, ORIGIN } from './fixtures/fake-fetch.js';
 
 const noDelay = async () => {};
 
+const MiB = 1024 * 1024;
+// A body streamed in 64 KiB chunks with no content-length, recording how much
+// was pulled and whether the reader cancelled it. Oracle: an over-cap answer
+// is refused after pulling little more than the cap, and its stream is
+// cancelled instead of drained whole.
+const streamedBody = (totalBytes) => {
+  const state = { pulled: 0, cancelled: false };
+  const chunk = new Uint8Array(64 * 1024).fill(0x61);
+  const body = new ReadableStream({
+    pull(controller) {
+      if (state.pulled >= totalBytes) {
+        controller.close();
+        return;
+      }
+      state.pulled += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { body, state };
+};
+
 describe('Gitea client', () => {
   it('sends the token as a token header to the instance API only, never following redirects', async () => {
     const { fetch, calls } = fakeGitea({ 'GET /user': { id: 1, login: 'alice' } });
@@ -107,5 +131,47 @@ describe('Gitea client', () => {
   it('classifies network failures as unreachable', () => {
     expect(classifyGiteaFailure(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe('unreachable');
     expect(classifyGiteaFailure(Object.assign(new Error('aborted'), { name: 'AbortError' }))).toBe('unreachable');
+  });
+  it.each([
+    ['a JSON read', (client) => client.get('/user')],
+    ['a text read', (client) => client.text('/repos/team/app/raw/README.md')],
+    ['a bytes read', (client) => client.bytes('/repos/team/app/media/logo.png')],
+  ])('refuses an over-cap success body on %s without buffering it or retrying', async (_name, read) => {
+    const { body, state } = streamedBody(32 * MiB);
+    const fetch = vi.fn(async () => new Response(body, { status: 200 }));
+    const client = createGiteaClient({ origin: ORIGIN, token: 'pat-1', fetch, delay: noDelay });
+
+    const error = await read(client).catch((failure) => failure);
+    expect(error).toMatchObject({ name: 'GiteaRequestError', kind: 'provider-error', status: 200 });
+    expect(error.message).toContain('more than');
+    expect(classifyGiteaFailure(error)).toBe('provider-error');
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(17 * MiB);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the status of a refusal whose error body is over the cap, without its text', async () => {
+    const { body, state } = streamedBody(4 * MiB);
+    const fetch = vi.fn(async () => new Response(body, { status: 422 }));
+    const client = createGiteaClient({ origin: ORIGIN, token: 'pat-1', fetch });
+
+    const error = await client.post('/repos/team/app/pulls', { title: 'x' }).catch((failure) => failure);
+    expect(error).toMatchObject({ status: 422, kind: 'provider-error', message: 'Gitea request failed with status 422' });
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBeLessThan(MiB);
+  });
+
+  it('still reads in-cap JSON, text and bytes answers unchanged', async () => {
+    const answers = {
+      '/api/v1/user': () => new Response('\uFEFF{"login":"alice"}'),
+      '/api/v1/repos/team/app/raw/README.md': () => new Response('\uFEFFhello'),
+      '/api/v1/repos/team/app/media/logo.png': () => new Response(new Uint8Array([0xef, 0xbb, 0xbf, 1, 2])),
+    };
+    const fetch = vi.fn(async (url) => answers[new URL(url).pathname]());
+    const client = createGiteaClient({ origin: ORIGIN, token: 'pat-1', fetch });
+
+    await expect(client.get('/user')).resolves.toEqual({ login: 'alice' });
+    await expect(client.text('/repos/team/app/raw/README.md')).resolves.toBe('hello');
+    await expect(client.bytes('/repos/team/app/media/logo.png')).resolves.toEqual(Buffer.from([0xef, 0xbb, 0xbf, 1, 2]));
   });
 });

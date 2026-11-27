@@ -453,6 +453,23 @@ describe('config sections', () => {
     expect(deleteSectionEntry(config, 'providers', 'constructor')).toBe(true);
   });
 
+  it('round-trips __proto__ as an own entry without changing the section prototype', () => {
+    const config = { providers: {} };
+    const section = config.providers;
+    const prototype = Object.getPrototypeOf(section);
+    const value = { models: { test: { modelID: 'test' } } };
+
+    writeSectionEntry(config, 'providers', '__proto__', value);
+
+    expect(Object.getPrototypeOf(section)).toBe(prototype);
+    expect(Object.hasOwn(section, '__proto__')).toBe(true);
+    expect(readSectionEntry(config, 'providers', '__proto__').value).toBe(value);
+    expect(JSON.parse(JSON.stringify(config)).providers.__proto__).toEqual(value);
+    expect(deleteSectionEntry(config, 'providers', '__proto__')).toBe(true);
+    expect(Object.hasOwn(section, '__proto__')).toBe(false);
+    expect(Object.getPrototypeOf(section)).toBe(prototype);
+  });
+
   it('writing one entry does not drop an unrelated empty legacy map over a prototype name', () => {
     const config = { provider: {} };
     writeSectionEntry(config, 'providers', 'constructor', { models: {} });

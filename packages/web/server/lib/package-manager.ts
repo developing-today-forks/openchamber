@@ -806,7 +806,7 @@ export async function fetchRequiredOpenCodeVersion(version: VersionValue) {
       signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) return null;
-    const data: JsonValue = await response.json();
+    const data = await readUpdateJson(response, null);
     const engines = hasJsonFields(data) ? data.engines : undefined;
     return /^>=\s*v?(\d+\.\d+\.\d+)$/.exec(String((hasJsonFields(engines) ? engines.opencode : undefined) ?? '').trim())?.[1] ?? null;
   } catch {

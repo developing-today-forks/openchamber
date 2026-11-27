@@ -111,15 +111,16 @@ describe('goal spec jobs', () => {
     expect(writer.calls[0].input).toMatchObject({ request: 'build the parser', directory: DIRECTORY, writerModelID: 'haiku' });
 
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued).toEqual([{
-      sessionId: SESSION,
-      directory: DIRECTORY,
-      itemId: 'job-1',
-      item: { ...item(), goal: { objective: SPEC, tokenBudget: 5000, settled: true, briefAgent: true } },
-    }]);
-    expect(await runtime.list()).toEqual([]);
-    expect(readFile(dataDir).jobs).toEqual([]);
+    await vi.waitFor(async () => {
+      expect(queue.enqueued).toEqual([{
+        sessionId: SESSION,
+        directory: DIRECTORY,
+        itemId: 'job-1',
+        item: { ...item(), goal: { objective: SPEC, tokenBudget: 5000, settled: true, briefAgent: true } },
+      }]);
+      expect(await runtime.list()).toEqual([]);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     runtime.stop();
   });
 
@@ -154,7 +155,7 @@ describe('goal spec jobs', () => {
     writer.calls[0].reject(new Error('No small model available'));
     await settle();
     expect(queue.enqueued).toEqual([]);
-    expect(await runtime.list()).toMatchObject([{ id: 'job-1', status: 'failed', error: 'No small model available' }]);
+    expect(await runtime.list()).toMatchObject([{ id: 'job-1', status: 'failed', error: 'No small model available', sendUncertain: false }]);
     expect(broadcasts.at(-1)).toMatchObject({ type: 'openchamber:goal-spec-job.updated', properties: { job: { status: 'failed' } } });
 
     const taken = await runtime.take('job-1');
@@ -207,8 +208,7 @@ describe('goal spec jobs', () => {
     await runtime.create(createInput());
     queue.failNextEnqueue(Object.assign(new Error('message queue is full'), { status: 409 }));
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(await runtime.list()).toMatchObject([{ status: 'failed', error: 'message queue is full' }]);
+    await vi.waitFor(async () => expect(await runtime.list()).toMatchObject([{ status: 'failed', error: 'message queue is full' }]));
     expect((await runtime.take('job-1')).item).toEqual(item());
     runtime.stop();
   });
@@ -224,13 +224,16 @@ describe('goal spec jobs', () => {
   });
 
   it('follows its session to a new directory', async () => {
-    const { runtime, queue, writer, emit } = createRuntime();
+    const { runtime, queue, writer, emit, dataDir } = createRuntime();
     await runtime.start();
     await runtime.create(createInput());
     emit({ type: 'session.updated', properties: { info: { id: SESSION, directory: '/repo-moved' } } });
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued[0].directory).toBe('/repo-moved');
+    await vi.waitFor(async () => {
+      expect(queue.enqueued[0]?.directory).toBe('/repo-moved');
+      expect(await runtime.list()).toEqual([]);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     runtime.stop();
   });
 
@@ -261,9 +264,10 @@ describe('goal spec jobs across a restart', () => {
     await second.runtime.start();
     expect(second.writer.calls).toHaveLength(1);
     second.writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued.map((entry) => entry.itemId)).toEqual(['job-1']);
-    expect(readFile(dataDir).jobs).toEqual([]);
+    await vi.waitFor(() => {
+      expect(queue.enqueued.map((entry) => entry.itemId)).toEqual(['job-1']);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     second.runtime.stop();
   });
 
@@ -342,8 +346,25 @@ describe('goal spec jobs across a restart', () => {
     await runtime.start();
     expect(queue.enqueued).toEqual([]);
     expect(writer.calls).toEqual([]);
-    expect(await runtime.list()).toMatchObject([{ id: 'job-9', status: 'failed', error: RESTART_UNKNOWN_REASON }]);
+    expect(await runtime.list()).toMatchObject([{ id: 'job-9', status: 'failed', error: RESTART_UNKNOWN_REASON, sendUncertain: true }]);
+    expect(readFile(dataDir).jobs).toMatchObject([{ id: 'job-9', status: 'failed', sendUncertain: true }]);
     expect((await runtime.take('job-9')).item).toEqual(item());
+    runtime.stop();
+  });
+
+  it('a failed job without the uncertain field reads as certain, and stays so', async () => {
+    const dataDir = makeDataDir();
+    fs.writeFileSync(path.join(dataDir, 'goal-spec-jobs.json'), JSON.stringify({
+      version: 1,
+      jobs: [{
+        id: 'job-7', sessionId: SESSION, directory: DIRECTORY, status: 'failed', sendMode: 'with-message',
+        tokenBudget: null, writer: { request: 'build the parser' }, item: item(), spec: SPEC, error: 'No small model available',
+        cancelled: false, createdAt: 1, updatedAt: 1,
+      }],
+    }));
+    const { runtime } = createRuntime({ dataDir });
+    await runtime.start();
+    expect(await runtime.list()).toMatchObject([{ id: 'job-7', sendUncertain: false }]);
     runtime.stop();
   });
 

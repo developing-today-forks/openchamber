@@ -25,6 +25,30 @@ const createRuntime = async () => {
 };
 
 describe('remote client auth runtime', () => {
+  it('persists scopes on paired clients and keeps legacy records unscoped', async () => {
+    const { dir, runtime } = await createRuntime();
+    try {
+      const scoped = await runtime.createClient({ label: 'Babysitter', scopes: ['session-read', 'quota-read'] });
+      expect(scoped.client.scopes).toEqual(['session-read', 'quota-read']);
+      expect((await runtime.authenticateBearerToken(scoped.token))?.client.scopes).toEqual(['session-read', 'quota-read']);
+
+      const storePath = path.join(dir, 'remote-clients.json');
+      const store = JSON.parse(await fs.readFile(storePath, 'utf8'));
+      delete store.clients[0].scopes;
+      await fs.writeFile(storePath, JSON.stringify(store));
+
+      expect((await runtime.listClients())[0].scopes).toBe(null);
+      expect((await runtime.authenticateBearerToken(scoped.token))?.client.scopes).toBe(null);
+
+      const malformedStore = JSON.parse(await fs.readFile(storePath, 'utf8'));
+      malformedStore.clients[0].scopes = ['session-read', 'unrecognized'];
+      await fs.writeFile(storePath, JSON.stringify(malformedStore));
+      expect((await runtime.listClients())[0].scopes).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('creates, authenticates, lists, and revokes client tokens', async () => {
     const { dir, runtime } = await createRuntime();
     try {

@@ -4,6 +4,7 @@ import { ConnectionLostError } from './connection-lost-error'
 
 export function isFormRequestNotFoundError(error: unknown): boolean {
   if (error && typeof error === "object") {
+    // SAFETY: error is narrowed to a non-null object by the guard; `status` is compared with === 404 before it is trusted.
     const status = (error as { status?: unknown }).status
     if (status === 404) return true
   }

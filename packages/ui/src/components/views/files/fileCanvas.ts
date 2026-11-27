@@ -14,7 +14,7 @@ export type FileCanvasHandle = {
   markSaved: (signature: string) => void;
 };
 
-export type FileCanvasSaveResolution =
+type FileCanvasSaveResolution =
   | { kind: 'snapshot'; canvas: FileCanvasHandle }
   | { kind: 'no-canvas' }
   | { kind: 'blocked-missing-editor' };

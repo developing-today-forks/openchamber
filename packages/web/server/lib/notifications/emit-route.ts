@@ -2,7 +2,9 @@ import { z } from 'zod';
 import type { NotificationPayload } from './contracts.js';
 import type { Application, ExpressFactory, Request, RequestHandler } from '../shared/http-contracts.js';
 
-export const NOTIFICATION_EMIT_PATH = '/api/notifications/emit';
+import { NOTIFICATION_EMIT_PATH } from './paths.js';
+
+export { NOTIFICATION_EMIT_PATH } from './paths.js';
 
 const RATE_WINDOW_MS = 10_000;
 const RATE_MAX_PER_WINDOW = 10;

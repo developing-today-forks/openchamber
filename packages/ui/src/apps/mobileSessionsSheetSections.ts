@@ -15,6 +15,25 @@ type PhoneSectionsVisibility = {
   chatsInListProjects: boolean;
 };
 
+export type HeaderlessGroup<T extends { sessionIds: readonly string[] }> = {
+  key: string;
+  items: readonly T[];
+};
+
+export const dedupeHeaderlessGroups = <T extends { sessionIds: readonly string[] }>(
+  groups: readonly HeaderlessGroup<T>[],
+): Array<{ key: string; items: T[] }> => {
+  const seen = new Set<string>();
+  return groups.flatMap(({ key, items }) => {
+    const unique = items.filter((item) => {
+      if (item.sessionIds.some((id) => seen.has(id))) return false;
+      for (const id of item.sessionIds) seen.add(id);
+      return true;
+    });
+    return unique.length > 0 ? [{ key, items: unique }] : [];
+  });
+};
+
 /**
  * The layout's sections the phone sheet draws now, in the layout's order:
  * the attention zones the layout can fill, Pinned and In work while their

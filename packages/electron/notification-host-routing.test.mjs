@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { findReusableHostWindowIndex, resolveForwardedNotificationRuntimeKey, resolveHostEntryForRuntimeKey, resolveSenderHostId, runtimeKeyForDeepLinkHost, stampForwardedNotification } from './notification-host-routing.mjs';
+import { findReusableHostWindowIndex, normalizeNotificationInput, resolveForwardedNotificationRuntimeKey, resolveHostEntryForRuntimeKey, resolveSenderHostId, runtimeKeyForDeepLinkHost, stampForwardedNotification } from './notification-host-routing.mjs';
 
 test('local runtime key resolves to a local host entry', () => {
   assert.deepEqual(resolveHostEntryForRuntimeKey('local', {
@@ -53,6 +53,70 @@ test('runtime keys are trimmed before resolution', () => {
     localUrl: 'http://127.0.0.1:3912',
     localClientToken: '',
   }), { id: 'local', url: 'http://127.0.0.1:3912', clientToken: '', requestHeaders: {} });
+});
+
+test('notification input decodes known strings and flattens the nested payload', () => {
+  const normalized = normalizeNotificationInput({
+    title: 'outer title',
+    extension: 'outer extension',
+    payload: {
+      tag: 'tag-1',
+      sessionId: 'ses_1',
+      kind: 'message',
+      title: 'inner title',
+      body: 'message body',
+      directory: '/workspace',
+      runtimeKey: 'host:host-a',
+      requireHidden: 'legacy-truthy-value',
+      nestedExtension: 'inner extension',
+    },
+  });
+
+  assert.deepEqual({
+    tag: normalized.tag,
+    sessionId: normalized.sessionId,
+    kind: normalized.kind,
+    title: normalized.title,
+    body: normalized.body,
+    directory: normalized.directory,
+    runtimeKey: normalized.runtimeKey,
+    requireHidden: normalized.requireHidden,
+    extension: normalized.extension,
+    nestedExtension: normalized.nestedExtension,
+  }, {
+    tag: 'tag-1',
+    sessionId: 'ses_1',
+    kind: 'message',
+    title: 'inner title',
+    body: 'message body',
+    directory: '/workspace',
+    runtimeKey: 'host:host-a',
+    requireHidden: 'legacy-truthy-value',
+    extension: 'outer extension',
+    nestedExtension: 'inner extension',
+  });
+});
+
+test('notification input decodes invalid known strings as absent but preserves extension values', () => {
+  const normalized = normalizeNotificationInput({
+    payload: {
+      tag: 42,
+      sessionId: null,
+      kind: false,
+      title: [],
+      body: { text: 'not a string' },
+      directory: 0,
+      runtimeKey: false,
+      requireHidden: 'legacy-truthy-value',
+      extension: { source: 'renderer' },
+    },
+  });
+
+  for (const field of ['tag', 'sessionId', 'kind', 'title', 'body', 'directory', 'runtimeKey']) {
+    assert.equal(normalized[field], undefined, `${field} is absent after parsing`);
+  }
+  assert.equal(normalized.requireHidden, 'legacy-truthy-value');
+  assert.deepEqual(normalized.extension, { source: 'renderer' });
 });
 
 const reuseDeps = {

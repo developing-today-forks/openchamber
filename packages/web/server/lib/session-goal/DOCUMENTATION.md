@@ -571,8 +571,12 @@ session or a settled goal costs one read.
   with the spec before the queue sees it) -> removed. The queue item carries
   the job's id and enqueueing that id again is a no-op. On start, a `writing`
   job is written again; an `enqueuing` job still in the queue is left to the
-  queue; one missing from it may already have been sent, so it fails with its
-  message kept and a note to check the session, never sent a second time.
+  queue; one missing from it may already have been sent, so it fails with
+  `sendUncertain` set, its message kept and a note to check the session, never
+  sent a second time. Every other failure is certain (it was never sent) and
+  leaves `sendUncertain` false. The field is stored with the job and defaults
+  to false when an older file omits it; a client that reads an older server's
+  job the same way shows the certain heading.
 - `stores/useSessionGoalArmStore.ts` — `settled` marks an objective the writer
   produced or the user kept over it, so rewrite-all leaves it alone;
   `briefAgent` puts the spec into the reminder when the message itself is not
@@ -779,3 +783,13 @@ message queue. A job adds only what the queue lacks, the time spent writing
 the spec, and hands the message over by id. The cost is that a restart
 between saving `enqueuing` and the queue's own save cannot tell whether the
 message went out; such a job is kept for the user instead of being sent twice.
+
+### Why an uncertain send carries its own field and heading
+
+The release reason already says the message may have been sent, but a client
+that shows every failure under one "not sent" heading contradicts it, and a
+user who reads only the heading sends it again. Parsing the reason text would
+couple clients to its wording, and a later uncertain release could be missed;
+the job instead records `sendUncertain`, and the UI picks the "may have been
+sent" heading from that flag. Jobs without the flag keep the certain heading,
+so an older jobs file or server reads as before.

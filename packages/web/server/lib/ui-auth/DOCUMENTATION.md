@@ -32,6 +32,10 @@ Pairing v2 is implemented by `packages/web/server/lib/client-auth/pairing.js`. I
 - Explicit bearer authentication decides session status on its own. Falling
   back to an ambient session cookie would hide a revoked native-client token
   while bearer-only API requests fail.
+- An explicit `oc_client_...` bearer is checked before a session cookie or a
+  trusted relay session. The client's optional route scopes are evaluated on
+  the request path; missing scopes preserve legacy unscoped access. A relay
+  request without a client bearer keeps the existing tunnel-session path.
 - An empty passkey label restores its registration-time generated name, so
   clearing a custom name does not erase the device's identifiable label.
 

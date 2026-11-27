@@ -10,7 +10,19 @@ const optionalString = z.string().catch('').transform((value) => value.trim());
 
 export const readTrimmedString = (value) => optionalString.parse(value);
 
-const notificationInput = z.union([z.looseObject({}), z.array(z.unknown())]);
+const notificationString = z.string().optional().catch(undefined);
+const notificationInput = z.union([
+  z.looseObject({
+    tag: notificationString,
+    sessionId: notificationString,
+    kind: notificationString,
+    title: notificationString,
+    body: notificationString,
+    directory: notificationString,
+    runtimeKey: notificationString,
+  }),
+  z.array(z.unknown()),
+]);
 
 const runtimeKeyForHostUrl = (raw) => {
   const trimmed = readTrimmedString(raw);

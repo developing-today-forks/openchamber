@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { isObjectLike } from '../../../shared/object-guards.js';
 import {
   ANTIGRAVITY_ACCOUNTS_PATHS,
@@ -133,7 +134,8 @@ export const parseAntigravityKeyringCredential = (raw: string | undefined) => {
   const token = isKeyringCredential(parsed) && isKeyringToken(parsed.token) ? parsed.token : null;
   // A whitespace-only refresh token is the unexpected-shape/absent case
   // the fork's bridge treats as no credential, not a token to present.
-  const refreshToken = typeof token?.refresh_token === 'string' ? token.refresh_token.trim() : null;
+  const refreshTokenResult = z.string().trim().min(1).safeParse(token?.refresh_token);
+  const refreshToken = refreshTokenResult.success ? refreshTokenResult.data : null;
   if (!refreshToken) {
     return null;
   }

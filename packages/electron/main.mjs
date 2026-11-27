@@ -1223,7 +1223,7 @@ const focusForegroundWindow = () => {
   if (target.isMinimized()) target.restore();
   showWindow(target);
   target.focus();
-  if (typeof target.moveTop === 'function') target.moveTop();
+  target.moveTop?.();
 };
 
 // external: https://blog.bloomca.me/2025/02/22/electron-mac-notifications Keep notifications referenced until click or close so macOS click events survive garbage collection.
@@ -1237,14 +1237,14 @@ const clearSessionNotifications = (sessionId) => {
   if (!ids) return;
   deliveredNotificationIdsBySession.delete(sessionId);
   // Notification.remove is Electron 44+; see setZoomMode in createBrowserWindow.
-  if (typeof Notification.remove === 'function') Notification.remove(ids);
+  Notification.remove?.(ids);
 };
 
 const getNativeNotificationClaimKey = (payload) => {
-  const tag = typeof payload?.tag === 'string' ? payload.tag.trim() : '';
+  const tag = payload?.tag?.trim() ?? '';
   if (tag) return tag;
   return [payload?.sessionId, payload?.kind, payload?.title, payload?.body]
-    .filter((value) => typeof value === 'string' && value.trim())
+    .filter((value) => value?.trim())
     .map((value) => value.trim())
     .join('|');
 };
@@ -1285,16 +1285,10 @@ const maybeShowNativeNotification = (rawInput) => {
     return;
   }
 
-  const title = typeof payload.title === 'string' && payload.title.trim()
-    ? payload.title.trim()
-    : 'OpenChamber';
-  const body = typeof payload.body === 'string' ? payload.body : '';
-  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim()
-    ? payload.sessionId.trim()
-    : null;
-  const directory = typeof payload.directory === 'string' && payload.directory.trim()
-    ? payload.directory.trim()
-    : null;
+  const title = payload.title?.trim() || 'OpenChamber';
+  const body = payload.body ?? '';
+  const sessionId = payload.sessionId?.trim() || null;
+  const directory = payload.directory?.trim() || null;
   const runtimeKey = readTrimmedString(payload.runtimeKey) || null;
 
   const notificationId = globalThis.crypto.randomUUID();
