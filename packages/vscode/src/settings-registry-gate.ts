@@ -1,4 +1,5 @@
 import registrySnapshot from './settings-registry.json';
+import type { JsonValue } from './project-setup';
 
 type SettingsRegistryGateField = {
   scope: string;
@@ -13,6 +14,10 @@ export type SettingsRegistryGateFields = Record<string, SettingsRegistryGateFiel
 
 export const SETTINGS_REGISTRY_FIELDS: SettingsRegistryGateFields = registrySnapshot.fields;
 
+export type SettingsGateValue = JsonValue | undefined;
+
+export type SettingsGateDocument = Record<string, SettingsGateValue>;
+
 const isPersistableField = (field: SettingsRegistryGateField | undefined): boolean => {
   if (!field) return false;
   if (field.computed === true) return false;
@@ -22,10 +27,10 @@ const isPersistableField = (field: SettingsRegistryGateField | undefined): boole
 };
 
 export const filterPersistableSettingsChanges = (
-  changes: Record<string, unknown>,
+  changes: SettingsGateDocument,
   fields: SettingsRegistryGateFields = SETTINGS_REGISTRY_FIELDS,
-): Record<string, unknown> => {
-  const next: Record<string, unknown> = {};
+) => {
+  const next: SettingsGateDocument = {};
   for (const [key, value] of Object.entries(changes)) {
     if (!Object.prototype.hasOwnProperty.call(fields, key)) continue;
     if (!isPersistableField(fields[key])) continue;
@@ -35,10 +40,10 @@ export const filterPersistableSettingsChanges = (
 };
 
 export const withoutSecretSettings = (
-  settings: Record<string, unknown>,
+  settings: SettingsGateDocument,
   fields: SettingsRegistryGateFields = SETTINGS_REGISTRY_FIELDS,
-): Record<string, unknown> => {
-  const next: Record<string, unknown> = {};
+) => {
+  const next: SettingsGateDocument = {};
   for (const [key, value] of Object.entries(settings)) {
     if (fields[key]?.secret === true) continue;
     next[key] = value;
