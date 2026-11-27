@@ -91,8 +91,8 @@ type BridgeMessageInput = {
 };
 
 type ConfigRuntimeDeps = {
-  readSettings: (ctx?: BridgeContext) => Record<string, unknown>;
-  persistSettings: (changes: Record<string, unknown>, ctx?: BridgeContext) => Promise<Record<string, unknown>>;
+  readSettings: (ctx?: BridgeContext) => import('./bridge-settings-runtime').SettingsDocument;
+  persistSettings: (changes: import('./bridge-settings-runtime').SettingsDocument, ctx?: BridgeContext) => Promise<import('./bridge-settings-runtime').SettingsDocument>;
   handleMagicPromptRequest: (request: MagicPromptRequest) => Promise<MagicPromptHttpResponse>;
   fetchOpenCodeSkillsFromApi: (ctx: BridgeContext | undefined, workingDirectory?: string) => Promise<DiscoveredSkill[] | null>;
   clientReloadDelayMs: number;
@@ -199,7 +199,7 @@ export async function handleConfigBridgeMessage(
     }
 
     case 'api:config/settings:save': {
-      const changes = (payload as Record<string, unknown>) || {};
+      const changes = (payload as import('./bridge-settings-runtime').SettingsDocument) || {};
       const updated = await deps.persistSettings(changes, ctx);
       return { id, type, success: true, data: updated };
     }
