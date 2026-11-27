@@ -99,7 +99,11 @@ export const registerMessageSearchRoutes = (app: MessageSearchApp, { messageSear
     // every indexed conversation (#2421). Reject the ambiguous filter.
     // The same holds for role and lifecycle: a repeated key would otherwise
     // fall back to the widest value (all roles, all lifecycles) with a 200.
-    for (const key of ['session', 'role', 'lifecycle'] as const) {
+    // And for reasoning, order and before: a repeated key would otherwise
+    // fall back to the defaults with a 200 — silently including reasoning
+    // traces on an explicit opt-out, flipping a unanimous order, or
+    // dropping the paging cursor (#2594).
+    for (const key of ['session', 'role', 'lifecycle', 'reasoning', 'order', 'before'] as const) {
       const raw: unknown = req.query[key];
       if (raw !== undefined && !z.string().safeParse(raw).success) {
         return res.status(400).json({ error: `Message search ${key} must be a single value` });

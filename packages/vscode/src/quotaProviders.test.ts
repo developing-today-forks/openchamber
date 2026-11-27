@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CredentialEntry } from '@opencode/client';
 
-import { configureOpenCodeCredentials } from './opencodeAuth';
-
 const previousQuotaDataDirectory = process.env.OPENCHAMBER_DATA_DIR;
+const previousOpenCodeConfigDirectory = process.env.OPENCODE_CONFIG_DIR;
+const previousXdgDataHome = process.env.XDG_DATA_HOME;
 const temporaryQuotaDataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-vscode-quota-'));
 process.env.OPENCHAMBER_DATA_DIR = temporaryQuotaDataDirectory;
+process.env.OPENCODE_CONFIG_DIR = path.join(temporaryQuotaDataDirectory, 'opencode-config');
+process.env.XDG_DATA_HOME = path.join(temporaryQuotaDataDirectory, 'xdg-data');
+const { configureOpenCodeCredentials } = await import('./opencodeAuth');
+const { selectAntigravityAccount } = await import('./antigravityAccount');
 // Credentials come from the running OpenCode; serve a fixed list so the
 // providers treat themselves as configured and go straight to fetch.
 const key = (integrationID: string, label = 'default'): CredentialEntry => ({ id: `cred_${integrationID}`, integrationID, label, active: true, value: { type: 'key', key: 'test-token' } });
@@ -58,13 +62,17 @@ const baseCredentialList = (): CredentialEntry[] => [
 ];
 configureOpenCodeCredentials({ list: async () => baseCredentialList() });
 
-import { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchCommandCodeQuota, fetchOpenDesignQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, readJsonFile, readKiloOrganizationIdFromUserConfig, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } from './quotaProviders';
+const { activateQuotaGiftReset, fetchClaudeQuota, fetchClinePassQuota, fetchCodexQuota, fetchCopilotQuota, fetchDeepinfraQuota, fetchDeepseekQuota, fetchHyperQuota, fetchKiloQuota, fetchKimiQuota, fetchMetaQuota, fetchMistralQuota, fetchCommandCodeQuota, fetchOpenDesignQuota, fetchNanoGptQuota, fetchNeuralwattQuota, fetchOllamaCloudQuota, fetchOpenRouterQuota, fetchZaiQuota, fetchZhipuaiCodingPlanQuota, listConfiguredQuotaProviders, readJsonFile, readKiloOrganizationIdFromUserConfig, resetMetaQuotaCache, fetchQuotaForProvider, fetchXaiQuota, fetchZenmuxQuota, normalizeTimestamp, toTimestamp } = await import('./quotaProviders');
 
 type MockResponseInit = { ok?: boolean; status?: number };
 
 after(() => {
   if (previousQuotaDataDirectory === undefined) delete process.env.OPENCHAMBER_DATA_DIR;
   else process.env.OPENCHAMBER_DATA_DIR = previousQuotaDataDirectory;
+  if (previousOpenCodeConfigDirectory === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+  else process.env.OPENCODE_CONFIG_DIR = previousOpenCodeConfigDirectory;
+  if (previousXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+  else process.env.XDG_DATA_HOME = previousXdgDataHome;
   fs.rmSync(temporaryQuotaDataDirectory, { recursive: true, force: true });
 });
 
@@ -138,6 +146,12 @@ test('quota local JSON readers preserve their null fallback for over-cap files',
   }
 });
 
+test('quota auth JSON reader rejects array roots', () => {
+  const authPath = path.join(temporaryQuotaDataDirectory, 'array-auth.json');
+  fs.writeFileSync(authPath, JSON.stringify([{ token: 'test-token' }]));
+  assert.equal(readJsonFile(authPath), null);
+});
+
 // A fake answer is a Response or a response-shaped object; each case reads only what it set.
 type StubResolver = (url: string, init?: RequestInit) => Promise<unknown>;
 type StubJson = () => Promise<unknown>;
@@ -181,6 +195,11 @@ describe('quota timestamp helpers', () => {
 
 describe('Google plugin credentials', () => {
   afterEach(() => configureOpenCodeCredentials({ list: async () => baseCredentialList() }));
+
+  test('does not replace a malformed selected Antigravity account with account zero', async () => {
+    assert.equal(selectAntigravityAccount({ activeIndex: 0, accounts: [{ refreshToken: 'active-token' }] })?.refreshToken, 'active-token');
+    assert.equal(selectAntigravityAccount({ activeIndex: 1, accounts: [{ refreshToken: 'inactive-token' }, 'malformed'] }), null);
+  });
 
   test('still discovers a direct Google OAuth login', async () => {
     configureOpenCodeCredentials({ list: async () => [{
@@ -3457,6 +3476,15 @@ describe('Cursor quota provider (VS Code parity)', () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.error, 'No active Cursor subscription');
+  });
+
+  test('uses Enterprise usage when the primary response is not an object', async () => {
+    routeCursorApi({ ...enterpriseRoutes, GetCurrentPeriodUsage: { body: null } });
+
+    const result = await fetchQuotaForProvider('cursor');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.usage!.windows.billing_cycle!.valueLabel, '590 / 1000');
   });
 });
 

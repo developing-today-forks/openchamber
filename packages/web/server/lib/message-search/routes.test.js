@@ -61,6 +61,38 @@ describe('message search routes', () => {
     expect(runtime.search).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['reasoning', 'reasoning=0&reasoning=1'],
+    ['order', 'order=asc&order=desc'],
+    ['before', 'before=1:abc&before=2:def'],
+  ])('rejects a repeated %s parameter instead of degrading to the default', async (_key, params) => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    const response = await request(app).get(`/api/openchamber/message-search?q=secret&${params}`);
+    expect(response.status).toBe(400);
+    expect(runtime.search).not.toHaveBeenCalled();
+  });
+
+  it('never silently includes reasoning on a unanimous repeated reasoning=0 opt-out', async () => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    const response = await request(app).get('/api/openchamber/message-search?q=secret&reasoning=0&reasoning=0');
+    if (response.status === 200) {
+      expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ includeReasoning: false }));
+    } else {
+      expect(response.status).toBe(400);
+      expect(runtime.search).not.toHaveBeenCalled();
+    }
+  });
+
   it('keeps scalar role and lifecycle filters working', async () => {
     const runtime = {
       search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
@@ -70,6 +102,20 @@ describe('message search routes', () => {
     const app = createApp(runtime);
     await request(app).get('/api/openchamber/message-search?q=secret&role=assistant&lifecycle=archived').expect(200);
     expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ role: 'assistant', lifecycle: 'archived' }));
+  });
+
+  it('keeps scalar reasoning, order, and before filters working', async () => {
+    const runtime = {
+      search: vi.fn(() => ({ status: 'ok', hits: [], next: null, index: null })),
+      status: vi.fn(async () => ({ state: 'on', sizeBytes: 0, index: null })),
+      deleteIndex: vi.fn(async () => {}),
+    };
+    const app = createApp(runtime);
+    await request(app).get('/api/openchamber/message-search?q=secret&reasoning=0&order=asc&before=42:msg_1').expect(200);
+    expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ includeReasoning: false, order: 'asc', before: { createdAt: 42, id: 'msg_1' } }));
+    runtime.search.mockClear();
+    await request(app).get('/api/openchamber/message-search?q=secret').expect(200);
+    expect(runtime.search).toHaveBeenCalledWith(expect.objectContaining({ includeReasoning: true, order: 'desc', before: null }));
   });
 
   it('keeps a scalar session scoped and an absent session deliberately unscoped', async () => {
