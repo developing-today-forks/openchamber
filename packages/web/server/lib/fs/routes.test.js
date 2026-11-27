@@ -118,13 +118,13 @@ const createDeferredSpawn = ({ stdoutByCommand = {}, exitCode = 0 } = {}) => {
   return { spawn, calls, closeNext };
 };
 
-const registerExec = ({ spawn }) => {
+const registerExec = ({ spawn, realpath }) => {
   const { app, getRoute } = createRouteRegistry();
   registerFsRoutes(app, {
     os: { homedir: () => '/home/user' },
     path,
     fsPromises: {
-      realpath: async (targetPath) => targetPath,
+      realpath: realpath ?? (async (targetPath) => targetPath),
       stat: async () => ({ isDirectory: () => true }),
     },
     spawn,
@@ -2243,6 +2243,44 @@ describe('fs exec git-read cache', () => {
     expect(res.body).toEqual({ error: 'Path is outside of active workspace' });
     expect(spawn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('rejects a cwd that escapes the workspace through a symlink (#2693)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { spawn } = createSpawn();
+    const realpath = async (targetPath) => (targetPath === '/repo/escape' ? '/outside' : targetPath);
+    const handler = registerExec({ spawn, realpath });
+
+    const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo/escape' });
+
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'Path is outside of active workspace' });
+    expect(spawn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('runs a cwd whose symlink target stays inside the workspace (#2693)', async () => {
+    const { spawn, calls } = createSpawn({ stdoutByCommand: { pwd: '/repo/inner\n' } });
+    const realpath = async (targetPath) => (targetPath === '/repo/inner-link' ? '/repo/inner' : targetPath);
+    const handler = registerExec({ spawn, realpath });
+
+    const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo/inner-link' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(calls).toEqual(['pwd']);
+  });
+
+  it('runs in a symlinked workspace root whose canonical base contains the cwd (#2693)', async () => {
+    const { spawn, calls } = createSpawn({ stdoutByCommand: { pwd: '/real-repo\n' } });
+    const realpath = async (targetPath) => targetPath.replace('/repo', '/real-repo');
+    const handler = registerExec({ spawn, realpath });
+
+    const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(calls).toEqual(['pwd']);
   });
 
   it('caches an allowlisted git rev-parse across identical requests', async () => {
