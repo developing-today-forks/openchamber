@@ -2263,7 +2263,19 @@ export const registerFsRoutes = (app: Application, dependencies: FsRouteDependen
         console.warn(`Rejected /api/fs/exec outside workspace: ${resolvedForWorkspace.error}`);
         return res.status(403).json({ error: resolvedForWorkspace.error });
       }
-      const resolvedCwd = resolvedForWorkspace.resolved;
+      // The lexical check above does not follow symlinks, so a symlink
+      // inside the workspace could move command execution outside it.
+      // Canonicalize both the cwd and the base the resolver chose, and
+      // reject before queueing when the real cwd escapes that base.
+      // Canonicalizing both sides keeps a symlinked workspace root and
+      // in-workspace symlinks whose target stays inside the base working.
+      const canonicalBase = await canonicalDirectoryPath(resolvedForWorkspace.base, fsPromises, path);
+      const canonicalCwd = await canonicalDirectoryPath(resolvedForWorkspace.resolved, fsPromises, path);
+      if (!isPathWithinRoot(canonicalCwd, canonicalBase, path, os)) {
+        console.warn(`Rejected /api/fs/exec outside workspace: canonical cwd ${canonicalCwd} is outside ${canonicalBase}`);
+        return res.status(403).json({ error: 'Path is outside of active workspace' });
+      }
+      const resolvedCwd = canonicalCwd;
       const stats = await fsPromises.stat(resolvedCwd);
       if (!stats.isDirectory()) {
         return res.status(400).json({ error: 'Specified cwd is not a directory' });
