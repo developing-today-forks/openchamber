@@ -114,6 +114,43 @@ describe('saveProjectAction', () => {
     expect(revisions).toEqual(['sha256:personal-read', 'sha256:shared-read']);
   });
 
+  test('a save retry after reload cannot replace an agent action changed while the editor was open', async () => {
+    const base = setupWith({ personal: [action('dev')] });
+    const agentAction = { ...action('dev', 'Agent version'), command: 'run dev --agent' };
+    const refreshed = {
+      ...base,
+      personal: {
+        ...base.personal,
+        projectActions: [agentAction],
+        projectActionsRevision: 'sha256:agent-write',
+      },
+    };
+    let currentRevision = 'sha256:agent-write';
+    let currentActions = [agentAction];
+    const write: ProjectSetupWriters = {
+      ...recordingWriters().write,
+      personalActions: async (actions, baseRevision) => {
+        if (baseRevision !== currentRevision) return false;
+        currentActions = actions;
+        currentRevision = 'sha256:settings-write';
+        return true;
+      },
+    };
+
+    // Oracle: the persisted list still contains the concurrent agent edit
+    // after Settings retries its old draft against a reloaded view.
+    const saved = await saveProjectAction(
+      refreshed,
+      write,
+      { ...base.personal.projectActions[0], name: 'Settings draft' },
+      'personal',
+      'personal',
+    );
+
+    expect(saved).toBe(false);
+    expect(currentActions).toEqual([agentAction]);
+  });
+
   test('edits a team action in the repository file without copying it into personal settings', async () => {
     const setup = setupWith({ shared: [action('dev')] });
     const { writes, write } = recordingWriters();
