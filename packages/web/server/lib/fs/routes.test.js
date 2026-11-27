@@ -2248,7 +2248,13 @@ describe('fs exec git-read cache', () => {
   it('rejects a cwd that escapes the workspace through a symlink (#2693)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { spawn } = createSpawn();
-    const realpath = async (targetPath) => (targetPath === '/repo/escape' ? '/outside' : targetPath);
+    // Derive the mock through the injected path module: on Windows the
+    // route resolves '/repo/escape' to '<drive>:\repo\escape', so a
+    // POSIX-literal comparison never matches and the escape slips through.
+    const workspace = path.resolve('/repo');
+    const escapeLink = path.join(workspace, 'escape');
+    const outside = path.resolve('/outside');
+    const realpath = async (targetPath) => (targetPath === escapeLink ? outside : targetPath);
     const handler = registerExec({ spawn, realpath });
 
     const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo/escape' });
@@ -2261,7 +2267,10 @@ describe('fs exec git-read cache', () => {
 
   it('runs a cwd whose symlink target stays inside the workspace (#2693)', async () => {
     const { spawn, calls } = createSpawn({ stdoutByCommand: { pwd: '/repo/inner\n' } });
-    const realpath = async (targetPath) => (targetPath === '/repo/inner-link' ? '/repo/inner' : targetPath);
+    const workspace = path.resolve('/repo');
+    const innerLink = path.join(workspace, 'inner-link');
+    const inner = path.join(workspace, 'inner');
+    const realpath = async (targetPath) => (targetPath === innerLink ? inner : targetPath);
     const handler = registerExec({ spawn, realpath });
 
     const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo/inner-link' });
@@ -2273,7 +2282,13 @@ describe('fs exec git-read cache', () => {
 
   it('runs in a symlinked workspace root whose canonical base contains the cwd (#2693)', async () => {
     const { spawn, calls } = createSpawn({ stdoutByCommand: { pwd: '/real-repo\n' } });
-    const realpath = async (targetPath) => targetPath.replace('/repo', '/real-repo');
+    const workspace = path.resolve('/repo');
+    const realRoot = path.resolve('/real-repo');
+    const realpath = async (targetPath) => (
+      targetPath === workspace || targetPath.startsWith(workspace + path.sep)
+        ? path.join(realRoot, path.relative(workspace, targetPath))
+        : targetPath
+    );
     const handler = registerExec({ spawn, realpath });
 
     const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo' });
