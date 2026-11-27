@@ -1223,7 +1223,7 @@ const focusForegroundWindow = () => {
   if (target.isMinimized()) target.restore();
   showWindow(target);
   target.focus();
-  if (typeof target.moveTop === 'function') target.moveTop();
+  target.moveTop?.();
 };
 
 // external: https://blog.bloomca.me/2025/02/22/electron-mac-notifications Keep notifications referenced until click or close so macOS click events survive garbage collection.
@@ -1237,7 +1237,7 @@ const clearSessionNotifications = (sessionId) => {
   if (!ids) return;
   deliveredNotificationIdsBySession.delete(sessionId);
   // Notification.remove is Electron 44+; see setZoomMode in createBrowserWindow.
-  if (typeof Notification.remove === 'function') Notification.remove(ids);
+  Notification.remove?.(ids);
 };
 
 const getNativeNotificationClaimKey = (payload) => {

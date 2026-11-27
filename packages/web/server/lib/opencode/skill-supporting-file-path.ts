@@ -11,7 +11,7 @@ const isMissingPathError = (error: NodeJS.ErrnoException): boolean => (
 // normalizes symlink text lexically, so a link whose target climbs with `..`
 // past another symlink is judged by the wrong directory. The native binding
 // follows filesystem semantics, matching the open() that happens later.
-const realpathSync: typeof fs.realpathSync = fs.realpathSync.native ?? fs.realpathSync;
+const realpathSync = fs.realpathSync.native ?? fs.realpathSync;
 
 const MAX_SYMLINK_EXPANSIONS = 40;
 

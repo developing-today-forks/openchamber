@@ -20,10 +20,16 @@ import { readCodexCliLogin, signInEmailOf } from '../../web/server/lib/quota/pro
 import { isUsageTimeout, requestCodexUsage, requestUsageWithDeadline, type UsageResponse } from './usageRequest';
 import { formatCredits } from '../../web/server/lib/quota/utils/formatters.js';
 import { fetchCursorSummaryWindow } from '../../web/server/lib/quota/providers/cursor-summary.js';
+import { selectAntigravityAccount } from './antigravityAccount';
 
-type AuthEntry = Record<string, unknown> | string;
+type QuotaJsonValue = string | number | boolean | null | QuotaJsonValue[] | QuotaJsonObject;
+type QuotaJsonObject = { [key: string]: QuotaJsonValue };
+type QuotaValueInput = QuotaJsonValue | undefined;
+type ProviderUsageWindows = ProviderUsage['windows'];
+type AuthEntryObject = { [key: string]: QuotaValueInput };
+
+type AuthEntry = AuthEntryObject | string;
 type AuthFile = Record<string, AuthEntry>;
-
 type UsageWindowGiftReset = {
   recordId: number;
   expireAt: number;
@@ -287,11 +293,11 @@ type ProviderResult = {
 const XAI_USAGE_ENDPOINT = 'https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig';
 const XAI_ACCESS_EXPIRY_SKEW_MS = 120_000;
 
-type XaiAuthEntry = Record<string, unknown> & {
+type XaiAuthEntry = AuthEntryObject & {
   type: 'oauth';
   access?: string;
   refresh?: string;
-  expires?: unknown;
+  expires?: QuotaValueInput;
 };
 
 const ANTIGRAVITY_ACCOUNTS_PATHS = [
@@ -352,17 +358,15 @@ const resolveGoogleWindow = (sourceId: GoogleAuthSource['sourceId'], resetAt: nu
   return { label: 'per-model', seconds: null } as const;
 };
 
-const ZAI_TOKEN_WINDOW_SECONDS: Record<number, number> = {
+const ZAI_TOKEN_WINDOW_SECONDS = {
   3: 60 * 60,
   6: 7 * 24 * 60 * 60,
-};
+} as const satisfies Record<3 | 6, number>;
 
 const QUOTA_AUTH_FILE_MAX_BYTES = 1 * 1024 * 1024;
 
-export const readJsonFile = (filePath: string): Record<string, unknown> | null => {
-  if (!fs.existsSync(filePath)) {
-    return null;
-  }
+export const readJsonFile = (filePath: string): AuthEntryObject | null => {
+  if (!fs.existsSync(filePath)) return null;
   try {
     const raw = readCappedFileSync(filePath, QUOTA_AUTH_FILE_MAX_BYTES, {
       tooLarge: (file) => new Error(`Quota auth file at ${file} exceeds the ${QUOTA_AUTH_FILE_MAX_BYTES}-byte limit`),
@@ -371,8 +375,7 @@ export const readJsonFile = (filePath: string): Record<string, unknown> | null =
     const trimmed = raw.trim();
     if (!trimmed) return null;
     const parsed = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed as Record<string, unknown>;
+    return asObject(parsed);
   } catch (error) {
     console.warn(`Failed to read JSON file: ${filePath}`, error);
     return null;
@@ -388,22 +391,16 @@ const getAuthEntry = (auth: AuthFile, aliases: string[]) => {
   return null;
 };
 
-const normalizeAuthEntry = (entry: AuthEntry | null) => {
+const normalizeAuthEntry = (entry: AuthEntry | null): AuthEntryObject | null => {
   if (!entry) return null;
-  if (typeof entry === 'string') {
-    return { token: entry } as Record<string, unknown>;
-  }
-  if (typeof entry === 'object') {
-    return entry;
-  }
+  if (typeof entry === 'string') return { token: entry };
+  if (typeof entry === 'object') return entry;
   return null;
 };
 
-const asObject = (value: unknown): Record<string, unknown> | null => (
-  value && typeof value === 'object' ? value as Record<string, unknown> : null
-);
+const asObject = (value: QuotaValueInput | AuthEntryObject | null): AuthEntryObject | null => value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 
-const asNonEmptyString = (value: unknown): string | null => {
+const asNonEmptyString = (value: QuotaValueInput): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
@@ -419,8 +416,6 @@ const asNonEmptyString = (value: unknown): string | null => {
  * failure result. The web twin is readQuotaJson in
  * packages/web/server/lib/quota/utils/response-body.js.
  */
-type QuotaJsonValue = string | number | boolean | null | QuotaJsonValue[] | { [key: string]: QuotaJsonValue };
-
 const readQuotaJson = async (response: Pick<Response, 'headers' | 'body' | 'json'>): Promise<QuotaJsonValue> => {
   // Test doubles pass a plain { ok, json } without a body; real responses
   // go through the bounded reader.
@@ -465,17 +460,17 @@ const ollamaApiKeyFrom = (entry: ReturnType<typeof normalizeAuthEntry>): string 
  * falls through to the second field identically on both sides, and a
  * blank credential is never sent as a bearer.
  */
-const keyOrTokenFrom = (entry: unknown): string | null => {
+const keyOrTokenFrom = (entry: QuotaValueInput | AuthEntryObject | null): string | null => {
   const record = asObject(entry);
   return asNonEmptyString(record?.key) ?? asNonEmptyString(record?.token);
 };
 
-const accessOrTokenFrom = (entry: unknown): string | null => {
+const accessOrTokenFrom = (entry: QuotaValueInput | AuthEntryObject | null): string | null => {
   const record = asObject(entry);
   return asNonEmptyString(record?.access) ?? asNonEmptyString(record?.token);
 };
 
-const parseGoogleRefreshToken = (rawRefreshToken: unknown) => {
+const parseGoogleRefreshToken = (rawRefreshToken: QuotaValueInput) => {
   const refreshToken = asNonEmptyString(rawRefreshToken);
   if (!refreshToken) {
     return { refreshToken: null, projectId: null, managedProjectId: null };
@@ -489,7 +484,7 @@ const parseGoogleRefreshToken = (rawRefreshToken: unknown) => {
   };
 };
 
-const toNumber = (value: unknown): number | null => {
+const toNumber = (value: QuotaValueInput): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
   }
@@ -500,7 +495,7 @@ const toNumber = (value: unknown): number | null => {
   return null;
 };
 
-export const toTimestamp = (value: unknown): number | null => {
+export const toTimestamp = (value: QuotaValueInput): number | null => {
   if (!value) return null;
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return null;
@@ -638,8 +633,8 @@ const jwtExpiryMilliseconds = (accessToken: string): number | null => {
   if (!payload) return null;
 
   try {
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as Record<string, unknown>;
-    return typeof decoded.exp === 'number' && Number.isFinite(decoded.exp)
+    const decoded = asObject(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+    return typeof decoded?.exp === 'number' && Number.isFinite(decoded.exp)
       ? decoded.exp * 1000
       : null;
   } catch {
@@ -819,7 +814,7 @@ const isXaiUsagePercentPath = (path: number[]) => (
   XAI_USAGE_PERCENT_PATHS.some((candidate) => sameXaiPath(candidate, path))
 );
 
-const parseXaiUsage = (bytes: Uint8Array): { usedPercent: number; resetAt: number | null } => {
+const parseXaiUsage = (bytes: Uint8Array) => {
   const frames = parseXaiGrpcFrames(bytes);
   if (frames === false) throw new Error('xAI returned malformed gRPC-web framing');
   const payloads = frames === null
@@ -954,7 +949,7 @@ const readCodexInstanceIds = (): string[] => {
 };
 
 const codexEntryWithToken = (auth: AuthFile, aliases: string[]) => {
-  const entry = normalizeAuthEntry(getAuthEntry(auth, aliases)) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, aliases));
   return entry && accessOrTokenFrom(entry) ? entry : null;
 };
 
@@ -1265,7 +1260,7 @@ type GoogleAuthSource = {
 };
 
 const resolveGeminiCliAuth = (auth: AuthFile): GoogleAuthSource | null => {
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['google', 'google.oauth'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['google', 'google.oauth']));
   const entryObject = asObject(entry);
   if (!entryObject) {
     return null;
@@ -1291,29 +1286,21 @@ const resolveGeminiCliAuth = (auth: AuthFile): GoogleAuthSource | null => {
 
 const resolveAntigravityAuth = (): GoogleAuthSource | null => {
   for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
-    const data = readJsonFile(filePath);
-    const accounts = data?.accounts;
-    if (Array.isArray(accounts) && accounts.length > 0) {
-      const index = typeof (data as Record<string, unknown>)?.activeIndex === 'number'
-        ? (data as Record<string, unknown>).activeIndex as number
-        : 0;
-      const account = (accounts[index] as Record<string, unknown> | undefined) ?? (accounts[0] as Record<string, unknown> | undefined);
-      if (account?.refreshToken) {
-        const refreshParts = parseGoogleRefreshToken(account.refreshToken);
-        if (!refreshParts.refreshToken) continue;
-        return {
-          sourceId: 'antigravity',
-          sourceLabel: 'Antigravity',
-          refreshToken: refreshParts.refreshToken,
-          projectId: asNonEmptyString(account.projectId)
-            ?? asNonEmptyString(account.managedProjectId)
-            ?? refreshParts.projectId
-            ?? refreshParts.managedProjectId
-            ?? undefined,
-          email: asNonEmptyString(account.email) ?? undefined,
-        };
-      }
-    }
+    const account = selectAntigravityAccount(readJsonFile(filePath));
+    if (!account?.refreshToken) continue;
+    const refreshParts = parseGoogleRefreshToken(account.refreshToken);
+    if (!refreshParts.refreshToken) continue;
+    return {
+      sourceId: 'antigravity',
+      sourceLabel: 'Antigravity',
+      refreshToken: refreshParts.refreshToken,
+      projectId: account.projectId
+        ?? account.managedProjectId
+        ?? refreshParts.projectId
+        ?? refreshParts.managedProjectId
+        ?? undefined,
+      email: account.email ?? undefined,
+    };
   }
 
   return null;
@@ -1414,7 +1401,7 @@ const fetchGoogleModels = async (
       });
 
       if (response.ok) {
-        return await readQuotaJson(response) as Record<string, unknown>;
+        return await readQuotaJson(response) as QuotaJsonObject;
       }
     } catch {
       // fall through
@@ -1851,7 +1838,7 @@ const buildClaudeRateLimitResult = (): ProviderResult => (
       })
 );
 
-const buildClaudeUsage = (payload: Record<string, unknown>): ProviderUsage => {
+const buildClaudeUsage = (payload: QuotaJsonObject): ProviderUsage => {
   const windows: Record<string, UsageWindow> = {};
   const models: Record<string, ProviderUsage> = {};
   const limits = Array.isArray(payload.limits) ? payload.limits : [];
@@ -1927,7 +1914,7 @@ type ClaudeQuotaDependencies = {
 
 export const fetchClaudeQuota = async ({ readAuth = readOpenCodeCredentials }: ClaudeQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['anthropic', 'claude']));
   const accessToken = accessOrTokenFrom(entry);
 
   if (!accessToken) {
@@ -2003,7 +1990,7 @@ export const fetchClaudeQuota = async ({ readAuth = readOpenCodeCredentials }: C
       });
     }
 
-    const payload = await readQuotaJson(response) as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as QuotaJsonObject;
     const usage = buildClaudeUsage(payload);
     claudeCachedUsage = usage;
     return buildResult({
@@ -2153,7 +2140,7 @@ type CopilotQuotaDependencies = {
 
 export const fetchCopilotQuota = async ({ readAuth = readOpenCodeCredentials }: CopilotQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['github-copilot', 'copilot']));
   const accessToken = accessOrTokenFrom(entry);
   // SAFETY: OpenCode stores `enterpriseUrl` on a Copilot credential as a string when the
   // login targets GitHub Enterprise Server. A value that is not a usable host is refused by
@@ -2241,12 +2228,12 @@ const KIMI_RATIO_WINDOWS: KimiRatioWindow[] = [
   { key: 'limit_month_total', label: 'monthly', windowSeconds: null },
 ];
 
-const toKimiRatioPercent = (entry: Record<string, unknown> | null): number | null => {
+const toKimiRatioPercent = (entry: AuthEntryObject | null): number | null => {
   const ratio = toNumber(entry?.used_ratio);
   return ratio === null ? null : Math.max(0, Math.min(100, ratio * 100));
 };
 
-const kimiRatioWindows = (usages: Record<string, unknown>) => {
+const kimiRatioWindows = (usages: AuthEntryObject) => {
   const windows: Record<string, UsageWindow> = {};
   for (const { key, label, windowSeconds } of KIMI_RATIO_WINDOWS) {
     const entry = asObject(usages[key]);
@@ -2262,7 +2249,7 @@ const kimiRatioWindows = (usages: Record<string, unknown>) => {
   return windows;
 };
 
-const kimiLegacyWindows = (payload: Record<string, unknown> | null) => {
+const kimiLegacyWindows = (payload: AuthEntryObject | null) => {
   const windows: Record<string, UsageWindow> = {};
   const usage = asObject(payload?.usage);
   if (usage) {
@@ -2374,7 +2361,7 @@ export const fetchKimiQuota = async ({ readAuth = readOpenCodeCredentials, fetch
       });
 
       if (response.ok) {
-        const payload = asObject(await response.json());
+        const payload = asObject(await readQuotaJson(response));
         const usages = asObject(payload?.usages);
         const windows = usages ? kimiRatioWindows(usages) : kimiLegacyWindows(payload);
 
@@ -2436,7 +2423,7 @@ const fetchMiniMaxQuota = async (data: {
   usageFieldsAreRemaining: boolean;
 }): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, [data.providerId])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, [data.providerId]));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -2469,7 +2456,7 @@ const fetchMiniMaxQuota = async (data: {
       });
     }
 
-    const payload = await readQuotaJson(response) as Record<string, unknown>;
+    const payload = await readQuotaJson(response) as QuotaJsonObject;
     const statusError = miniMaxStatusError(asObject(payload.base_resp));
     if (statusError) {
       return buildResult({
@@ -2696,17 +2683,21 @@ const fetchExeDevQuota = async (): Promise<ProviderResult> => {
 
 const CURSOR_BASE_URL = 'https://api2.cursor.sh';
 
-const fetchCursorConnect = async (path: string, accessToken: string, body: Record<string, unknown> | null): Promise<Record<string, unknown>> => {
+const fetchCursorConnect = async (path: string, accessToken: string, body: AuthEntryObject | null): Promise<AuthEntryObject | null> => {
   const response = await fetch(`${CURSOR_BASE_URL}/${path}`, body === null
     ? { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000) }
     : { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error(response.status === 401 ? 'Cursor session expired' : `API error: ${response.status}`);
-  return readQuotaJson(response) as Promise<Record<string, unknown>>;
+  const payload = asObject(await readQuotaJson(response));
+  return payload;
 };
 
-const cursorRequestUsage = (authUsage: unknown): { used: number; limit: number } | null => {
+const cursorRequestUsage = (authUsage: QuotaValueInput | AuthEntryObject | null): { used: number; limit: number } | null => {
+  const entries = asObject(authUsage);
+  if (!entries) return null;
   let best: { used: number; limit: number } | null = null;
-  for (const [key, entry] of Object.entries((authUsage ?? {}) as Record<string, Record<string, unknown>>)) {
+  for (const [key, rawEntry] of Object.entries(entries)) {
+    const entry = asObject(rawEntry);
     if (key === 'startOfMonth' || !entry) continue;
     const used = toNumber(entry.numRequests);
     const limit = toNumber(entry.maxRequestUsage);
@@ -2716,31 +2707,31 @@ const cursorRequestUsage = (authUsage: unknown): { used: number; limit: number }
   return best;
 };
 
-const cursorTeamMemberSpend = (teamSpend: unknown, userId: unknown): Record<string, unknown> | null => {
+const cursorTeamMemberSpend = (teamSpend: QuotaValueInput | AuthEntryObject | null, userId: QuotaValueInput): AuthEntryObject | null => {
   const id = toNumber(userId);
-  const members = (teamSpend as Record<string, unknown> | null | undefined)?.teamMemberSpend;
+  const members = asObject(teamSpend)?.teamMemberSpend;
   if (id === null || !Array.isArray(members)) return null;
-  return (members as Array<Record<string, unknown>>).find((member) => toNumber(member?.userId) === id) ?? null;
+  return members.map(asObject).find((member) => member && toNumber(member.userId) === id) ?? null;
 };
 
-const cursorCreditsWindow = (credits: Record<string, unknown> | null): UsageWindow | null => {
+const cursorCreditsWindow = (credits: AuthEntryObject | null): UsageWindow | null => {
   const balance = toNumber(credits?.balanceCents ?? credits?.totalBalanceCents ?? credits?.amountCents);
   return balance === null ? null : toUsageWindow({ usedPercent: null, windowSeconds: null, resetAt: null, valueLabel: `$${formatMoney(balance / 100)}` });
 };
 
-const cursorCycleMs = (value: unknown): number | null => normalizeTimestamp(toNumber(value)) ?? toTimestamp(value);
+const cursorCycleMs = (value: QuotaValueInput): number | null => normalizeTimestamp(toNumber(value)) ?? toTimestamp(value);
 
-const cursorCycleWindowSeconds = (startValue: unknown, endValue: unknown): number | null => {
+const cursorCycleWindowSeconds = (startValue: QuotaValueInput, endValue: QuotaValueInput): number | null => {
   const start = cursorCycleMs(startValue);
   const end = cursorCycleMs(endValue);
   return start !== null && end !== null && end > start ? Math.floor((end - start) / 1000) : null;
 };
 
-const cursorEnterpriseWindows = (usage: Record<string, unknown> | null, plan: Record<string, unknown> | null, authUsage: Record<string, unknown> | null, hardLimit: Record<string, unknown> | null, memberSpend: Record<string, unknown> | null): Record<string, UsageWindow> => {
-  const planInfo = (plan?.planInfo as Record<string, unknown> | undefined);
+const cursorEnterpriseWindows = (usage: AuthEntryObject | null, plan: AuthEntryObject | null, authUsage: AuthEntryObject | null, hardLimit: AuthEntryObject | null, memberSpend: AuthEntryObject | null): ProviderUsageWindows => {
+  const planInfo = asObject(plan?.planInfo);
   const resetAt = toTimestamp(planInfo?.billingCycleEnd ?? usage?.billingCycleEnd);
   const windowSeconds = cursorCycleWindowSeconds(planInfo?.billingCycleStart ?? usage?.billingCycleStart, planInfo?.billingCycleEnd ?? usage?.billingCycleEnd);
-  const windows: Record<string, UsageWindow> = {};
+  const windows: ProviderUsageWindows = {};
   const requestUsage = cursorRequestUsage(authUsage);
   if (requestUsage) {
     windows.billing_cycle = toUsageWindow({ usedPercent: Math.min(100, Math.max(0, (requestUsage.used / requestUsage.limit) * 100)), windowSeconds, resetAt, valueLabel: `${Math.round(requestUsage.used)} / ${Math.round(requestUsage.limit)}` });
@@ -2757,7 +2748,7 @@ const fetchCursorQuota = async (): Promise<ProviderResult> => {
   const accessToken = readCredential('cursor')?.accessToken;
   if (!accessToken) return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: false, configured: false, error: 'Not configured' });
   try {
-    const post = (path: string, body: Record<string, unknown> = {}) => fetchCursorConnect(path, accessToken, body);
+    const post = (path: string, body: AuthEntryObject = {}) => fetchCursorConnect(path, accessToken, body);
     const get = (path: string) => fetchCursorConnect(path, accessToken, null);
     const [usage, plan, credits] = await Promise.all([
       post('aiserver.v1.DashboardService/GetCurrentPeriodUsage'),
@@ -2785,10 +2776,10 @@ const fetchCursorQuota = async (): Promise<ProviderResult> => {
       }
       const creditWindow = cursorCreditsWindow(credits);
       if (creditWindow) windows.credits = creditWindow;
-      const planName = (plan?.planInfo as Record<string, unknown> | undefined)?.planName;
+      const planName = asObject(plan?.planInfo)?.planName;
       return buildResult({ providerId: 'cursor', providerName: planName ? `Cursor ${String(planName)}` : 'Cursor', ok: true, configured: true, usage: { windows } });
     }
-    const planUsage = (usage.planUsage as Record<string, unknown> | undefined) ?? {};
+    const planUsage = asObject(usage.planUsage) ?? {};
     const rawUsedPercent = toNumber(planUsage.totalPercentUsed);
     const usedPercent = rawUsedPercent === null ? null : Math.min(100, Math.max(0, rawUsedPercent));
     return buildResult({ providerId: 'cursor', providerName: 'Cursor', ok: true, configured: true, usage: { windows: { billing_cycle: toUsageWindow({ usedPercent, windowSeconds: null, resetAt: toTimestamp(usage.billingCycleEnd) }) } } });
@@ -2813,7 +2804,7 @@ const openRouterResetAt = (period: string | null, nowMs: number): number | null 
 const PERIOD_SECONDS = { daily: 86400, weekly: 604800, monthly: 30 * 86400 };
 type OpenRouterPeriod = keyof typeof PERIOD_SECONDS;
 
-const isOpenRouterPeriod = (value: unknown): value is OpenRouterPeriod => (
+const isOpenRouterPeriod = (value: QuotaValueInput): value is OpenRouterPeriod => (
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(PERIOD_SECONDS, value)
 );
 
@@ -2826,7 +2817,9 @@ const resolveOpenRouterConfigBase = (): string | null => {
     const config = readConfig();
     const readBaseURL = (sectionKey: 'providers' | 'provider'): string | null => {
       const section = config[sectionKey];
-      return isRecord(section) ? asNonEmptyString(toProviderEntity(section.openrouter).settings?.baseURL) : null;
+      if (!isRecord(section)) return null;
+      const baseURL = toProviderEntity(section.openrouter).settings?.baseURL;
+      return typeof baseURL === 'string' ? asNonEmptyString(baseURL) : null;
     };
     const base = (
       readBaseURL('providers') ?? readBaseURL('provider')
@@ -2843,7 +2836,7 @@ type OpenRouterQuotaDependencies = {
 
 export const fetchOpenRouterQuota = async ({ readAuth = readOpenCodeCredentials }: OpenRouterQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['openrouter'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['openrouter']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -2880,7 +2873,7 @@ export const fetchOpenRouterQuota = async ({ readAuth = readOpenCodeCredentials 
       });
     }
 
-    const payload = await readQuotaJson(response) as unknown;
+    const payload = await readQuotaJson(response);
     const dataContainer = asObject(payload);
     const data = asObject(dataContainer?.data);
     if (data === null) {
@@ -2903,8 +2896,8 @@ export const fetchOpenRouterQuota = async ({ readAuth = readOpenCodeCredentials 
       });
     }
 
-    const toAmount = (value: unknown) => (String(value).trim() === '' ? null : toNumber(value));
-    const toSpendAmount = (value: unknown) => {
+    const toAmount = (value: QuotaValueInput) => (String(value).trim() === '' ? null : toNumber(value));
+    const toSpendAmount = (value: QuotaValueInput) => {
       const amount = toAmount(value);
       return amount !== null && amount >= 0 ? amount : null;
     };
@@ -2980,15 +2973,16 @@ export const fetchOpenRouterQuota = async ({ readAuth = readOpenCodeCredentials 
 };
 
 
-export const normalizeTimestamp = (value: unknown) => {
+export const normalizeTimestamp = (value: QuotaValueInput) => {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return value < 1_000_000_000_000 ? value * 1000 : value;
 };
 
 const resolveWindowSeconds = (limit: ZaiLimit | undefined) => {
   if (!limit || typeof limit.number !== 'number') return null;
-  const unitSeconds = ZAI_TOKEN_WINDOW_SECONDS[Number(limit.unit)];
-  if (!unitSeconds) return null;
+  const unit = Number(limit.unit);
+  if (unit !== 3 && unit !== 6) return null;
+  const unitSeconds = ZAI_TOKEN_WINDOW_SECONDS[unit];
   return unitSeconds * limit.number;
 };
 
@@ -3075,7 +3069,7 @@ type ZaiQuotaDependencies = {
 
 export const fetchZaiQuota = async ({ readAuth = readOpenCodeCredentials }: ZaiQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES)) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3167,11 +3161,7 @@ export type QuotaGiftResetType = (typeof ZAI_GIFT_RESET_TYPES)[number];
 
 const activateZaiGiftReset = async (input: { recordId: number; resetType: QuotaGiftResetType; grantType?: string }): Promise<void> => {
   const auth = await readOpenCodeCredentials();
-  // SAFETY: auth.json is untyped storage; the cast only reads the optional
-  // key/token fields and no other shape is consumed.
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES)) as { key?: unknown; token?: unknown } | null;
-  // SAFETY: a non-string key/token becomes an unusable bearer that the
-  // !apiKey check rejects before any request leaves the host.
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ZAI_ALIASES));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3224,7 +3214,7 @@ type ZhipuaiQuotaDependencies = {
 
 export const fetchZhipuaiCodingPlanQuota = async ({ readAuth = readOpenCodeCredentials }: ZhipuaiQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['zhipuai-coding-plan'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['zhipuai-coding-plan']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3352,7 +3342,7 @@ type NanoGptQuotaDependencies = {
 
 export const fetchNanoGptQuota = async ({ readAuth = readOpenCodeCredentials }: NanoGptQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['nano-gpt', 'nanogpt', 'nano_gpt'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['nano-gpt', 'nanogpt', 'nano_gpt']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3459,7 +3449,7 @@ const WAFER_WINDOW_SECONDS = 5 * 3600;
 
 const fetchWaferQuota = async (): Promise<ProviderResult> => {
   const auth = await readOpenCodeCredentials();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['wafer', 'wafer-ai', 'wafer_ai', 'wafer.ai']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3589,7 +3579,7 @@ type NeuralwattQuotaDependencies = {
 
 export const fetchNeuralwattQuota = async ({ readAuth = readOpenCodeCredentials }: NeuralwattQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['neuralwatt']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3841,7 +3831,7 @@ type DeepinfraQuotaDependencies = {
 
 export const fetchDeepinfraQuota = async ({ readAuth = readOpenCodeCredentials }: DeepinfraQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepinfra', 'deep-infra', 'deep_infra'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepinfra', 'deep-infra', 'deep_infra']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -3940,7 +3930,7 @@ type DeepseekQuotaDependencies = {
 
 export const fetchDeepseekQuota = async ({ readAuth = readOpenCodeCredentials }: DeepseekQuotaDependencies = {}): Promise<ProviderResult> => {
   const auth = await readAuth();
-  const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepseek'])) as Record<string, unknown> | null;
+  const entry = normalizeAuthEntry(getAuthEntry(auth, ['deepseek']));
   const apiKey = keyOrTokenFrom(entry);
 
   if (!apiKey) {
@@ -4004,7 +3994,7 @@ export const fetchDeepseekQuota = async ({ readAuth = readOpenCodeCredentials }:
     }
 
     const symbol = balanceInfo?.currency === 'CNY' ? '¥' : '$';
-    const windows: Record<string, UsageWindow> = {
+    const windows: ProviderUsageWindows = {
       credits_balance: toUsageWindow({
         usedPercent: null,
         windowSeconds: null,
@@ -4077,9 +4067,9 @@ const readMuseAccountToken = (): string | null => {
 // a missing one falls through to null, so this describes what the parser
 // accepts rather than a guarantee about the payload.
 type MetaWindowPayload = {
-  used_percent?: unknown;
-  window_duration_mins?: unknown;
-  resets_at?: unknown;
+  used_percent?: QuotaValueInput;
+  window_duration_mins?: QuotaValueInput;
+  resets_at?: QuotaValueInput;
 };
 type MetaSubscriptionUsage = {
   window?: MetaWindowPayload;
@@ -4954,7 +4944,7 @@ const commandCodeApiKey = (auth: AuthFile): string | null => {
 
 const commandCodeFormatCredits = (value: number): string => String(Math.round((value + Number.EPSILON) * 100) / 100);
 
-const parseCommandCodeCredits = (payload: QuotaJsonValue): Record<string, UsageWindow> => {
+const parseCommandCodeCredits = (payload: QuotaJsonValue): ProviderUsageWindows => {
   const root = asObject(payload);
   const credits = asObject(root?.credits);
   const limits = asObject(root?.windowLimits);
@@ -5054,7 +5044,7 @@ const OPEN_DESIGN_WINDOW_LABELS = new Map<number, string>([
   [604800, '7d'],
 ]);
 
-const parseOpenDesignCodingPlanWindows = (payload: QuotaJsonValue): Record<string, UsageWindow> | null => {
+const parseOpenDesignCodingPlanWindows = (payload: QuotaJsonValue): ProviderUsageWindows | null => {
   const data = asObject(payload);
   if (!data || !Array.isArray(data.windows)) return null;
 
