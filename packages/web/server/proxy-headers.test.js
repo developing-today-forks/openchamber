@@ -19,6 +19,52 @@ describe('OpenCode proxy header handling', () => {
     expect(headers['accept-encoding']).toBeUndefined();
   });
 
+  it('drops request headers nominated by the connection header', () => {
+    const headers = collectForwardProxyHeaders({
+      connection: 'x-internal, Keep-Alive',
+      'x-internal': 'secret',
+      'keep-alive': 'timeout=5',
+      accept: 'application/json',
+    });
+
+    expect(headers).toEqual({ accept: 'application/json' });
+  });
+
+  it('handles whitespace, casing, and empty members in connection nominations', () => {
+    const headers = collectForwardProxyHeaders({
+      connection: ' X-Trace ,, x-Trace-Id ',
+      'x-trace': 'a',
+      'X-Trace-Id': 'b',
+      accept: 'application/json',
+    });
+
+    expect(headers).toEqual({ accept: 'application/json' });
+  });
+
+  it('drops response headers nominated by the connection header', () => {
+    const applied = [];
+    const response = {
+      setHeader(key, value) {
+        applied.push([key, value]);
+      },
+    };
+
+    applyForwardProxyResponseHeaders(
+      new Headers({
+        connection: 'x-internal',
+        'x-internal': 'secret',
+        'content-type': 'application/json',
+        etag: 'W/"abc"',
+      }),
+      response,
+    );
+
+    expect(applied).toEqual([
+      ['content-type', 'application/json'],
+      ['etag', 'W/"abc"'],
+    ]);
+  });
+
   it('replaces client authorization with managed OpenCode auth', () => {
     const headers = collectForwardProxyHeaders(
       { authorization: 'Bearer oc_client_stale-ui-token' },
