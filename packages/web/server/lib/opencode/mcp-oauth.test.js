@@ -89,6 +89,10 @@ const startFakeOpenCode = async ({ config, servers }) => {
       res.statusCode = 204;
       return res.end();
     }
+    if (opencode.oversizedStart) {
+      res.setHeader('content-type', 'application/json');
+      return res.end('x'.repeat(17 * 1024 * 1024));
+    }
     opencode.starts += 1;
     const attemptID = `attempt-${opencode.starts}`;
     const state = `state-${opencode.starts}`;
@@ -204,6 +208,15 @@ describe('MCP OAuth sign-in', () => {
       expect(config.entry.oauth.redirect_uri).toBe(OWN_REDIRECT);
       expect(Number.isInteger(config.entry.oauth.callback_port)).toBe(true);
       expect(opencode.listener.address().port).toBe(config.entry.oauth.callback_port);
+    });
+
+    it('refuses an over-cap sign-in response instead of buffering it whole', async () => {
+      const { app, opencode } = await build({ entry: remoteEntry() });
+      opencode.oversizedStart = true;
+
+      const response = await startFromRemote(app).expect(502);
+      expect(response.body.message).toContain('too large');
+      expect(opencode.starts).toBe(0);
     });
 
     it('keeps the other oauth fields of the entry it prepares', async () => {
