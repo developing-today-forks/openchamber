@@ -669,6 +669,8 @@ describe('skill-routes directory soft fallback', () => {
     }
     expect(readSkillSupportingFile(skillDir, path.join('references', 'at-cap.md'))).toBe(atCap);
     expect(readSkillSupportingFile(skillDir, path.join('references', 'missing.md'))).toBeNull();
+    // Oracle (#2673): a path through a regular file component raises ENOTDIR, which is a missing file, not a server error.
+    expect(readSkillSupportingFile(skillDir, path.join('SKILL.md', 'trailing'))).toBeNull();
 
     appHandle = await startSkillsApp({ projectRoot });
     const query = `?directory=${encodeURIComponent(projectRoot)}`;
@@ -693,6 +695,10 @@ describe('skill-routes directory soft fallback', () => {
     const missing = await fetch(`${filesBase}/references/missing.md${query}`);
     expect(missing.status).toBe(404);
     expect(await missing.json()).toEqual({ error: 'File not found' });
+
+    const throughFile = await fetch(`${filesBase}/SKILL.md/trailing${query}`);
+    expect(throughFile.status).toBe(404);
+    expect(await throughFile.json()).toEqual({ error: 'File not found' });
   });
 
   it('writes and deletes nested skill supporting files at their real paths (#1146)', async () => {
