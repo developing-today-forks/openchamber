@@ -14,6 +14,7 @@ import { ProjectActionEditorDialog, type ProjectActionEditorTarget } from './Pro
 import { ProjectScopeChip, ProjectSetupUnavailable } from './ProjectSettingsBits';
 import {
   PROJECT_ACTION_PLATFORMS,
+  captureProjectActionBaseRevisions,
   projectActionIconName,
   canWriteShared,
   deleteProjectAction,
@@ -21,16 +22,27 @@ import {
   saveProjectAction,
   setSharedActionHidden,
   type ProjectActionEntry,
+  type ProjectActionBaseRevisions,
 } from './projectSetupModel';
 import type { ProjectSetupState } from './useProjectSetup';
+
+type EditingProjectAction = {
+  target: ProjectActionEditorTarget;
+  entry: ProjectActionEntry | null;
+  baseRevisions: ProjectActionBaseRevisions;
+};
 
 const ActionsGrid: React.FC<{ setup: ProjectSetup; setupState: ProjectSetupState }> = ({ setup, setupState }) => {
   const { t } = useI18n();
   const { write, reload } = setupState;
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
-  const [editing, setEditing] = React.useState<{ target: ProjectActionEditorTarget; entry: ProjectActionEntry | null } | null>(null);
+  const [editing, setEditing] = React.useState<EditingProjectAction | null>(null);
   const entries = listProjectActions(setup);
   const shareable = canWriteShared(setup);
+
+  const openEditor = (target: ProjectActionEditorTarget, entry: ProjectActionEntry | null) => {
+    setEditing({ target, entry, baseRevisions: captureProjectActionBaseRevisions(setup) });
+  };
 
   const settle = async (ok: boolean): Promise<boolean> => {
     if (!ok) toast.error(t('settings.projects.actions.toast.saveFailed'));
@@ -82,7 +94,7 @@ const ActionsGrid: React.FC<{ setup: ProjectSetup; setupState: ProjectSetupState
             <ContextMenuTrigger render={<li className="flex items-center gap-2 pe-2 transition-colors hover:bg-[var(--interactive-hover)]" />}>
               <button
                 type="button"
-                onClick={() => setEditing({ target: { action: entry.action, source: entry.source }, entry })}
+                onClick={() => openEditor({ action: entry.action, source: entry.source }, entry)}
                 className="flex min-w-0 flex-1 items-center gap-3 py-2 ps-3 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--interactive-focus-ring)]"
               >
                 <Icon name={projectActionIconName(entry.action.icon)} className={cn('size-4 shrink-0 text-muted-foreground', entry.hidden && 'opacity-60')} />
@@ -128,7 +140,7 @@ const ActionsGrid: React.FC<{ setup: ProjectSetup; setupState: ProjectSetupState
         <li>
           <button
             type="button"
-            onClick={() => setEditing({ target: { action: null, source: 'personal' }, entry: null })}
+            onClick={() => openEditor({ action: null, source: 'personal' }, null)}
             className="flex w-full items-center gap-3 py-2.5 ps-3 text-start typography-ui-label text-muted-foreground transition-colors hover:bg-[var(--interactive-hover)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--interactive-focus-ring)]"
           >
             <Icon name="add" className="size-4 shrink-0" />
@@ -142,7 +154,17 @@ const ActionsGrid: React.FC<{ setup: ProjectSetup; setupState: ProjectSetupState
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
-        onSave={async (action, to) => settle(await saveProjectAction(setup, write, action, editing?.entry?.source ?? null, to))}
+        onSave={async (action, to) => {
+          if (!editing) return false;
+          return settle(await saveProjectAction(
+            setup,
+            write,
+            action,
+            editing.entry?.source ?? null,
+            to,
+            editing.baseRevisions,
+          ));
+        }}
         onDelete={async () => (editing?.entry ? remove(editing.entry) : false)}
       />
       {confirmDialog}

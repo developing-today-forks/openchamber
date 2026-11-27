@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { OpenChamberProjectAction, ProjectSetup } from '@/lib/openchamberConfig';
 import {
   addSetupCommand,
+  captureProjectActionBaseRevisions,
   deleteProjectAction,
   editSetupCommand,
   listProjectActions,
@@ -93,6 +94,86 @@ describe('listProjectActions', () => {
 });
 
 describe('saveProjectAction', () => {
+  test('passes the revision from the file it read with each whole-list action save', async () => {
+    const base = setupWith({ shared: [action('team')], personal: [action('mine')] });
+    const setup = {
+      ...base,
+      shared: { ...base.shared, projectActionsRevision: 'sha256:shared-read' },
+      personal: { ...base.personal, projectActionsRevision: 'sha256:personal-read' },
+    };
+    const revisions: Array<string | undefined> = [];
+    const writers = recordingWriters().write;
+    const write: ProjectSetupWriters = {
+      ...writers,
+      personalActions: async (_actions, revision) => { revisions.push(revision); return true; },
+      sharedActions: async (_actions, revision) => { revisions.push(revision); return true; },
+    };
+
+    await saveProjectAction(setup, write, action('mine', 'Mine updated'), 'personal', 'personal');
+    await saveProjectAction(setup, write, action('new', 'New team action'), null, 'shared');
+
+    expect(revisions).toEqual(['sha256:personal-read', 'sha256:shared-read']);
+  });
+
+  test('stale saves remain rejected after reload until the editor reopens', async () => {
+    const base = setupWith({ personal: [action('dev')] });
+    const opened = {
+      ...base,
+      personal: { ...base.personal, projectActionsRevision: 'sha256:opened' },
+    };
+    const agentAction: SetupAction = { ...action('dev', 'Agent version'), command: 'run dev --agent' };
+    const refreshed = {
+      ...opened,
+      personal: {
+        ...opened.personal,
+        projectActions: [agentAction],
+        projectActionsRevision: 'sha256:agent-write',
+      },
+    };
+    const openedRevisions = captureProjectActionBaseRevisions(opened);
+    let currentRevision = 'sha256:agent-write';
+    let currentActions: OpenChamberProjectAction[] = [agentAction];
+    const write: ProjectSetupWriters = {
+      ...recordingWriters().write,
+      personalActions: async (actions, baseRevision) => {
+        if (baseRevision !== currentRevision) return false;
+        currentActions = actions;
+        currentRevision = 'sha256:settings-write';
+        return true;
+      },
+    };
+
+    // Oracle: a stale draft is rejected on every retry and the persisted list
+    // keeps the concurrent agent edit until the editor is reopened on it.
+    const staleDraft = { ...base.personal.projectActions[0], name: 'Settings draft' };
+    const saved = await saveProjectAction(
+      refreshed,
+      write,
+      staleDraft,
+      'personal',
+      'personal',
+      openedRevisions,
+    );
+    const retry = await saveProjectAction(refreshed, write, staleDraft, 'personal', 'personal', openedRevisions);
+
+    expect(saved).toBe(false);
+    expect(retry).toBe(false);
+    expect(currentActions).toEqual([agentAction]);
+
+    const reopenedDraft = { ...agentAction, name: 'Settings draft' };
+    const reopenedSaved = await saveProjectAction(
+      refreshed,
+      write,
+      reopenedDraft,
+      'personal',
+      'personal',
+      captureProjectActionBaseRevisions(refreshed),
+    );
+
+    expect(reopenedSaved).toBe(true);
+    expect(currentActions).toEqual([reopenedDraft]);
+  });
+
   test('edits a team action in the repository file without copying it into personal settings', async () => {
     const setup = setupWith({ shared: [action('dev')] });
     const { writes, write } = recordingWriters();

@@ -771,9 +771,12 @@ constructor retains its existing `Object.assign` behavior.
   `setupTarget` (personal by default, or the repository's shared
   `.openchamber/project.json`) and goes through the runtime's
   `updateProjectSetup`/`updateSharedProjectSetup`, so it holds the
-  per-project write lock and validates like the Settings routes; action
-  create/update/remove write the store's whole action list back through
-  that writer. Enterprise mode refuses every one of these writes (403,
+  per-project write lock and validates like the Settings routes. Action
+  create/update/remove use the atomic `mutateProjectSetupActions`/
+  `mutateSharedProjectSetupActions` writers, which read and update the list
+  inside that lock. Settings' whole-list action saves carry the store's
+  `projectActionsRevision`; a stale revision returns 409 instead of replacing
+  a newer agent action. Enterprise mode refuses every one of these writes (403,
   `enterprise_mode`), and each result carries a `change` record (action,
   store, `agent-tool`, timestamp) so the mutation is auditable from the
   result alone.

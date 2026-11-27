@@ -50,8 +50,8 @@ export const useProjectSetup = (projectRef: ProjectRef): ProjectSetupState => {
       return ok;
     };
     return {
-      personalActions: async (projectActions) => notifyActions(await updateProjectSetup(projectRef, { projectActions })),
-      sharedActions: async (projectActions) => notifyActions((await updateSharedProjectSetup(projectRef, { projectActions })) !== null),
+      personalActions: async (projectActions, baseRevision) => notifyActions(await updateProjectSetup(projectRef, { projectActions, projectActionsBaseRevision: baseRevision })),
+      sharedActions: async (projectActions, baseRevision) => notifyActions((await updateSharedProjectSetup(projectRef, { projectActions, projectActionsBaseRevision: baseRevision })) !== null),
       hiddenSharedActionIds: async (ids) => notifyActions(await updateProjectSetup(projectRef, { hiddenSharedActionIds: ids })),
       personalCommands: (setupWorktree) => updateProjectSetup(projectRef, { setupWorktree }),
       sharedCommands: async (setupWorktree) => (await updateSharedProjectSetup(projectRef, { setupWorktree })) !== null,

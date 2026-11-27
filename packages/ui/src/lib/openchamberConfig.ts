@@ -61,6 +61,7 @@ const sharedSchema = z.object({
   setupWorktreeWait: z.boolean().nullable(),
   teardownWorktree: z.array(z.string()).default([]),
   projectActions: z.array(projectActionSchema),
+  projectActionsRevision: z.string().optional(),
   draftStarters: starterRefsSchema,
   plansDir: z.string().nullable(),
 });
@@ -72,6 +73,7 @@ const personalSchema = z.object({
   teardownWorktree: z.array(z.string()).default([]),
   createWorktreeCommand: z.string().default(''),
   projectActions: z.array(projectActionSchema),
+  projectActionsRevision: z.string().optional(),
   projectActionsPrimaryId: z.string().nullable(),
   draftStarters: starterRefsSchema,
   hiddenSharedActionIds: z.array(z.string()),
@@ -101,6 +103,7 @@ export type ProjectSetupPatch = Partial<{
   teardownWorktree: string[];
   createWorktreeCommand: string;
   projectActions: OpenChamberProjectAction[];
+  projectActionsBaseRevision: string | undefined;
   projectActionsPrimaryId: string | null;
   draftStarters: DraftStarterRef[];
   hiddenSharedActionIds: string[];
@@ -204,6 +207,7 @@ export type SharedProjectSetupPatch = Partial<{
   setupWorktreeWait: boolean | null;
   teardownWorktree: string[];
   projectActions: OpenChamberProjectAction[];
+  projectActionsBaseRevision: string | undefined;
   draftStarters: DraftStarterRef[];
   plansDir: string | null;
 }>;

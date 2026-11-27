@@ -97,6 +97,25 @@ export const sanitizeProjectActions = z.unknown().transform((value): ProjectActi
   return actions;
 }).parse;
 
+export const projectActionsRevisionOf = (actions: ProjectAction[]): string => (
+  `sha256:${crypto.createHash('sha256').update(JSON.stringify(sanitizeProjectActions(actions))).digest('hex')}`
+);
+
+export const isProjectActionsStaleError = (cause: Error): cause is Error & { code: 'project_actions_stale' } => (
+  isObjectRecord(cause) && cause.code === 'project_actions_stale'
+);
+
+export const assertProjectActionsBaseRevision = (patch: SharedProjectDocument, currentActions: ProjectAction[]) => {
+  if (!Object.prototype.hasOwnProperty.call(patch, 'projectActions')
+    || !Object.prototype.hasOwnProperty.call(patch, 'projectActionsBaseRevision')) return;
+
+  const baseRevision = patch.projectActionsBaseRevision;
+  if (!isText(baseRevision)) throw new Error('projectActionsBaseRevision must be a string');
+  if (baseRevision !== projectActionsRevisionOf(currentActions)) {
+    throw Object.assign(new Error('Project actions changed since Settings loaded; reload and retry'), { code: 'project_actions_stale' as const });
+  }
+};
+
 export const sanitizeDraftStarters = z.unknown().transform((value): DraftStarter[] => {
   if (!isInputArray(value)) return [];
   const starters: DraftStarter[] = [];
@@ -150,7 +169,7 @@ const sharedTrustOf = z.unknown().transform((value): PersonalProjectSetup['share
   return { hash, trustedAt: isNumber(value.trustedAt) && Number.isFinite(value.trustedAt) ? value.trustedAt : 0 };
 }).parse;
 
-export const projectSetupPatchToStored = z.unknown().transform((patch): StoredProjectSetupPatch => {
+const projectSetupPatchSchema = z.unknown().transform((patch): StoredProjectSetupPatch => {
   if (!isObjectRecord(patch)) {
     throw new Error('patch must be an object');
   }
@@ -209,7 +228,13 @@ export const projectSetupPatchToStored = z.unknown().transform((patch): StoredPr
     if (projectPath) stored.projectPath = projectPath;
   }
   return stored;
-}).parse;
+});
+
+export const projectSetupPatchToStored = (patch: SharedProjectDocument, currentActions?: ProjectAction[]): StoredProjectSetupPatch => {
+  const stored = projectSetupPatchSchema.parse(patch);
+  if (currentActions !== undefined) assertProjectActionsBaseRevision(patch, currentActions);
+  return stored;
+};
 
 export const SHARED_CONFIG_RELATIVE_PATH = '.openchamber/project.json';
 /**
@@ -330,12 +355,17 @@ export const mergeProjectSetup = (personal: PersonalProjectSetup, sharedRead: Sh
     projectActionsPrimaryId: personal.projectActionsPrimaryId,
     draftStarters: [...withSource(shared.draftStarters, 'shared'), ...withSource(personalStarters, 'personal')],
     shared: sharedBlockOf(sharedRead, shared),
-    personal,
+    personal: { ...personal, projectActionsRevision: projectActionsRevisionOf(personal.projectActions) },
   };
 };
 
 const sharedBlockOf = (sharedRead: SharedProjectRead, shared: SharedProjectConfig) => {
-  const block: SharedProjectConfig & { status: SharedProjectRead['status']; path: string; reason?: string } = { status: sharedRead.status, path: SHARED_CONFIG_RELATIVE_PATH, ...shared };
+  const block: SharedProjectConfig & { status: SharedProjectRead['status']; path: string; reason?: string; projectActionsRevision: string } = {
+    status: sharedRead.status,
+    path: SHARED_CONFIG_RELATIVE_PATH,
+    ...shared,
+    projectActionsRevision: projectActionsRevisionOf(shared.projectActions),
+  };
   if (sharedRead.status === 'invalid') block.reason = sharedRead.reason;
   return block;
 };
@@ -390,6 +420,7 @@ export const applySharedProjectSetupPatch = (current: SharedProjectConfig, patch
   }
   if ('projectActions' in patch) {
     if (!Array.isArray(patch.projectActions)) throw new Error('projectActions must be an array');
+    assertProjectActionsBaseRevision(patch, current.projectActions);
     next.projectActions = sanitizeProjectActions(patch.projectActions);
   }
   if ('draftStarters' in patch) {
