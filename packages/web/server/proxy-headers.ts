@@ -26,13 +26,31 @@ const filteredResponseHeaders = new Set([
   'content-encoding',
 ]);
 
+const connectionNominatedHeaders = (value: string | string[] | null | undefined) => {
+  const nominated = new Set<string>();
+
+  for (const part of (Array.isArray(value) ? value : [value])) {
+    if (!part) continue;
+    for (const token of String(part).split(',')) {
+      const normalized = token.trim().toLowerCase();
+      if (normalized.length > 0) {
+        nominated.add(normalized);
+      }
+    }
+  }
+
+  return nominated;
+};
+
 export const collectForwardProxyHeaders = (requestHeaders: IncomingHttpHeaders | null | undefined, authHeaders: { Authorization?: string } = {}) => {
   const headers: Record<string, string> = {};
+  const nominated = connectionNominatedHeaders(requestHeaders?.connection);
 
   for (const [key, value] of Object.entries(requestHeaders || {})) {
     if (!value) continue;
     const normalizedKey = key.toLowerCase();
     if (filteredRequestHeaders.has(normalizedKey)) continue;
+    if (nominated.has(normalizedKey)) continue;
     headers[normalizedKey] = Array.isArray(value) ? value.join(', ') : String(value);
   }
 
@@ -64,9 +82,14 @@ export const applyForwardProxyResponseHeaders = (responseHeaders: Pick<Headers, 
   }
 
   const groupedHeaders = new Map();
+  const entries = [...responseHeaders.entries()];
+  const nominated = connectionNominatedHeaders(entries.find(([key]) => key.toLowerCase() === 'connection')?.[1]);
 
-  for (const [key, value] of responseHeaders.entries()) {
+  for (const [key, value] of entries) {
     if (!shouldForwardProxyResponseHeader(key)) {
+      continue;
+    }
+    if (nominated.has(key.toLowerCase())) {
       continue;
     }
 
