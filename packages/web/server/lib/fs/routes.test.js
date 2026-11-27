@@ -2298,6 +2298,60 @@ describe('fs exec git-read cache', () => {
     expect(calls).toEqual(['pwd']);
   });
 
+  it('fails a command closed when the cwd is swapped for an outside symlink after validation (#2709)', async () => {
+    const { spawn } = createSpawn();
+    const workspace = path.resolve('/repo');
+    const jobDir = path.join(workspace, 'job');
+    const outside = path.resolve('/outside');
+    // The request-time canonicalization sees the real directory inside the
+    // workspace; every later resolution sees the symlink target outside it,
+    // which is the state the filesystem is in when spawn would run.
+    let jobResolutions = 0;
+    const realpath = async (targetPath) => {
+      if (targetPath === jobDir) {
+        jobResolutions += 1;
+        return jobResolutions === 1 ? jobDir : outside;
+      }
+      return targetPath;
+    };
+    const handler = registerExec({ spawn, realpath });
+
+    const res = await callExec(handler, { commands: ['pwd'], cwd: '/repo/job' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(false);
+    expect(res.body.results[0].success).toBe(false);
+    expect(res.body.results[0].error).toBe('Working directory is outside of active workspace');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('stops a multi-command job when the cwd is swapped mid-job (#2709)', async () => {
+    const { spawn, calls } = createSpawn({ stdoutByCommand: { 'echo one': 'one\n' } });
+    const workspace = path.resolve('/repo');
+    const jobDir = path.join(workspace, 'job');
+    const outside = path.resolve('/outside');
+    // Request validation and the first command's re-check see the real
+    // directory; the swap lands before the second command spawns.
+    let jobResolutions = 0;
+    const realpath = async (targetPath) => {
+      if (targetPath === jobDir) {
+        jobResolutions += 1;
+        return jobResolutions <= 2 ? jobDir : outside;
+      }
+      return targetPath;
+    };
+    const handler = registerExec({ spawn, realpath });
+
+    const res = await callExec(handler, { commands: ['echo one', 'echo two'], cwd: '/repo/job' });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.success).toBe(false);
+    expect(res.body.results[0].success).toBe(true);
+    expect(res.body.results[1].success).toBe(false);
+    expect(res.body.results[1].error).toBe('Working directory is outside of active workspace');
+    expect(calls).toEqual(['echo one']);
+  });
+
   it('caches an allowlisted git rev-parse across identical requests', async () => {
     const command = 'git rev-parse --absolute-git-dir --git-common-dir';
     const { spawn, calls } = createSpawn({ stdoutByCommand: { [command]: '/repo/.git\n.git\n' } });
