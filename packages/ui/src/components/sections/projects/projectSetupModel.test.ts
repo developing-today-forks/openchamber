@@ -93,6 +93,27 @@ describe('listProjectActions', () => {
 });
 
 describe('saveProjectAction', () => {
+  test('passes the revision from the file it read with each whole-list action save', async () => {
+    const base = setupWith({ shared: [action('team')], personal: [action('mine')] });
+    const setup = {
+      ...base,
+      shared: { ...base.shared, projectActionsRevision: 'sha256:shared-read' },
+      personal: { ...base.personal, projectActionsRevision: 'sha256:personal-read' },
+    } as ProjectSetup;
+    const revisions: Array<string | undefined> = [];
+    const writers = recordingWriters().write;
+    const write: ProjectSetupWriters = {
+      ...writers,
+      personalActions: async (_actions, revision) => { revisions.push(revision); return true; },
+      sharedActions: async (_actions, revision) => { revisions.push(revision); return true; },
+    };
+
+    await saveProjectAction(setup, write, action('mine', 'Mine updated'), 'personal', 'personal');
+    await saveProjectAction(setup, write, action('new', 'New team action'), null, 'shared');
+
+    expect(revisions).toEqual(['sha256:personal-read', 'sha256:shared-read']);
+  });
+
   test('edits a team action in the repository file without copying it into personal settings', async () => {
     const setup = setupWith({ shared: [action('dev')] });
     const { writes, write } = recordingWriters();
