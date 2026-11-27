@@ -256,7 +256,7 @@ function readSkillSupportingFile(skillDir: string, relativePath: string) {
   try {
     pathStats = fs.statSync(fullPath);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
     throw error;
   }
   if (!pathStats.isFile()) rejectNonRegularFile();
@@ -267,7 +267,7 @@ function readSkillSupportingFile(skillDir: string, relativePath: string) {
     const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
     fileDescriptor = fs.openSync(fullPath, flags);
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
     throw error;
   }
 
