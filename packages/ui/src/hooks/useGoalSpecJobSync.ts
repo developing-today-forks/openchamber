@@ -2,7 +2,7 @@ import React from 'react';
 
 import { toast } from '@/components/ui';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { cancelGoalSpecJob, listGoalSpecJobs, type GoalSpecJob } from '@/lib/goalSpecJobs';
+import { cancelGoalSpecJob, goalSpecJobFailure, listGoalSpecJobs, type GoalSpecJob } from '@/lib/goalSpecJobs';
 import { useI18n } from '@/lib/i18n';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
@@ -57,13 +57,15 @@ export const useGoalSpecJobSync = (enabled: boolean): void => {
     if (!enabled || isVSCodeRuntime()) return;
     const shown = new Map<string, string>();
     const show = (job: GoalSpecJob) => {
-      const key = `${job.status}:${job.cancelled}:${job.error ?? ''}`;
+      const key = `${job.status}:${job.cancelled}:${job.sendUncertain}:${job.error ?? ''}`;
       if (shown.get(job.id) === key) return;
       shown.set(job.id, key);
       const translate = tRef.current;
       const openSession = { label: translate('chat.goal.writer.toast.openSession'), onClick: () => openSessionFromToast(job.sessionId, job.directory) };
-      if (job.status === 'failed') {
-        if (job.cancelled) toast.info(translate('chat.goal.writer.toast.backgroundCancelled'), { id: toastId(job.id), action: openSession });
+      const failure = goalSpecJobFailure(job);
+      if (failure) {
+        if (failure === 'cancelled') toast.info(translate('chat.goal.writer.toast.backgroundCancelled'), { id: toastId(job.id), action: openSession });
+        else if (failure === 'uncertain') toast.warning(translate('chat.goal.writer.toast.backgroundFailedUncertain'), { id: toastId(job.id), action: openSession });
         else toast.error(translate('chat.goal.writer.toast.backgroundFailed', { reason: job.error ?? '' }), { id: toastId(job.id), action: openSession });
         return;
       }

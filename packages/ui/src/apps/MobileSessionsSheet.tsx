@@ -6,7 +6,6 @@ import { isIMECompositionEvent } from '@/lib/ime';
 import {
   RiAddLine,
   RiArrowDownSLine,
-  RiArrowUpSLine,
   RiCheckLine,
   RiDeleteBinLine,
   RiDragMove2Line,
@@ -66,6 +65,12 @@ import {
   insertChatsGroupIndex,
   phoneSectionsInUse,
 } from './mobileSessionsSheetSections';
+import {
+  MobileHeaderlessList,
+  MobileViewModeMenu,
+  ShowFewerRow,
+  ShowMoreRow,
+} from './MobileHeaderlessList';
 import { getDescendantIds, partitionSidebarSessions } from '@/components/session/sidebar/list/sessionCollection';
 import { rankByLatestActivity, sortProjectsByOrder } from '@/components/session/sidebar/list/projectSort';
 import { collectSessionSubtreeIds, runSessionSubtreeAction, type SessionSubtreeAction } from '@/components/session/sidebar/sessions/sessionSubtreeActions';
@@ -200,13 +205,6 @@ const PROJECT_SORT_OPTIONS = [
   ['date-added', 'sessions.sidebar.header.projectSort.dateAdded'],
   ['recent', 'sessions.sidebar.header.projectSort.recent'],
 ] as const;
-
-const VIEW_MODE_OPTIONS = [
-  ['projects', 'mobile.sessions.viewMode.projects'],
-  ['timeline', 'mobile.sessions.viewMode.timeline'],
-] as const;
-
-type SidebarViewMode = (typeof VIEW_MODE_OPTIONS)[number][0];
 
 const LIST_GROUPING_OPTIONS = [
   ['project', 'sessions.sidebar.header.listGrouping.project'],
@@ -699,42 +697,6 @@ const MobileRunRow: React.FC<{ run: MultiRunSummary; laneNodes: readonly Session
   );
 };
 
-const ShowMoreRow: React.FC<{
-  indent: number;
-  onClick: () => void;
-}> = ({ indent, onClick }) => {
-  const { t } = useI18n();
-  return (
-    <button
-      type="button"
-      className="flex min-h-9 w-full items-center gap-2 py-1 pe-3 text-start text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-      style={{ paddingInlineStart: indent, touchAction: 'manipulation' }}
-      onClick={onClick}
-    >
-      <RiArrowDownSLine className="size-4" />
-      <span className="typography-micro">{t('sessions.sidebar.group.showMore')}</span>
-    </button>
-  );
-};
-
-const ShowFewerRow: React.FC<{
-  indent: number;
-  onClick: () => void;
-}> = ({ indent, onClick }) => {
-  const { t } = useI18n();
-  return (
-    <button
-      type="button"
-      className="flex min-h-9 w-full items-center gap-2 py-1 pe-3 text-start text-muted-foreground transition-colors hover:bg-interactive-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-      style={{ paddingInlineStart: indent, touchAction: 'manipulation' }}
-      onClick={onClick}
-    >
-      <RiArrowUpSLine className="size-4" />
-      <span className="typography-micro">{t('sessions.sidebar.group.showFewer')}</span>
-    </button>
-  );
-};
-
 /** One draggable worktree row inside a project's reorder card. */
 const SortableWorktreeReorderRow: React.FC<{ worktree: WorktreeMetadata }> = ({ worktree }) => {
   const { t } = useI18n();
@@ -929,6 +891,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const storedProjectSortOrder = useSessionDisplayStore((state) => state.projectSortOrder);
   const setProjectSortOrder = useSessionDisplayStore((state) => state.setProjectSortOrder);
   const sidebarViewMode = useSessionDisplayStore((state) => state.sidebarViewMode);
+  const headerlessSidebar = useSessionDisplayStore((state) => state.headerlessSidebar);
+  const setHeaderlessSidebar = useSessionDisplayStore((state) => state.setHeaderlessSidebar);
   // The timeline keeps projects in the user's own order, as on desktop;
   // reordering is its only sort.
   const projectSortOrder = sidebarViewMode === 'timeline' ? 'manual' : storedProjectSortOrder;
@@ -1035,7 +999,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
 
   React.useEffect(() => {
     setVisibleCountByBucket(new Map());
-  }, [listSessionGrouping, sidebarViewMode]);
+  }, [headerlessSidebar, listSessionGrouping, sidebarViewMode]);
 
   React.useEffect(() => {
     if (!open || projects.length === 0) return;
@@ -1839,13 +1803,6 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     if (order !== 'manual') setEditingOrder(false);
   };
 
-  // Per-surface profile setting: the phone's choice must not flip the desktop's.
-  const handleViewModeChange = (mode: SidebarViewMode) => {
-    setSidebarViewMode(mode);
-    void updateDesktopSettings({ sidebarViewMode: mode });
-    if (mode === 'timeline') setEditingOrder(false);
-  };
-
   const handleListSessionGroupingChange = (grouping: ListSessionGrouping) => {
     setListSessionGrouping(grouping);
     void updateDesktopSettings({ sidebarListSessionGrouping: grouping });
@@ -2029,14 +1986,14 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   // sidebarLayout value as the desktop sidebar (per surface kind): Chats with
   // the projects or in their own section, one group per project or one
   // combined list, one or two lines per session.
-  const timelineActive = sidebarViewMode === 'timeline' && !normalizedQuery && !editingOrder;
+  const timelineActive = (sidebarViewMode === 'timeline' || headerlessSidebar) && !normalizedQuery && !editingOrder;
   // List by time: every project's root sessions in one list under a
   // Projects section, three-line rows naming the project, revealed a page at
   // a time as the end scrolls near. Every session a zone lists leaves it, so
   // each session shows once.
-  const timeListActive = timelineActive && listSessionGrouping === 'time';
-  const chatsInListProjects = timelineActive && !timeListActive && sidebarLayout.timelineChats === 'group';
-  const combinedListActive = timelineActive && !timeListActive && !sidebarLayout.timelineProjectGroups;
+  const timeListActive = timelineActive && sidebarViewMode === 'timeline' && listSessionGrouping === 'time';
+  const chatsInListProjects = timelineActive && sidebarViewMode === 'timeline' && !timeListActive && sidebarLayout.timelineChats === 'group';
+  const combinedListActive = timelineActive && sidebarViewMode === 'timeline' && !timeListActive && !sidebarLayout.timelineProjectGroups;
   const listRowLines = useSessionDisplayStore((state) => state.sessionRowDisplay.listLines);
   const compactTimelineRows = timelineActive && listRowLines === 'one';
 
@@ -2636,7 +2593,13 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuLabel>{t('mobile.sessions.viewMode.label')}</DropdownMenuLabel>
-        {VIEW_MODE_OPTIONS.map(([mode, labelKey]) => renderMenuChoice(mode, labelKey, sidebarViewMode === mode, () => handleViewModeChange(mode)))}
+        <MobileViewModeMenu
+          viewMode={sidebarViewMode}
+          headerless={headerlessSidebar}
+          setViewMode={setSidebarViewMode}
+          setHeaderless={setHeaderlessSidebar}
+          setEditingOrder={setEditingOrder}
+        />
         {sidebarViewMode === 'timeline' ? (
           <>
             <DropdownMenuSeparator />
@@ -2912,6 +2875,31 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
                 </SortableContext>
               </DndContext>
             </div>
+          ) : headerlessSidebar ? (
+            <MobileHeaderlessList
+              key={`${open}:${sidebarViewMode}:${listSessionGrouping}`}
+              sections={sectionsInUse}
+              chats={chatsBucket.sessions.filter((session) => !getParentId(session))}
+              pinnedEntries={pinnedTimelineEntries}
+              workEntries={workTimelineEntries}
+              attentionEntries={attentionEntriesByZone}
+              viewMode={sidebarViewMode}
+              timeListActive={timeListActive}
+              timeListEntries={timeListEntries}
+              combinedListActive={combinedListActive}
+              combinedTimelineEntries={combinedTimelineEntries}
+              chatsInListProjects={chatsInListProjects}
+              projectNodes={projectNodesWithChats}
+              timelineEntriesByProject={timelineEntriesByProject}
+              toTimelineEntries={toTimelineEntries}
+              handlers={timelineHandlers}
+              renderChat={(session) => renderBucketSessions(
+                `headerless:${session.id}`,
+                { ...chatsBucket, sessions: [session] },
+                null,
+                { pageSize: 1, rowKind: 'chats' },
+              )}
+            />
           ) : (
             <div className="flex flex-col">
               {sectionsInUse.map((sectionKey) => {
