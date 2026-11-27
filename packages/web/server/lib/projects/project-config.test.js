@@ -641,6 +641,46 @@ describe('project-config file naming', () => {
   });
 });
 
+describe('project-config atomic project-actions mutation (#2605)', () => {
+  it('keeps every write when mutations run concurrently from the same base', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'project-atomic-actions';
+      await runtime.updateProjectSetup(projectID, { projectActions: [{ id: 'dev', name: 'Dev', command: 'bun run dev' }] });
+
+      await Promise.all([
+        runtime.mutateProjectSetupActions(projectID, (current) => [...current, { id: 'a1', name: 'A1', command: 'run a1' }]),
+        runtime.mutateProjectSetupActions(projectID, (current) => [...current, { id: 'b1', name: 'B1', command: 'run b1' }]),
+      ]);
+      const setup = await runtime.readProjectSetup(projectID);
+      expect(setup.personal.projectActions.map((action) => action.id)).toEqual(['dev', 'a1', 'b1']);
+
+      await Promise.all([
+        runtime.mutateProjectSetupActions(projectID, (current) => current.map((action) => (action.id === 'a1' ? { ...action, command: 'run a1 --watch' } : action))),
+        runtime.mutateProjectSetupActions(projectID, (current) => current.filter((action) => action.id !== 'b1')),
+      ]);
+      const after = await runtime.readProjectSetup(projectID);
+      expect(after.personal.projectActions.map((action) => action.id)).toEqual(['dev', 'a1']);
+      expect(after.personal.projectActions.find((action) => action.id === 'a1').command).toBe('run a1 --watch');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('does not write when the mutation throws', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'project-atomic-actions-failure';
+      await runtime.updateProjectSetup(projectID, { projectActions: [{ id: 'dev', name: 'Dev', command: 'bun run dev' }] });
+      await expect(runtime.mutateProjectSetupActions(projectID, () => { throw new Error('no such action'); })).rejects.toThrow(/no such action/);
+      const setup = await runtime.readProjectSetup(projectID);
+      expect(setup.personal.projectActions.map((action) => action.id)).toEqual(['dev']);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 describe('project-config loop reconciliation', () => {
   const loop = (name, overrides = {}) => ({
     scope: 'project',

@@ -9,7 +9,7 @@ import type { PlatformPath } from 'node:path';
 import type { JsonObject, JsonValue } from '../magic-prompts/runtime.js';
 import type { StorageSwitch } from '../project-context/contracts.js';
 import type { DiscoveredLoop, LoopDefinition } from '../scheduled-tasks/loops.js';
-import type { ScheduledTask, ScheduledTaskExecution, ScheduledTaskInput, ScheduledTaskSchedule, ScheduledTaskState, ScheduledTaskStatePatch, ScheduledTaskStatus, ScheduledWorktreeCleanup, SharedProjectDocument, SharedProjectRead } from './contracts.js';
+import type { ProjectAction, ScheduledTask, ScheduledTaskExecution, ScheduledTaskInput, ScheduledTaskSchedule, ScheduledTaskState, ScheduledTaskStatePatch, ScheduledTaskStatus, ScheduledWorktreeCleanup, SharedProjectDocument, SharedProjectRead } from './contracts.js';
 
 import { projectConfigFileStemOf, projectPathFromId } from './project-id.js';
 import { renameWithRetry } from '../shared/atomic-rename.js';
@@ -28,6 +28,7 @@ import {
   parseSharedProjectConfig,
   projectSetupPatchToStored,
   projectSetupViewOf,
+  sanitizeProjectActions,
   serializeSharedProjectConfig,
   sharedTrustHashOf,
 } from './project-setup.js';
@@ -84,6 +85,7 @@ type ResolvedLoop = DiscoveredLoop & { definition: LoopDefinition };
 type StoredTasks = { version: number; scheduledTasks: (ScheduledTask | JsonValue | { state: ScheduledTaskState })[] };
 type CleanupInput = Omit<ScheduledWorktreeCleanup, 'projectID'>;
 type SharedEntryMutation = (stored: JsonValue | undefined) => JsonValue | undefined;
+type ProjectActionsMutation = (current: ProjectAction[]) => ProjectAction[] | Promise<ProjectAction[]>;
 
 const hasScheduleFields = (value: unknown): value is TaskScheduleSource & { kind?: unknown; weekdays?: unknown; date?: unknown; cron?: unknown } =>
   Boolean(value) && typeof value === 'object';
@@ -1297,6 +1299,64 @@ export const createProjectConfigRuntime = (deps: ProjectConfigDependencies) => {
     })
   );
 
+  // Atomic project-actions mutation (#2605): the current list is read and
+  // the replacement computed INSIDE the per-project write lock, so two
+  // concurrent create/update/remove calls (or one racing a Settings
+  // whole-list save, which takes the same lock) cannot lose a write the way
+  // the old read-outside-the-lock + whole-list write-back did.
+  const mutateProjectSetupActions = async (projectID: string | undefined, mutate: ProjectActionsMutation) => {
+    return withProjectWriteLock(projectID, async () => {
+      const existing = await readRawProjectConfigFromDisk(projectID);
+      const current = projectSetupViewOf(existing).projectActions;
+      const nextActions = sanitizeProjectActions(await mutate(current));
+      const stored = projectSetupPatchToStored({ projectActions: nextActions });
+      const merged: SharedProjectDocument = { ...existing, ...stored };
+      for (const [key, value] of Object.entries(stored)) {
+        if (value === undefined) delete merged[key];
+      }
+      const commit = () => writeRawProjectConfigToDisk(projectID, merged);
+      const enabled = merged.notesTodosInRepository === true;
+      if ((existing.notesTodosInRepository === true) !== enabled && switchNotesTodosStorage && projectID !== undefined) {
+        await switchNotesTodosStorage(projectID, { enabled, file: notesTodosFileOf(projectID, merged), commit });
+      } else {
+        await commit();
+      }
+      return mergedProjectSetupOf(projectID, merged);
+    });
+  };
+
+  const mutateSharedProjectSetupActions = async (projectID: string | undefined, mutate: ProjectActionsMutation) => (
+    withProjectWriteLock(projectID, async () => {
+      const personalRaw = await readRawProjectConfigFromDisk(projectID);
+      const projectPath = projectPathOf(projectID, personalRaw);
+      await assertProjectCheckout(projectPath);
+      const currentRead = await readSharedProjectConfig(projectID, personalRaw);
+      if (
+        currentRead.status === 'invalid'
+        && isString(currentRead.reason)
+        && currentRead.reason.startsWith('shared project config is too large:')
+      ) {
+        throw new Error(currentRead.reason);
+      }
+      const current = currentRead.status === 'ok' ? currentRead.config : EMPTY_SHARED_PROJECT_CONFIG;
+      const document = currentRead.document ?? {};
+      const nextActions = sanitizeProjectActions(await mutate(current.projectActions));
+      const next = applySharedProjectSetupPatch(current, { projectActions: nextActions });
+
+      await writeSharedProjectFile(
+        projectPath,
+        isSharedProjectConfigEmpty(next, document) ? null : serializeSharedProjectConfig(next, document),
+      );
+
+      const hash = sharedTrustHashOf(next);
+      const personalNext = { ...personalRaw };
+      if (hash) personalNext.sharedTrust = { hash, trustedAt: Date.now() };
+      else delete personalNext.sharedTrust;
+      await writeRawProjectConfigToDisk(projectID, personalNext);
+      return mergedProjectSetupOf(projectID, personalNext);
+    })
+  );
+
   const updateSharedProjectEntry = async (projectID: string, projectPath: string, key: string, mutate: SharedEntryMutation) => {
     if (SHARED_SETUP_KEYS.includes(key)) throw new Error(`${key} belongs to the shared setup writer`);
     return withProjectWriteLock(projectID, async () => {
@@ -1347,6 +1407,8 @@ export const createProjectConfigRuntime = (deps: ProjectConfigDependencies) => {
     readProjectSetup,
     updateProjectSetup,
     updateSharedProjectSetup,
+    mutateProjectSetupActions,
+    mutateSharedProjectSetupActions,
     readSharedProjectFile,
     updateSharedProjectEntry,
     resolveSharedPlansDir,

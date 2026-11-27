@@ -46,9 +46,20 @@ const makeActions = () => {
   };
   const updateProjectSetup = vi.fn(locked(async (_projectId, patch) => applyPatch(personal, patch)));
   const updateSharedProjectSetup = vi.fn(locked(async (_projectId, patch) => applyPatch(shared, patch)));
+  // The fake mutate writers follow the real ones' contract (#2605): the
+  // current list is read and the replacement computed inside the same
+  // serialized lock, never from a snapshot taken before the lock.
+  const mutateProjectSetupActions = vi.fn(locked(async (_projectId, mutate) => {
+    personal.projectActions = await mutate(personal.projectActions);
+    return merged();
+  }));
+  const mutateSharedProjectSetupActions = vi.fn(locked(async (_projectId, mutate) => {
+    shared.projectActions = await mutate(shared.projectActions);
+    return merged();
+  }));
   const listProjects = vi.fn(async () => [{ id: 'p1', path: '/repo' }]);
-  const actions = createProjectSetupActions({ readProjectSetup, updateProjectSetup, updateSharedProjectSetup, listProjects });
-  return { actions, readProjectSetup, updateProjectSetup, updateSharedProjectSetup, personal, shared };
+  const actions = createProjectSetupActions({ readProjectSetup, updateProjectSetup, updateSharedProjectSetup, mutateProjectSetupActions, mutateSharedProjectSetupActions, listProjects });
+  return { actions, readProjectSetup, updateProjectSetup, updateSharedProjectSetup, mutateProjectSetupActions, mutateSharedProjectSetupActions, personal, shared };
 };
 
 const expectError = async (promise, statusCode, message) => {
@@ -169,6 +180,41 @@ describe('projects.actions writes', () => {
     expect(result.action).toMatchObject({ id: 'dev', name: 'Dev', command: 'bun run dev --watch' });
     expect(personal.projectActions).toHaveLength(1);
     await expectError(actions.execute('projects.actions.update', { projectId: 'p1', actionId: 'ghost', projectAction: { command: 'x' } }), 404, /No project action/);
+  });
+
+  it('routes actions writes through the atomic mutate writers, not the whole-list writers', async () => {
+    const { actions, updateProjectSetup, updateSharedProjectSetup, mutateProjectSetupActions, mutateSharedProjectSetupActions } = makeActions();
+    await actions.execute('projects.actions.create', { projectId: 'p1', projectAction: { name: 'Lint', command: 'bun run lint' } });
+    await actions.execute('projects.actions.create', { projectId: 'p1', setupTarget: 'shared', projectAction: { name: 'E2E', command: 'bun run e2e' } });
+    expect(mutateProjectSetupActions).toHaveBeenCalledTimes(1);
+    expect(mutateSharedProjectSetupActions).toHaveBeenCalledTimes(1);
+    expect(updateProjectSetup).not.toHaveBeenCalled();
+    expect(updateSharedProjectSetup).not.toHaveBeenCalled();
+  });
+
+  it('keeps both writes when two creates run concurrently from the same base (#2605)', async () => {
+    const { actions, personal } = makeActions();
+    const first = actions.execute('projects.actions.create', { projectId: 'p1', projectAction: { name: 'Alpha', command: 'run alpha' } });
+    const second = actions.execute('projects.actions.create', { projectId: 'p1', projectAction: { name: 'Beta', command: 'run beta' } });
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(personal.projectActions.map((entry) => entry.id)).toEqual(['dev', 'alpha', 'beta']);
+    expect(firstResult.setup.personal.projectActions.map((entry) => entry.id)).toContain('alpha');
+    expect(secondResult.setup.personal.projectActions.map((entry) => entry.id)).toEqual(['dev', 'alpha', 'beta']);
+  });
+
+  it('keeps a concurrent create and remove, and a concurrent update, from erasing each other (#2605)', async () => {
+    const { actions, personal } = makeActions();
+    await Promise.all([
+      actions.execute('projects.actions.create', { projectId: 'p1', projectAction: { name: 'Alpha', command: 'run alpha' } }),
+      actions.execute('projects.actions.remove', { projectId: 'p1', actionId: 'dev' }),
+    ]);
+    expect(personal.projectActions.map((entry) => entry.id)).toEqual(['alpha']);
+    await Promise.all([
+      actions.execute('projects.actions.update', { projectId: 'p1', actionId: 'alpha', projectAction: { command: 'run alpha --watch' } }),
+      actions.execute('projects.actions.create', { projectId: 'p1', projectAction: { name: 'Beta', command: 'run beta' } }),
+    ]);
+    expect(personal.projectActions.map((entry) => entry.id)).toEqual(['alpha', 'beta']);
+    expect(personal.projectActions.find((entry) => entry.id === 'alpha').command).toBe('run alpha --watch');
   });
 
   it('removes an action and refuses an unknown one', async () => {
