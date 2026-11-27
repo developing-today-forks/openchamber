@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import type { OpenChamberProjectAction, ProjectSetup } from '@/lib/openchamberConfig';
 import {
   addSetupCommand,
+  captureProjectActionBaseRevisions,
   deleteProjectAction,
   editSetupCommand,
   listProjectActions,
@@ -114,17 +115,22 @@ describe('saveProjectAction', () => {
     expect(revisions).toEqual(['sha256:personal-read', 'sha256:shared-read']);
   });
 
-  test('a save retry after reload cannot replace an agent action changed while the editor was open', async () => {
+  test('stale saves remain rejected after reload until the editor reopens', async () => {
     const base = setupWith({ personal: [action('dev')] });
+    const opened = {
+      ...base,
+      personal: { ...base.personal, projectActionsRevision: 'sha256:opened' },
+    };
     const agentAction = { ...action('dev', 'Agent version'), command: 'run dev --agent' };
     const refreshed = {
-      ...base,
+      ...opened,
       personal: {
-        ...base.personal,
+        ...opened.personal,
         projectActions: [agentAction],
         projectActionsRevision: 'sha256:agent-write',
       },
     };
+    const openedRevisions = captureProjectActionBaseRevisions(opened);
     let currentRevision = 'sha256:agent-write';
     let currentActions = [agentAction];
     const write: ProjectSetupWriters = {
@@ -137,18 +143,35 @@ describe('saveProjectAction', () => {
       },
     };
 
-    // Oracle: the persisted list still contains the concurrent agent edit
-    // after Settings retries its old draft against a reloaded view.
+    // Oracle: a stale draft is rejected on every retry and the persisted list
+    // keeps the concurrent agent edit until the editor is reopened on it.
+    const staleDraft = { ...base.personal.projectActions[0], name: 'Settings draft' };
     const saved = await saveProjectAction(
       refreshed,
       write,
-      { ...base.personal.projectActions[0], name: 'Settings draft' },
+      staleDraft,
       'personal',
       'personal',
+      openedRevisions,
     );
+    const retry = await saveProjectAction(refreshed, write, staleDraft, 'personal', 'personal', openedRevisions);
 
     expect(saved).toBe(false);
+    expect(retry).toBe(false);
     expect(currentActions).toEqual([agentAction]);
+
+    const reopenedDraft = { ...agentAction, name: 'Settings draft' };
+    const reopenedSaved = await saveProjectAction(
+      refreshed,
+      write,
+      reopenedDraft,
+      'personal',
+      'personal',
+      captureProjectActionBaseRevisions(refreshed),
+    );
+
+    expect(reopenedSaved).toBe(true);
+    expect(currentActions).toEqual([reopenedDraft]);
   });
 
   test('edits a team action in the repository file without copying it into personal settings', async () => {

@@ -767,7 +767,10 @@ shows one list per kind with every entry marked Team or Only me, and
   the server's merge shows it once. Every edit ends with a fresh read.
 - Whole-list action writes include the revision carried by that store's last
   read. If an agent changes the list first, the server rejects the stale save
-  with 409 and the page reloads, keeping the agent's newer action.
+  with 409 and the page reloads, keeping the agent's newer action. An editor
+  keeps the revision it opened with across that reload, so retrying its old
+  draft is rejected too; close and reopen the editor to work from the latest
+  action.
 - Hiding a team action writes only the personal `hiddenSharedActionIds`.
 - When the repo file exists but cannot be parsed, team writes are refused: a
   write replaces the file, so it would drop what could not be read.

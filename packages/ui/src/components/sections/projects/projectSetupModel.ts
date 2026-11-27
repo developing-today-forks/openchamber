@@ -25,6 +25,16 @@ export type ProjectActionEntry = {
   hidden: boolean;
 };
 
+export type ProjectActionBaseRevisions = {
+  personal: ProjectSetup['personal']['projectActionsRevision'];
+  shared: ProjectSetup['shared']['projectActionsRevision'];
+};
+
+export const captureProjectActionBaseRevisions = (setup: ProjectSetup): ProjectActionBaseRevisions => ({
+  personal: setup.personal.projectActionsRevision,
+  shared: setup.shared.projectActionsRevision,
+});
+
 export const listProjectActions = (setup: ProjectSetup): ProjectActionEntry[] => {
   const personalIds = new Set(setup.personal.projectActions.map((action) => action.id));
   const hidden = new Set(setup.personal.hiddenSharedActionIds);
@@ -71,14 +81,18 @@ export const saveProjectAction = async (
   action: OpenChamberProjectAction,
   from: ProjectSetupSource | null,
   to: ProjectSetupSource,
+  baseRevisions?: ProjectActionBaseRevisions,
 ): Promise<boolean> => {
+  const revisionOf = (source: ProjectSetupSource) => (baseRevisions === undefined
+    ? setup[source].projectActionsRevision
+    : baseRevisions[source]);
   const written = to === 'shared'
-    ? await write.sharedActions(upsert(setup.shared.projectActions, action), setup.shared.projectActionsRevision)
-    : await write.personalActions(upsert(setup.personal.projectActions, action), setup.personal.projectActionsRevision);
+    ? await write.sharedActions(upsert(setup.shared.projectActions, action), revisionOf('shared'))
+    : await write.personalActions(upsert(setup.personal.projectActions, action), revisionOf('personal'));
   if (!written || from === null || from === to) return written;
   return from === 'shared'
-    ? write.sharedActions(removeAction(setup.shared.projectActions, action.id), setup.shared.projectActionsRevision)
-    : write.personalActions(removeAction(setup.personal.projectActions, action.id), setup.personal.projectActionsRevision);
+    ? write.sharedActions(removeAction(setup.shared.projectActions, action.id), revisionOf('shared'))
+    : write.personalActions(removeAction(setup.personal.projectActions, action.id), revisionOf('personal'));
 };
 
 export const deleteProjectAction = async (
