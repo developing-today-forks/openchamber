@@ -607,7 +607,7 @@ describe('core-routes', () => {
     const response = await request(app)
       .post('/api/client-auth/pairing/sessions')
       .set('Host', 'runtime.example')
-      .send({ label: 'Pair phone', allowedClientKinds: ['mobile'] })
+      .send({ label: 'Pair phone', allowedClientKinds: ['mobile'], scopes: ['session-read', 'quota-read'] })
       .expect(201);
 
     expect(response.headers['cache-control']).toBe('no-store');
@@ -616,10 +616,20 @@ describe('core-routes', () => {
     expect(dependencies.clientPairingRuntime.createPairingSession).toHaveBeenCalledWith({
       label: 'Pair phone',
       allowedClientKinds: ['mobile'],
+      scopes: ['session-read', 'quota-read'],
       createdByClientId: null,
       usesRelay: false,
       localOnly: true,
     });
+  });
+
+  it('rejects unknown pairing scopes before creating a pairing session', async () => {
+    const { app, dependencies } = createPairingRouteApp();
+    await request(app)
+      .post('/api/client-auth/pairing/sessions')
+      .send({ scopes: ['session-read', 'unknown'] })
+      .expect(400);
+    expect(dependencies.clientPairingRuntime.createPairingSession).not.toHaveBeenCalled();
   });
 
   it('advertises the caller-supplied serverUrl first and keeps the request origin as a fallback candidate', async () => {

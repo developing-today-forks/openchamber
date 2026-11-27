@@ -1,4 +1,6 @@
-import { NOTIFICATION_EMIT_PATH } from '../notifications/emit-route.js';
+import { NOTIFICATION_EMIT_PATH } from '../notifications/paths.js';
+import { isRemoteClientBearerToken } from '../client-auth/scopes.js';
+import { getBearerTokenFromRequest } from '../ui-auth/request-token.js';
 import type { Request, RequestHandler } from '../shared/http-contracts.js';
 import type { createUiAuth } from '../ui-auth/ui-auth.js';
 import type { createTunnelAuth } from '../tunnels/tunnel-auth.js';
@@ -33,6 +35,9 @@ export const createApiAuthGate = ({ tunnelAuthController, uiAuthController }: {
   tunnelAuthController: ReturnType<typeof createTunnelAuth>;
   uiAuthController: ReturnType<typeof createUiAuth>;
 }): RequestHandler => async (req, res, next) => {
+  if (isRemoteClientBearerToken(getBearerTokenFromRequest(req))) {
+    return uiAuthController.requireClientAuth(req, res, next);
+  }
   const pathname = (req.originalUrl || '').split('?', 1).join('');
   if (selfAuthenticatedApiPaths.has(pathname)) return next();
   if (isGuestOauthCallback(req) || isMcpOauthCallback(req) || isFilePreviewRead(req) || isGuestFrameFileRead(req)) {
