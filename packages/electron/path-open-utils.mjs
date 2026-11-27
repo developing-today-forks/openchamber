@@ -23,6 +23,26 @@ const normalizeRequiredPath = (rawPath, label = 'Path') => {
   return path.resolve(targetPath);
 };
 
+const trimmedString = z.string().catch('').transform((value) => value.trim());
+const openWithAppArgsSchema = z.object({
+  projectPath: trimmedString,
+  filePath: trimmedString,
+  appId: trimmedString.transform((value) => value.toLowerCase()),
+  appName: trimmedString,
+}).catch({ projectPath: '', filePath: '', appId: '', appName: '' });
+
+const parseOpenWithAppRequest = (raw, pathKey, label) => {
+  const parsed = openWithAppArgsSchema.parse(raw);
+  const request = { path: parsed[pathKey], appId: parsed.appId, appName: parsed.appName };
+  if (!request.path || !request.appId || !request.appName) {
+    throw new Error(`${label} path, app id, and app name are required`);
+  }
+  return request;
+};
+
+export const parseProjectOpenWithAppRequest = (raw) => parseOpenWithAppRequest(raw, 'projectPath', 'Project');
+export const parseFileOpenWithAppRequest = (raw) => parseOpenWithAppRequest(raw, 'filePath', 'File');
+
 export const validateLocalPath = async (rawPath, label = 'Path') => {
   const targetPath = normalizeRequiredPath(rawPath, label);
   let stats;
