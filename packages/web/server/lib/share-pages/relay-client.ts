@@ -6,7 +6,8 @@ import type { createRelayKeyStore } from '../relay/key-store.js';
 
 import { isEnterpriseMode } from '../enterprise-mode.js';
 import { normalizeRelayUrl, pinnedRelayUrl } from '../relay/service.js';
-import { readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
+import { readBoundedResponseBytes, readBoundedResponseJson, readBoundedResponseText } from '../shared/response-body.js';
+import { SEAL_OVERHEAD_BYTES } from './crypto.js';
 import {
   canonicalPublicJwkString,
   deriveServerId,
@@ -20,6 +21,11 @@ const MAX_STATE_BATCH = 50;
 // read through a 1 KiB cap and still truncated to 200 chars as before.
 const RELAY_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 const RELAY_ERROR_DETAIL_MAX_BYTES = 1_024;
+// A received share blob is sealed ciphertext: uploads refuse a sealed page
+// over 32 MiB (runtime's MAX_SEALED_BYTES), so a download cap of that plus
+// the seal overhead rejects nothing legitimate — but a hostile or buggy
+// relay can no longer make open() buffer an unbounded body (#2705).
+const RELAY_BLOB_MAX_BYTES = 32 * 1024 * 1024 + SEAL_OVERHEAD_BYTES;
 
 const shareStateSchema = z.object({
   id: z.string(),
@@ -221,7 +227,9 @@ export const createShareViewerClient = ({ fetchImpl = (...args) => fetch(...args
   const open = async (base: string, id: string, auth: string): Promise<ViewerOpenReply> => {
     const response = await post(sharePath(base, id, '/open'), { auth });
     if (response.status !== 200) return readState(response, 'open');
-    return { ok: true, httpStatus: 200, state: null, blob: new Uint8Array(await response.arrayBuffer()) };
+    const bounded = await readBoundedResponseBytes(response, RELAY_BLOB_MAX_BYTES);
+    if (bounded.tooLarge) throw new ShareRelayError(`The relay answered ${response.status} with a share blob over the size limit`, response.status);
+    return { ok: true, httpStatus: 200, state: null, blob: new Uint8Array(bounded.bytes) };
   };
 
   const answer = async (base: string, id: string, auth: string, sealed: string) => readState(await post(sharePath(base, id, '/answer'), { auth, answer: sealed }), 'answer');
