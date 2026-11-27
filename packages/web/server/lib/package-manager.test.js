@@ -388,4 +388,23 @@ describe('fetchRequiredOpenCodeVersion', () => {
     globalThis.fetch = createFetchMock().when('@openchamber%2Fweb/2.7.1', { ok: false, status: 404 });
     expect(await fetchRequiredOpenCodeVersion('2.7.1')).toBeNull();
   });
+
+  it('returns null when the registry streams an over-cap body, and cancels the stream', async () => {
+    const state = { cancelled: false };
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ version: '2.7.1', engines: { opencode: '>=2.3.0' } })));
+        controller.enqueue(new TextEncoder().encode('x'.repeat(1024 * 1024)));
+        // Never closed: only the reader cancelling can end this body.
+      },
+      cancel() {
+        state.cancelled = true;
+      },
+    });
+    const response = new Response(stream);
+    globalThis.fetch = createFetchMock().when('@openchamber%2Fweb/2.7.1', { ok: true, body: response.body, headers: response.headers });
+
+    expect(await fetchRequiredOpenCodeVersion('2.7.1')).toBeNull();
+    expect(state.cancelled).toBe(true);
+  });
 });

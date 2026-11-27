@@ -3136,7 +3136,7 @@ describe('fs stat directory error handling', () => {
         fileURLToPath(new URL('../git/redaction.ts', import.meta.url)),
          fileURLToPath(new URL('../shared/object-guards.ts', import.meta.url)),
          fileURLToPath(new URL('../path-realpath-cache.ts', import.meta.url)),
-         ...['atomic-rename', 'no-replace-dir', 'traversal-budget', 'bounded-file-read'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
+         ...['atomic-rename', 'no-replace-dir', 'traversal-budget', 'bounded-file-read', 'redaction-patterns'].map((name) => fileURLToPath(new URL(`../shared/${name}.ts`, import.meta.url))),
       ], { cwd: directory, stdio: 'pipe' });
       await copyFile(new URL('../shared/guards.ts', import.meta.url), path.join(directory, 'shared/guards.js'));
       await copyFile(new URL('../shared/parse-int.js', import.meta.url), path.join(directory, 'shared/parse-int.js'));

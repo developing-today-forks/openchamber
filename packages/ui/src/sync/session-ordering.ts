@@ -123,11 +123,14 @@ export const getSessionActivityTime = (session: Session): number => (
 
 const createdAt = (session: Session): number => finiteTime(session.time?.created);
 
-const parentIdOf = (session: Session): string | null => (
-  (session as Session & { parentID?: string | null }).parentID ?? null
-);
+const parentIdOf = (session: Session): string | null => {
+  // SAFETY: the Session value is only widened with the optional parentID field, which is read with ?? null.
+  const parentID = (session as Session & { parentID?: string | null }).parentID
+  return parentID ?? null
+};
 
 const sessionDirectory = (session: Session): string | null => {
+  // SAFETY: the record adds only optional directory and project fields, which are read with ?? and nullable fallbacks, so the Session value is only widened.
   const record = session as Session & {
     directory?: string | null;
     project?: { worktree?: string | null } | null;

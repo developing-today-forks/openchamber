@@ -88,6 +88,7 @@ import { createChatDraftIdentity, type ChatDraftIdentity } from "@/lib/chatDraft
 import { LOCATION_SCOPED_FORM_SESSION_ID } from "./location-scoped-forms"
 import { cancelSessionTitleGeneration } from "./session-title-generation"
 import { recordSessionActionFailure } from "./session-action-failures"
+import { resolveSessionOwnedDirectory } from "./session-directory-resolution"
 import { planOpenSessionLeave, type PlannedSessionLeave } from "./session-leave-navigation"
 import { applyForkInheritance } from "@/lib/sessionForkInheritance"
 import { getSessionGoal } from "@/lib/sessionGoalMetadata"
@@ -819,19 +820,6 @@ function restoreContextPartsToInput(
   }
 }
 
-function resolveSessionOwnedDirectory(session: Session): string | null {
-  const record = session as Session & {
-    directory?: string | null
-    project?: { worktree?: string | null } | null
-  }
-  const raw = typeof record.directory === "string" && record.directory.trim().length > 0
-    ? record.directory
-    : typeof record.project?.worktree === "string" && record.project.worktree.trim().length > 0
-      ? record.project.worktree
-      : null
-  return raw ? normalizePath(raw) : null
-}
-
 function resolveDirectoryForBlockingRequest(
   type: "permission" | "form",
   sessionId: string,
@@ -845,7 +833,8 @@ function resolveDirectoryForBlockingRequest(
   for (const [directory, store] of stores.children) {
     const state = store.getState()
     const requestMap = type === "permission" ? state.permission : state.form
-    for (const requests of Object.values(requestMap) as Array<Array<{ id: string; sessionID?: string }> | undefined>) {
+    const requestGroups: ReadonlyArray<ReadonlyArray<{ id: string; sessionID?: string }> | undefined> = Object.values(requestMap)
+    for (const requests of requestGroups) {
       const request = requests?.find((candidate) => candidate.id === requestId)
       if (!request) continue
 
@@ -963,6 +952,7 @@ function restorePermissionRequest(store: DirectoryStoreApi, sessionId: string, p
 
 function isPermissionRequestNotFoundError(error: unknown): boolean {
   if (error && typeof error === "object") {
+    // SAFETY: error is narrowed to a non-null object by the guard; `status` is compared with === 404 before it is trusted.
     const status = (error as { status?: unknown }).status
     if (status === 404) return true
   }
@@ -1491,7 +1481,8 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
   } catch (error) {
     console.error("[session-actions] deleteSession failed", error)
     recordSessionActionFailure(sessionId, toError(error))
-    if ((error as { status?: number })?.status === 404) {
+    // SAFETY: `?.` yields undefined for a nullish error, and the === 404 comparison accepts only that exact numeric status.
+    if ((error as { status?: number } | null)?.status === 404) {
       if (isStaleRuntime(expectedRuntimeKey)) return false
       finalizeConfirmedSessionDeletion(sessionId, sessionDirectory, expectedRuntimeKey)
       await cleanupDeletedChatDirectory(chatDirectoryCleanup)
@@ -1919,6 +1910,7 @@ export async function optimisticSend(input: {
   )
 
   if (revertMessageID) {
+    // SAFETY: the mapped candidate is a Session with its revert cleared; the cast only widens the spread to Session, which the reverted field already satisfies.
     const session = stateBeforeSend.session.map((candidate) => (
       candidate.id === input.sessionId ? { ...candidate, revert: undefined } as Session : candidate
     ))
@@ -2061,6 +2053,7 @@ export async function optimisticSend(input: {
     let part = rollbackState.part
 
     if (revertMessageID && revertStaged) {
+      // SAFETY: the mapped candidate is a Session with its revert restored from the pre-send snapshot; the cast only widens the spread to Session.
       session = rollbackState.session.map((candidate) => (
         candidate.id === input.sessionId ? { ...candidate, revert: sessionBeforeSend?.revert } as Session : candidate
       ))

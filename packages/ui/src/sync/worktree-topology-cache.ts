@@ -31,6 +31,7 @@ const readEnvelope = (storage: Storage): PersistedTopologyEnvelope => {
   try {
     const raw = storage.getItem(STORAGE_KEY)
     if (!raw) return emptyEnvelope()
+    // SAFETY: version and runtime containers are checked below; parseEntries checks tuple and array containers, but not the WorktreeMetadata elements, which remain an app-storage assumption.
     const parsed = JSON.parse(raw) as Partial<PersistedTopologyEnvelope>
     if (parsed.version !== 2 || !parsed.runtimes || typeof parsed.runtimes !== "object") return emptyEnvelope()
     const runtimes: Record<string, PersistedTopology> = {}

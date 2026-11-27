@@ -30,10 +30,10 @@ export function writeFileAtomic(filePath: string, content: string | ArrayBufferV
   try {
     const fd = fs.openSync(tmp, 'wx', mode ?? 0o666);
     try {
-      if (typeof content === 'string') {
-        fs.writeFileSync(fd, content, 'utf8');
-      } else {
+      if (ArrayBuffer.isView(content)) {
         fs.writeFileSync(fd, new Uint8Array(content.buffer, content.byteOffset, content.byteLength));
+      } else {
+        fs.writeFileSync(fd, content, 'utf8');
       }
       fs.fsyncSync(fd);
     } finally {
