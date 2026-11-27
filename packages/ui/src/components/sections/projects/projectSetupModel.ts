@@ -39,8 +39,8 @@ export const listProjectActions = (setup: ProjectSetup): ProjectActionEntry[] =>
 export const canWriteShared = (setup: ProjectSetup): boolean => setup.shared.status !== 'invalid';
 
 export type ProjectSetupWriters = {
-  personalActions: (actions: OpenChamberProjectAction[]) => Promise<boolean>;
-  sharedActions: (actions: OpenChamberProjectAction[]) => Promise<boolean>;
+  personalActions: (actions: OpenChamberProjectAction[], baseRevision?: string) => Promise<boolean>;
+  sharedActions: (actions: OpenChamberProjectAction[], baseRevision?: string) => Promise<boolean>;
   hiddenSharedActionIds: (ids: string[]) => Promise<boolean>;
   personalCommands: (commands: string[]) => Promise<boolean>;
   sharedCommands: (commands: string[]) => Promise<boolean>;
@@ -73,12 +73,12 @@ export const saveProjectAction = async (
   to: ProjectSetupSource,
 ): Promise<boolean> => {
   const written = to === 'shared'
-    ? await write.sharedActions(upsert(setup.shared.projectActions, action))
-    : await write.personalActions(upsert(setup.personal.projectActions, action));
+    ? await write.sharedActions(upsert(setup.shared.projectActions, action), setup.shared.projectActionsRevision)
+    : await write.personalActions(upsert(setup.personal.projectActions, action), setup.personal.projectActionsRevision);
   if (!written || from === null || from === to) return written;
   return from === 'shared'
-    ? write.sharedActions(removeAction(setup.shared.projectActions, action.id))
-    : write.personalActions(removeAction(setup.personal.projectActions, action.id));
+    ? write.sharedActions(removeAction(setup.shared.projectActions, action.id), setup.shared.projectActionsRevision)
+    : write.personalActions(removeAction(setup.personal.projectActions, action.id), setup.personal.projectActionsRevision);
 };
 
 export const deleteProjectAction = async (
@@ -87,9 +87,9 @@ export const deleteProjectAction = async (
   entry: ProjectActionEntry,
 ): Promise<boolean> => {
   if (entry.source === 'personal') {
-    return write.personalActions(removeAction(setup.personal.projectActions, entry.action.id));
+    return write.personalActions(removeAction(setup.personal.projectActions, entry.action.id), setup.personal.projectActionsRevision);
   }
-  if (!(await write.sharedActions(removeAction(setup.shared.projectActions, entry.action.id)))) return false;
+  if (!(await write.sharedActions(removeAction(setup.shared.projectActions, entry.action.id), setup.shared.projectActionsRevision))) return false;
   if (entry.hidden) {
     await write.hiddenSharedActionIds(setup.personal.hiddenSharedActionIds.filter((id) => id !== entry.action.id));
   }

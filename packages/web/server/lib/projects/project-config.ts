@@ -1245,9 +1245,9 @@ export const createProjectConfigRuntime = (deps: ProjectConfigDependencies) => {
   const readProjectSetup = async (projectID: string | undefined) => mergedProjectSetupOf(projectID, await readRawProjectConfigFromDisk(projectID));
 
   const updateProjectSetup = async (projectID: string | undefined, patch: SharedProjectDocument) => {
-    const stored = projectSetupPatchToStored(patch);
     return withProjectWriteLock(projectID, async () => {
       const existing = await readRawProjectConfigFromDisk(projectID);
+      const stored = projectSetupPatchToStored(patch, projectSetupViewOf(existing).projectActions);
       const merged: SharedProjectDocument = { ...existing, ...stored };
       for (const [key, value] of Object.entries(stored)) {
         if (value === undefined) delete merged[key];

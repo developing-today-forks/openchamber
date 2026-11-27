@@ -30,6 +30,13 @@ A second, optional source is the team's shared file, `<repo>/.openchamber/projec
 (`projectPathFromId`). `GET /api/projects/:projectId/config`
 returns one merged view: what runs at the top level, plus `shared` and `personal`
 blocks so a page can edit the personal file without copying a teammate's entry into it.
+Each block also carries a derived `projectActionsRevision`, the SHA-256 revision
+of that store's sanitized action list. Settings sends it as
+`projectActionsBaseRevision` with whole-list action writes; the server compares
+it inside the project lock and returns 409 `project_actions_stale` if another
+writer changed the list since it was read. The revision is not persisted.
+Legacy callers that omit it retain the earlier write behavior; agent
+create/update/remove use the separate atomic mutation methods below.
 
 | Field | Merge rule |
 |---|---|

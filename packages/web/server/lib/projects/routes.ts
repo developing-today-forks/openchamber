@@ -2,7 +2,7 @@ import { isRecord as isObjectRecord } from '../shared/guards.js';
 import path from 'node:path';
 import { z } from 'zod';
 import { createProjectIdFromPath } from './project-id.js';
-import { actionPlatformOf, isProjectSetupValidationError } from './project-setup.js';
+import { actionPlatformOf, isProjectActionsStaleError, isProjectSetupValidationError } from './project-setup.js';
 import type { Application, Response } from '../shared/http-contracts.js';
 import type { DirectoryValidation, SessionProject } from './contracts.js';
 import type { SettingsDocument } from '../settings/settings-helpers.js';
@@ -29,6 +29,9 @@ const directoryRequestSchema = z.object({
 
 const respondWithError = (res: Response, cause: unknown, fallbackMessage: string) => {
   const message = cause instanceof Error ? cause.message : fallbackMessage;
+  if (cause instanceof Error && isProjectActionsStaleError(cause)) {
+    return res.status(409).json({ error: message, code: cause.code });
+  }
   if (isProjectSetupValidationError(cause)) {
     return res.status(400).json({ error: message });
   }

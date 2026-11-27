@@ -99,7 +99,7 @@ describe('saveProjectAction', () => {
       ...base,
       shared: { ...base.shared, projectActionsRevision: 'sha256:shared-read' },
       personal: { ...base.personal, projectActionsRevision: 'sha256:personal-read' },
-    } as ProjectSetup;
+    };
     const revisions: Array<string | undefined> = [];
     const writers = recordingWriters().write;
     const write: ProjectSetupWriters = {
