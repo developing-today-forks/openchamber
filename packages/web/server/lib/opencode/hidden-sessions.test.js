@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { createHiddenSessionRegistry } from './hidden-sessions.js';
+import { createHiddenSessionRegistry, createHiddenSessionSeedPageReader } from './hidden-sessions.js';
 
 describe('hidden sessions', () => {
   test('holds back the events of a registered session, from its creation on', () => {
@@ -45,6 +45,53 @@ describe('hidden sessions', () => {
     expect(hidden.has('ses_a')).toBe(true);
     expect(hidden.has('ses_c')).toBe(true);
     expect(hidden.has('ses_b')).toBe(false);
+  });
+
+  test('seed page reader returns a normal page and passes a timeout signal', async () => {
+    const page = { data: [{ id: 'ses_a', metadata: { hidden: true } }], cursor: { next: null } };
+    let seenSignal;
+    const readPage = createHiddenSessionSeedPageReader({
+      buildOpenCodeUrl: (path) => `http://loopback${path}`,
+      getOpenCodeAuthHeaders: () => ({ Authorization: 'Basic x' }),
+      fetchImpl: async (url, init) => {
+        expect(url).toBe('http://loopback/api/session?limit=200');
+        seenSignal = init.signal;
+        return new Response(JSON.stringify(page), { headers: { 'content-type': 'application/json' } });
+      },
+    });
+    expect(await readPage(null)).toEqual(page);
+    expect(seenSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  test('an oversized seed page aborts the seed instead of buffering unboundedly', async () => {
+    const hidden = createHiddenSessionRegistry();
+    const oversized = JSON.stringify({ data: [{ id: 'ses_big', metadata: { hidden: true }, pad: 'x'.repeat(4096) }], cursor: { next: 'c2' } });
+    const readPage = createHiddenSessionSeedPageReader({
+      buildOpenCodeUrl: (path) => `http://loopback${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      maxBytes: 64,
+      fetchImpl: async () => new Response(oversized, { headers: { 'content-type': 'application/json' } }),
+    });
+    expect(await readPage(null)).toBeNull();
+    await hidden.seed(readPage);
+    expect(hidden.has('ses_big')).toBe(false);
+  });
+
+  test('a slow seed page is cut by the timeout and the seed stops', async () => {
+    const hidden = createHiddenSessionRegistry();
+    const readPage = createHiddenSessionSeedPageReader({
+      buildOpenCodeUrl: (path) => `http://loopback${path}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      timeoutMs: 25,
+      fetchImpl: async (url, init) => new Promise((resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      }),
+    });
+    const startedAt = Date.now();
+    expect(await readPage(null)).toBeNull();
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    await hidden.seed(readPage);
+    expect(hidden.has('ses_anything')).toBe(false);
   });
 
   test('leaves registered sessions out of the running map', () => {

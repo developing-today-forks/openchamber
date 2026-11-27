@@ -120,7 +120,7 @@ import { createUnregisteredScheduledWorktreeBridge } from './lib/scheduled-tasks
 import { createServerStartupRuntime } from './lib/server-frame/server-startup-runtime.js';
 import { createTunnelWiringRuntime } from './lib/tunnels/tunnel-wiring-runtime.js';
 import { createStartupPipelineRuntime } from './lib/server-frame/startup-pipeline-runtime.js';
-import { createHiddenSessionRegistry } from './lib/opencode/hidden-sessions.js';
+import { createHiddenSessionRegistry, createHiddenSessionSeedPageReader } from './lib/opencode/hidden-sessions.js';
 import { runCliEntryIfMain } from './lib/server-frame/cli-entry-runtime.js';
 import { registerNotificationRoutes } from './lib/notifications/routes.js';
 import { createNotificationEmitterRuntime } from './lib/notifications/emitter-runtime.js';
@@ -1624,11 +1624,7 @@ globalMessageStreamHub.subscribeStatus((status) => {
   if (status?.type === 'connect') {
     openCodeTrust.followLocations(true);
     void sessionGoalRuntime.recoverActiveGoals();
-    void hiddenSessions.seed(async (cursor): Promise<JsonValue> => {
-      const query = cursor ? `?limit=200&cursor=${encodeURIComponent(cursor)}` : '?limit=200';
-      const response = await fetch(buildOpenCodeUrl(`/api/session${query}`, ''), { headers: getOpenCodeAuthHeaders() });
-      return response.ok ? response.json() : null;
-    }).catch(() => {});
+    void hiddenSessions.seed(createHiddenSessionSeedPageReader({ buildOpenCodeUrl, getOpenCodeAuthHeaders })).catch(() => {});
   } else if (status?.type === 'disconnect' || status?.type === 'error') openCodeTrust.followLocations(false);
 });
 

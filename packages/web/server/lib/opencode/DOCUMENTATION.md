@@ -83,6 +83,16 @@ record. Learned IDs retain their original values, and filtered pages expose
 the values their Zod schemas actually checked. Filtering must not validate,
 rewrite or discard unrelated payload fields.
 
+### Why the reconnect seed read is bounded in time and size
+
+The seed runs on every SSE reconnect, so a wedged or oversized loopback
+session-list page would otherwise hang or buffer without limit exactly when
+the stream is already flapping. `createHiddenSessionSeedPageReader` therefore
+reads each page through `readBoundedResponseJson` at the established 16 MiB
+loopback cap and an `AbortSignal.timeout` deadline; an over-cap or timed-out
+page returns null, and `seed` stops cleanly on it, keeping the sessions
+learned from earlier pages.
+
 ### Why credential reads and writes have different token contracts
 
 `projectCredentialValue` treats every non-key credential as OAuth for the
