@@ -285,4 +285,13 @@ describe('skill supporting-file sink containment', () => {
     linkFile('missing/../loop', path.join(skillDir, 'loop'));
     expect(() => readSkillSupportingFile(skillDir, 'loop')).toThrow();
   });
+
+  it('reads a path that traverses a regular file as missing, not an error (#2673)', () => {
+    // Oracle: SKILL.md is a regular file, so SKILL.md/trailing cannot
+    // exist; stat raises ENOTDIR, which the reader maps to null like
+    // ENOENT (the VS Code twin agrees), never a thrown server error.
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), 'content');
+    expect(readSkillSupportingFile(skillDir, path.join('SKILL.md', 'trailing'))).toBeNull();
+    expect(readSkillSupportingFile(skillDir, 'missing.md')).toBeNull();
+  });
 });

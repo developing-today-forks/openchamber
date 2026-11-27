@@ -695,6 +695,30 @@ describe('skill-routes directory soft fallback', () => {
     expect(await missing.json()).toEqual({ error: 'File not found' });
   });
 
+  it('answers 404, not 500, for a supporting-file path that traverses a regular file (#2673)', async () => {
+    projectRoot = createTempProject();
+    const skillDir = path.join(projectRoot, '.agents', 'skills', 'files-skill');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: files-skill\ndescription: Has files\n---\nBody\n',
+    );
+
+    expect(readSkillSupportingFile(skillDir, path.join('SKILL.md', 'trailing'))).toBeNull();
+
+    appHandle = await startSkillsApp({ projectRoot });
+    const query = `?directory=${encodeURIComponent(projectRoot)}`;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const throughFile = await fetch(`${appHandle.baseUrl}/api/config/skills/files-skill/files/SKILL.md/trailing${query}`);
+      expect(throughFile.status).toBe(404);
+      expect(await throughFile.json()).toEqual({ error: 'File not found' });
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('writes and deletes nested skill supporting files at their real paths (#1146)', async () => {
     projectRoot = createTempProject();
     const skillDir = path.join(projectRoot, '.agents', 'skills', 'files-skill');
