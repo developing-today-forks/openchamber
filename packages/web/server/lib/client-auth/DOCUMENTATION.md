@@ -18,6 +18,8 @@ This module owns the two stores behind trusted-device access to an OpenChamber s
 - `usesRelay` is true when a device is known to use the relay, and once true stays true for the record's lifetime. `lastTransport` is the transport of the last authenticated request and may be `direct` after a relay request.
 - `localOnly` is true when every candidate in the device's pairing link was a plain `http` address (LAN or loopback): no relay and no `https` tunnel URL. It is set only at pairing and cleared, together with setting `usesRelay`, by the first request that arrives through the relay. A record without the field reads as `false`.
 - Relay demand counts any active (not revoked, not expired) client with `usesRelay === true` or `lastTransport === 'relay'`, and any still-redeemable pairing session with `usesRelay === true`.
+- A pairing may carry a nullable set of named route-family scopes through redemption onto the paired-client record. Missing scopes mean the legacy unscoped behavior; a malformed persisted scope list becomes an empty grant.
+- An explicit `oc_client_...` bearer token is the operative credential on direct and relayed HTTP requests. Its scope applies before the trusted relay session path; relay requests without a client bearer keep the existing tunnel-session behavior.
 
 ## Decisions
 
@@ -79,3 +81,15 @@ The sweep keeps a session for `ttlMs` after it is used or cancelled, which prese
 ### Why candidate URL normalization checks for a string
 
 The pairing route passes the unchecked `serverUrl` body field. The normalizer ignores non-strings so the route can fall back to the request origin. URL parsing alone would coerce some non-string values into URLs.
+
+### Why route scopes are closed over named route families
+
+Scope names are `session-read`, `session-activity`, `quota-read`, `message-injection`, and `plan-todo-binding-read`, matching the babysitter routes from #1271. Scoped tokens are denied on unclassified methods and paths, so adding an API route does not silently grant it to existing scoped clients.
+
+### Why a client bearer takes precedence over relay trust
+
+When a request carries an `oc_client_...` bearer, the scope belongs to that credential and must be checked before the relay's session trust path. A relayed request without a client bearer remains on the existing tunnel-session path; transport alone neither grants nor removes a token's scope.
+
+### Why missing scopes stay unscoped
+
+Existing client records and existing pairing flows have no scope list. Treating absence as an empty grant would revoke their established access on upgrade; new callers opt into a scope set explicitly, while malformed stored values fail closed.

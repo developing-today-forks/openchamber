@@ -3,7 +3,12 @@ import type { IncomingMessage } from 'node:http';
 import type { Request, Response, NextFunction, RequestHandler } from '../shared/http-contracts.js';
 import { rateLimitKey } from '../security/client-address.js';
 import type { BearerRequest, ClientInput, CreatedClient, RemoteClient } from '../client-auth/contracts.js';
+import { createClientOnlyAuthGate, createUiSessionAuthGate } from './auth-gates.js';
+import { createClientRouteScopeGuard } from '../client-auth/request-scope-guard.js';
+import { getBearerTokenFromRequest } from './request-token.js';
 import type { PasskeyOptions } from './ui-passkeys.js';
+
+export { getBearerTokenFromRequest } from './request-token.js';
 
 type AuthRequest = Pick<IncomingMessage, 'headers' | 'method' | 'url'> & Partial<Pick<Request, 'query' | 'originalUrl' | 'baseUrl' | 'path' | 'secure'>>;
 type CookieResponse = { setHeader: (name: string, value: string) => void } | null;
@@ -373,17 +378,6 @@ const parseCookies = (cookieHeader: Request['headers']['cookie']): Record<string
   }, {});
 };
 
-export const getBearerTokenFromRequest = (req: Partial<Pick<Request, 'headers'>> | null | undefined) => {
-  const header = req?.headers?.authorization;
-  const value = Array.isArray(header) ? header[0] : header;
-  if (isString(value)) {
-    const match = value.match(/^Bearer\s+(.+)$/i);
-    const token = match?.[1]?.trim() || '';
-    if (token) return token;
-  }
-  return null;
-};
-
 const getUrlAuthTokenFromRequest = (req: AuthRequest) => {
   const queryToken = req?.query?.oc_url_token;
   let token = Array.isArray(queryToken) ? queryToken[0] : queryToken;
@@ -719,19 +713,18 @@ export const createUiAuth = ({
       return token;
     };
 
-    const requireAuth: RequestHandler = async (req, res, next) => {
-      if (!requireClientAuth) {
-        return next();
-      }
-      if (req.method === 'OPTIONS') {
-        return next();
-      }
-      const clientAuth = await authenticateClientRequest(req);
-      if (clientAuth) {
-        return next();
-      }
-      return res.status(401).json({ error: 'Client authentication required', locked: true, clientAuthRequired: true });
-    };
+    const requireClientToken = createClientRouteScopeGuard({
+      authenticate: (req) => authenticateClientRequest(req, { allowUrlToken: false }),
+      respondUnauthorized: (_req, res) => res.status(401).json({ error: 'Client authentication required', locked: true, clientAuthRequired: true }),
+      enabled: requireClientAuth,
+    });
+
+    const requireAuth = createClientOnlyAuthGate({
+      enabled: requireClientAuth,
+      requireClientAuth: requireClientToken,
+      authenticateClientRequest: (req) => authenticateClientRequest(req),
+      respondUnauthorized: (_req, res) => res.status(401).json({ error: 'Client authentication required', locked: true, clientAuthRequired: true }),
+    });
 
     const requireSessionAuth: RequestHandler = async (req, res, next) => {
       if (!requireClientAuth) {
@@ -763,6 +756,7 @@ export const createUiAuth = ({
     return {
       enabled: false,
       requireAuth,
+      requireClientAuth: requireClientToken,
       requireSessionAuth,
       resolveAuthContext,
       handleSessionStatus: async (req: Request, res: Response) => {
@@ -836,6 +830,7 @@ export const createUiAuth = ({
     expectedHash ??= crypto.scryptSync(normalizedPassword, salt, 64);
     return expectedHash;
   };
+
   let jwtSecret = getOrCreateJwtSecret();
   let passwordBinding = crypto.createHmac('sha256', jwtSecret).update(normalizedPassword).digest('hex');
   const resolveSessionTtlMs = (trustDevice: boolean) => (trustDevice ? trustedSessionTtlMs : sessionTtlMs);
@@ -945,21 +940,19 @@ export const createUiAuth = ({
     }
   };
 
-  const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'OPTIONS') {
-      return next();
-    }
-    const token = getTokenFromRequest(req);
-    if (await isSessionValid(token)) {
-      return next();
-    }
-    const clientAuth = await authenticateClientRequest(req);
-    if (clientAuth) {
-      return next();
-    }
-    clearSessionCookie(req, res);
-    return respondUnauthorized(req, res);
-  };
+  const requireScopedClientAuth = createClientRouteScopeGuard({
+    authenticate: (req) => authenticateClientRequest(req, { allowUrlToken: false }),
+    respondUnauthorized,
+  });
+
+  const requireAuth = createUiSessionAuthGate({
+    requireClientAuth: requireScopedClientAuth,
+    getSessionToken: (req) => getTokenFromRequest(req),
+    isSessionValid,
+    authenticateClientRequest: (req) => authenticateClientRequest(req),
+    clearSessionCookie,
+    respondUnauthorized,
+  });
 
   const requireSessionAuth = async (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'OPTIONS') {
@@ -1233,6 +1226,7 @@ export const createUiAuth = ({
   return {
     enabled: true,
     requireAuth,
+    requireClientAuth: requireScopedClientAuth,
     requireSessionAuth,
     resolveAuthContext,
     handleSessionStatus,

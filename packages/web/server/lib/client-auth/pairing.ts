@@ -5,6 +5,7 @@ import {
 } from '../shared/durable-json-store.js';
 import type { PairingClientKind, PairingDependencies, PairingInput, PairingSession, PairingStore, RedemptionInput, StoreDependencies, StoredPairingSession, StoreInput } from './contracts.js';
 import { hasChmod, isInputArray, isStoreInput, isStoredInput, isString } from './inputs.js';
+import { isClientRouteScopeList } from './scopes.js';
 
 const STORE_VERSION = 1;
 const PAIRING_ID_PREFIX = 'pair_';
@@ -80,6 +81,7 @@ const publicSession = (session: StoredPairingSession): PairingSession => ({
   createdByClientId: session.createdByClientId,
   usesRelay: session.usesRelay === true,
   localOnly: session.localOnly === true,
+  scopes: session.scopes,
 });
 
 const isPendingSession = (session: StoredPairingSession) => !session.usedAt
@@ -131,25 +133,31 @@ export const createClientPairingRuntime = ({
     sessions: isInputArray(payload?.sessions)
       ? payload.sessions
         .filter(isStoredInput)
-        .map((session): StoredPairingSession => ({
-          id: isString(session.id) ? session.id : generateId(),
-          secretHash: isString(session.secretHash) ? session.secretHash : '',
-          createdAt: isString(session.createdAt) ? session.createdAt : nowIso(),
-          // A missing or unparseable expiresAt stays null: such a session is
-          // expired everywhere it is judged (pending, relay demand, redeem,
-          // sweep). Substituting a fresh TTL here would keep its pairing
-          // secret redeemable indefinitely and persist the fabricated stamp.
-          expiresAt: normalizeTimestamp(isString(session.expiresAt) ? session.expiresAt : null),
-          usedAt: normalizeTimestamp(isString(session.usedAt) ? session.usedAt : null),
-          cancelledAt: normalizeTimestamp(isString(session.cancelledAt) ? session.cancelledAt : null),
-          clientId: normalizeOptionalString(isString(session.clientId) ? session.clientId : null),
-          label: normalizeStoredLabel(isString(session.label) ? session.label : null),
-          fingerprint: normalizeOptionalString(isString(session.fingerprint) ? session.fingerprint : null) || generateFingerprint(),
-          allowedClientKinds: normalizeAllowedClientKinds(isInputArray(session.allowedClientKinds) ? session.allowedClientKinds.filter(isString) : null),
-          createdByClientId: normalizeOptionalString(isString(session.createdByClientId) ? session.createdByClientId : null),
-          usesRelay: session.usesRelay === true,
-          localOnly: session.localOnly === true,
-        }))
+        .map((session): StoredPairingSession => {
+          const scopes = session.scopes == null
+            ? null
+            : isClientRouteScopeList(session.scopes) ? Array.from(new Set(session.scopes)) : [];
+          return {
+            id: isString(session.id) ? session.id : generateId(),
+            secretHash: isString(session.secretHash) ? session.secretHash : '',
+            createdAt: isString(session.createdAt) ? session.createdAt : nowIso(),
+            // A missing or unparseable expiresAt stays null: such a session is
+            // expired everywhere it is judged (pending, relay demand, redeem,
+            // sweep). Substituting a fresh TTL here would keep its pairing
+            // secret redeemable indefinitely and persist the fabricated stamp.
+            expiresAt: normalizeTimestamp(isString(session.expiresAt) ? session.expiresAt : null),
+            usedAt: normalizeTimestamp(isString(session.usedAt) ? session.usedAt : null),
+            cancelledAt: normalizeTimestamp(isString(session.cancelledAt) ? session.cancelledAt : null),
+            clientId: normalizeOptionalString(isString(session.clientId) ? session.clientId : null),
+            label: normalizeStoredLabel(isString(session.label) ? session.label : null),
+            fingerprint: normalizeOptionalString(isString(session.fingerprint) ? session.fingerprint : null) || generateFingerprint(),
+            allowedClientKinds: normalizeAllowedClientKinds(isInputArray(session.allowedClientKinds) ? session.allowedClientKinds.filter(isString) : null),
+            createdByClientId: normalizeOptionalString(isString(session.createdByClientId) ? session.createdByClientId : null),
+            usesRelay: session.usesRelay === true,
+            localOnly: session.localOnly === true,
+            scopes,
+          };
+        })
         .filter((session) => session.secretHash.length > 0)
       : [],
   });
@@ -226,7 +234,8 @@ export const createClientPairingRuntime = ({
     });
   };
 
-  const createPairingSession = async ({ label, allowedClientKinds, createdByClientId, usesRelay, localOnly }: PairingInput = {}) => {
+  const createPairingSession = async ({ label, allowedClientKinds, createdByClientId, usesRelay, localOnly, scopes }: PairingInput = {}) => {
+    const normalizedScopes = scopes == null ? null : Array.from(new Set(scopes));
     return withStoreMutation(async () => {
       const store = await readStore();
       sweepExpiredSessionsFromStore(store);
@@ -245,6 +254,7 @@ export const createClientPairingRuntime = ({
         createdByClientId: normalizeOptionalString(isString(createdByClientId) ? createdByClientId : null),
         usesRelay: usesRelay === true,
         localOnly: localOnly === true,
+        scopes: normalizedScopes,
       };
       store.sessions.push(session);
       await writeStore(store);
@@ -326,6 +336,7 @@ export const createClientPairingRuntime = ({
         appVersion,
         usesRelay: session.usesRelay === true,
         localOnly: session.localOnly === true,
+        scopes: session.scopes,
       });
       session.usedAt = nowIso();
       session.clientId = result.client?.id || null;

@@ -5,6 +5,7 @@ import {
 } from '../shared/durable-json-store.js';
 import type { BearerRequest, ClientInput, ClientStore, CreatedClient, RemoteClient, StoreDependencies, StoredClient, StoredInput, StoreInput } from './contracts.js';
 import { hasRelayProvenance } from '../relay/provenance.js';
+import { isClientRouteScopeList } from './scopes.js';
 import { hasChmod, isInputArray, isStoreInput, isStoredInput, isString } from './inputs.js';
 
 const STORE_VERSION = 1;
@@ -45,7 +46,7 @@ const normalizeOptionalString = (value: string | null | undefined) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const normalizeMetadata = (client: ClientInput) => ({
+const normalizeMetadata = (client: Pick<ClientInput, 'authMethod' | 'pairingId' | 'deviceName' | 'devicePlatform' | 'deviceModel' | 'appVersion'>) => ({
   authMethod: normalizeOptionalString(isString(client.authMethod) ? client.authMethod : null),
   pairingId: normalizeOptionalString(isString(client.pairingId) ? client.pairingId : null),
   deviceName: normalizeOptionalString(isString(client.deviceName) ? client.deviceName : null),
@@ -94,21 +95,27 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     clients: isInputArray(payload?.clients)
       ? payload.clients
         .filter(isStoredInput)
-        .map((client: StoredInput): StoredClient => ({
-          id: isString(client.id) ? client.id : generateId(),
-          label: normalizeLabel(isString(client.label) ? client.label : null),
-          tokenHash: isString(client.tokenHash) ? client.tokenHash : '',
-          createdAt: isString(client.createdAt) ? client.createdAt : nowIso(),
-          lastUsedAt: isString(client.lastUsedAt) ? client.lastUsedAt : null,
-          revokedAt: isString(client.revokedAt) ? client.revokedAt : null,
-          expiresAt: normalizeTimestamp(isString(client.expiresAt) ? client.expiresAt : null),
-          clientKind: normalizeOptionalString(isString(client.clientKind) ? client.clientKind : null),
-          dedupeKey: normalizeOptionalString(isString(client.dedupeKey) ? client.dedupeKey : null),
-          usesRelay: client.usesRelay === true,
-          localOnly: client.localOnly === true,
-          lastTransport: client.lastTransport === 'relay' || client.lastTransport === 'direct' ? client.lastTransport : null,
-          ...normalizeMetadata(client),
-        }))
+        .map((client: StoredInput): StoredClient => {
+          const scopes = client.scopes == null
+            ? null
+            : isClientRouteScopeList(client.scopes) ? Array.from(new Set(client.scopes)) : [];
+          return {
+            id: isString(client.id) ? client.id : generateId(),
+            label: normalizeLabel(isString(client.label) ? client.label : null),
+            tokenHash: isString(client.tokenHash) ? client.tokenHash : '',
+            createdAt: isString(client.createdAt) ? client.createdAt : nowIso(),
+            lastUsedAt: isString(client.lastUsedAt) ? client.lastUsedAt : null,
+            revokedAt: isString(client.revokedAt) ? client.revokedAt : null,
+            expiresAt: normalizeTimestamp(isString(client.expiresAt) ? client.expiresAt : null),
+            clientKind: normalizeOptionalString(isString(client.clientKind) ? client.clientKind : null),
+            dedupeKey: normalizeOptionalString(isString(client.dedupeKey) ? client.dedupeKey : null),
+            usesRelay: client.usesRelay === true,
+            localOnly: client.localOnly === true,
+            scopes,
+            lastTransport: client.lastTransport === 'relay' || client.lastTransport === 'direct' ? client.lastTransport : null,
+            ...normalizeMetadata(client),
+          };
+        })
         .filter((client) => client.tokenHash.length > 0)
       : [],
   });
@@ -189,6 +196,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     usesRelay: client.usesRelay === true,
     localOnly: client.localOnly === true,
     lastTransport: client.lastTransport ?? null,
+    scopes: client.scopes,
   });
 
   const listClients = async () => {
@@ -220,6 +228,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
     appVersion,
     usesRelay,
     localOnly,
+    scopes,
   }: ClientInput = {}): Promise<CreatedClient> => {
     return withStoreMutation(async () => {
       const store = await readStore();
@@ -241,6 +250,7 @@ export const createRemoteClientAuthRuntime = ({ fsPromises, path, crypto, storeP
         ...normalizeMetadata({ authMethod, pairingId, deviceName, devicePlatform, deviceModel, appVersion }),
         usesRelay: usesRelay === true,
         localOnly: localOnly === true,
+        scopes: scopes == null ? null : Array.from(new Set(scopes)),
       };
       const previousClients = store.clients;
       if (normalizedDedupeKey) {

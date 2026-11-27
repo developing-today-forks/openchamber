@@ -10,6 +10,13 @@ export interface StoreDependencies {
   storePath: string;
 }
 
+export type ClientRouteScope =
+  | 'session-read'
+  | 'session-activity'
+  | 'quota-read'
+  | 'message-injection'
+  | 'plan-todo-binding-read';
+
 export interface ClientInput {
   label?: unknown;
   fallbackLabel?: unknown;
@@ -24,6 +31,7 @@ export interface ClientInput {
   appVersion?: unknown;
   usesRelay?: unknown;
   localOnly?: unknown;
+  scopes?: ClientRouteScope[] | null;
 }
 
 export interface RemoteClient {
@@ -43,6 +51,8 @@ export interface RemoteClient {
   usesRelay: boolean;
   localOnly: boolean;
   lastTransport: 'relay' | 'direct' | null;
+  // Null preserves the original unscoped paired-client behavior.
+  scopes: ClientRouteScope[] | null;
 }
 
 export interface StoredClient extends Omit<RemoteClient, 'lastTransport'> {
@@ -72,6 +82,7 @@ export interface PairingInput {
   createdByClientId?: unknown;
   usesRelay?: unknown;
   localOnly?: unknown;
+  scopes?: ClientRouteScope[] | null;
 }
 
 export interface RedemptionInput {
@@ -102,6 +113,7 @@ export interface PairingSession {
   createdByClientId: string | null;
   usesRelay: boolean;
   localOnly: boolean;
+  scopes: ClientRouteScope[] | null;
 }
 
 export interface StoredPairingSession extends Omit<PairingSession, 'label'> {
@@ -121,7 +133,8 @@ export interface PairingDependencies extends Partial<StoreDependencies> {
   ttlMs?: number;
 }
 
-export interface StoredInput extends ClientInput, PairingInput {
+export type StoredInput = Omit<ClientInput, 'scopes'> & Omit<PairingInput, 'scopes'> & {
+  scopes?: unknown;
   id?: unknown;
   tokenHash?: unknown;
   secretHash?: unknown;
@@ -133,7 +146,7 @@ export interface StoredInput extends ClientInput, PairingInput {
   cancelledAt?: unknown;
   clientId?: unknown;
   fingerprint?: unknown;
-}
+};
 
 export interface StoreInput {
   clients?: unknown;

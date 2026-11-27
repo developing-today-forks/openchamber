@@ -4,9 +4,10 @@ import { registerThemeCatalogRoutes } from '../appearance/theme-catalog.js';
 import { collectLocalFileDiagnostics } from '../diagnostics/local-files.js';
 import { serverDiagnosticJournal } from '../diagnostics/server-journal.js';
 import { getBearerTokenFromRequest } from '../ui-auth/ui-auth.js';
-import { candidateUrlType, isLocalOnlyCandidateSet, isLoopbackCandidateUrl, normalizeCandidateUrl } from '../client-auth/pairing-candidates.js';
-import { isBoolean, isString } from '../shared/object-guards.js';
+import { candidateUrlType, isLoopbackCandidateUrl, normalizeCandidateUrl } from '../client-auth/pairing-candidates.js';
+import { isString } from '../shared/object-guards.js';
 import { createApiAuthGate, isRouteGatedApiRequest } from './api-auth-gate.js';
+import { registerPairingSessionCreateRoute } from './pairing-session-create-route.js';
 import type { AddressInfo, Server } from 'node:net';
 import type { Application, ExpressFactory, NextFunction, Request, RequestHandler, Response } from '../shared/http-contracts.js';
 import type { DiagnosticJournal, OpenCodeLoad } from '../diagnostics/contracts.js';
@@ -905,29 +906,14 @@ export const registerAuthAndAccessRoutes = (app: Application, dependencies: Auth
     });
   });
 
-  app.post('/api/client-auth/pairing/sessions', express.json({ limit: '64kb' }), async (req, res, next) => {
-    await runWithClientCreateAuth(req, res, next, async (authContext) => {
-      const includeRelay = readBody(req)?.includeRelay;
-      const candidates = await pairingServerCandidates(req, {
-        preferredServerUrl: readBody(req)?.serverUrl,
-        includeRelay: isBoolean(includeRelay) ? includeRelay : undefined,
-        includeDirect: readBody(req)?.includeDirect !== false,
-      });
-      const usesRelay = candidates.some((candidate) => candidate.type === 'relay');
-      const result = await clientPairingRuntime.createPairingSession({
-        label: readBody(req)?.label,
-        allowedClientKinds: readBody(req)?.allowedClientKinds,
-        createdByClientId: clientIdFromAuthContext(authContext),
-        usesRelay,
-        localOnly: isLocalOnlyCandidateSet(candidates),
-      });
-      void reconcileRelay();
-      res.setHeader('Cache-Control', 'no-store');
-      res.status(201).json({
-        ...result,
-        server: { label: getServerLabel(), candidates },
-      });
-    });
+  registerPairingSessionCreateRoute(app, {
+    express,
+    clientPairingRuntime,
+    runWithClientCreateAuth,
+    pairingServerCandidates,
+    clientIdFromAuthContext,
+    getServerLabel,
+    reconcileRelay,
   });
 
   app.get('/api/client-auth/connection/candidates', async (req, res, next) => {
