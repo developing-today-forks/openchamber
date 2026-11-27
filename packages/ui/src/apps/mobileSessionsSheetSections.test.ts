@@ -4,11 +4,33 @@ import type { Session } from '@/lib/opencode/model';
 import { DEFAULT_SIDEBAR_LAYOUT } from '@/stores/sidebarLayout';
 
 import {
+  dedupeHeaderlessGroups,
   excludeRoots,
   expandZoneSessions,
   insertChatsGroupIndex,
   phoneSectionsInUse,
 } from './mobileSessionsSheetSections';
+
+describe('dedupeHeaderlessGroups', () => {
+  test('preserves section order and keeps a session at its first drawn position', () => {
+    const groups = dedupeHeaderlessGroups([
+      { key: 'pinned', items: [{ key: 'a', sessionIds: ['s1'] }, { key: 'run', sessionIds: ['s2', 's3'] }] },
+      { key: 'projects', items: [{ key: 'duplicate', sessionIds: ['s1'] }, { key: 'b', sessionIds: ['s4'] }] },
+    ]);
+    expect(groups.map((group) => [group.key, group.items.map((item) => item.key)])).toEqual([
+      ['pinned', ['a', 'run']],
+      ['projects', ['b']],
+    ]);
+  });
+
+  test('drops a repeated multi-session row and sections left empty by deduplication', () => {
+    const groups = dedupeHeaderlessGroups([
+      { key: 'work', items: [{ key: 'run', sessionIds: ['s1', 's2'] }] },
+      { key: 'projects', items: [{ key: 'same-run', sessionIds: ['s1', 's2'] }] },
+    ]);
+    expect(groups).toEqual([{ key: 'work', items: [{ key: 'run', sessionIds: ['s1', 's2'] }] }]);
+  });
+});
 
 // SAFETY: the helpers under test read only id, directory, title and time;
 // the rest of the Session shape is irrelevant here.
