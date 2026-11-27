@@ -112,7 +112,7 @@ const readOpenCodeJson = async ({ fetchImpl, buildOpenCodeUrl, getOpenCodeAuthHe
     await response.body?.cancel().catch(() => undefined);
     throw new Error(`OpenCode answered ${response.status}`);
   }
-  return unwrapOpenCodeResponse(await response.json());
+  return unwrapOpenCodeResponse(await readBoundedResponseJson(response, ACTIVE_SESSIONS_RESPONSE_MAX_BYTES));
 };
 
 export const readSessionCacheLifetime = async (reader: OpenCodeReader, sessionId: string, directory: string) => {

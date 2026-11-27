@@ -1391,8 +1391,11 @@ export const createNotificationTriggerRuntime = (deps: NotificationTriggerDepend
         headers: { Accept: 'application/json', ...getOpenCodeAuthHeaders() },
         signal: AbortSignal.timeout(2000),
       });
-      if (!response.ok) return { name: '', directory: '' };
-      const session = sessionSummarySchema.safeParse(unwrapOpenCodeResponse(await response.json().catch(() => null)));
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return { name: '', directory: '' };
+      }
+      const session = sessionSummarySchema.safeParse(unwrapOpenCodeResponse(await readBoundedResponseJson(response, OPEN_CODE_SESSION_RESPONSE_MAX_BYTES)));
       if (!session.success) return { name: '', directory: '' };
       return { name: session.data.title?.trim() ?? '', directory: session.data.location?.directory ?? session.data.directory ?? '' };
     } catch {
