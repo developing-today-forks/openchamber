@@ -5,7 +5,7 @@ import { normalizeImportedMcpServerName } from './mcpDraft';
 type ImportedMcpTransportType = 'local' | 'remote';
 
 interface ImportedMcpJsonObject {
-  [key: string]: JsonValue | undefined;
+  [key: string]: JsonValue;
 }
 
 interface ImportedMcpServerEntry {
