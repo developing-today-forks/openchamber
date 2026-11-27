@@ -20,7 +20,6 @@ export type HeaderlessGroup<T extends { sessionIds: readonly string[] }> = {
   items: readonly T[];
 };
 
-/** Keeps the first drawn row for each session and removes empty sections. */
 export const dedupeHeaderlessGroups = <T extends { sessionIds: readonly string[] }>(
   groups: readonly HeaderlessGroup<T>[],
 ): Array<{ key: string; items: T[] }> => {
