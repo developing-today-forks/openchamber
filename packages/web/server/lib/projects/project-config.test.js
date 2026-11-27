@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import os from 'os';
 import path from 'path';
-import { mkdtemp, rm, readFile, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, readFile, writeFile } from 'fs/promises';
 import { createProjectConfigRuntime } from './project-config.js';
 import { createProjectIdFromPath } from './project-id.js';
 import { SHARED_PROJECT_CONFIG_MAX_BYTES } from './project-setup.js';
@@ -675,6 +675,89 @@ describe('project-config atomic project-actions mutation (#2605)', () => {
       await expect(runtime.mutateProjectSetupActions(projectID, () => { throw new Error('no such action'); })).rejects.toThrow(/no such action/);
       const setup = await runtime.readProjectSetup(projectID);
       expect(setup.personal.projectActions.map((action) => action.id)).toEqual(['dev']);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+describe('project-config stale Settings project-actions revisions (#2605)', () => {
+  it('rejects a personal Settings list after an agent mutation and accepts a fresh list', async () => {
+    const { runtime, cleanup } = await createRuntime();
+    try {
+      const projectID = 'project-stale-personal-actions';
+      await runtime.updateProjectSetup(projectID, {
+        projectActions: [{ id: 'base', name: 'Base', command: 'run base' }],
+      });
+      const settingsRead = await runtime.readProjectSetup(projectID);
+
+      await runtime.mutateProjectSetupActions(projectID, (current) => [
+        ...current,
+        { id: 'agent', name: 'Agent', command: 'run agent' },
+      ]);
+
+      await expect(runtime.updateProjectSetup(projectID, {
+        projectActions: [
+          ...settingsRead.personal.projectActions,
+          { id: 'settings', name: 'Settings', command: 'run settings' },
+        ],
+        projectActionsBaseRevision: settingsRead.personal.projectActionsRevision ?? 'sha256:stale-settings-read',
+      })).rejects.toMatchObject({ code: 'project_actions_stale' });
+
+      const afterConflict = await runtime.readProjectSetup(projectID);
+      expect(afterConflict.personal.projectActions.map((action) => action.id)).toEqual(['base', 'agent']);
+
+      await runtime.updateProjectSetup(projectID, {
+        projectActions: [
+          ...afterConflict.personal.projectActions,
+          { id: 'settings', name: 'Settings', command: 'run settings' },
+        ],
+        projectActionsBaseRevision: afterConflict.personal.projectActionsRevision,
+      });
+      expect((await runtime.readProjectSetup(projectID)).personal.projectActions.map((action) => action.id)).toEqual(['base', 'agent', 'settings']);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it('rejects a shared Settings list after an agent mutation and accepts a fresh list', async () => {
+    const { runtime, tempRoot, cleanup } = await createRuntime();
+    try {
+      const projectPath = path.join(tempRoot, 'shared-repo');
+      const sharedPath = path.join(projectPath, '.openchamber', 'project.json');
+      const projectID = createProjectIdFromPath(projectPath);
+      await mkdir(path.dirname(sharedPath), { recursive: true });
+      await runtime.updateProjectSetup(projectID, { projectPath });
+      await writeFile(sharedPath, JSON.stringify({
+        version: 1,
+        projectActions: [{ id: 'base', name: 'Base', command: 'run base' }],
+      }));
+      const settingsRead = await runtime.readProjectSetup(projectID);
+
+      await runtime.mutateSharedProjectSetupActions(projectID, (current) => [
+        ...current,
+        { id: 'agent', name: 'Agent', command: 'run agent' },
+      ]);
+
+      await expect(runtime.updateSharedProjectSetup(projectID, {
+        projectActions: [
+          ...settingsRead.shared.projectActions,
+          { id: 'settings', name: 'Settings', command: 'run settings' },
+        ],
+        projectActionsBaseRevision: settingsRead.shared.projectActionsRevision ?? 'sha256:stale-settings-read',
+      })).rejects.toMatchObject({ code: 'project_actions_stale' });
+
+      const afterConflict = await runtime.readProjectSetup(projectID);
+      expect(afterConflict.shared.projectActions.map((action) => action.id)).toEqual(['base', 'agent']);
+
+      await runtime.updateSharedProjectSetup(projectID, {
+        projectActions: [
+          ...afterConflict.shared.projectActions,
+          { id: 'settings', name: 'Settings', command: 'run settings' },
+        ],
+        projectActionsBaseRevision: afterConflict.shared.projectActionsRevision,
+      });
+      expect((await runtime.readProjectSetup(projectID)).shared.projectActions.map((action) => action.id)).toEqual(['base', 'agent', 'settings']);
     } finally {
       await cleanup();
     }
