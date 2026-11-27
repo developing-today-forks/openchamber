@@ -92,6 +92,7 @@ import { settleMainProcessCompileCache } from './compile-cache.mjs';
 import { probeDirectHostWithRetry } from './host-probe-policy.mjs';
 import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
+import { parseFocusMainWindowArgs } from './focus-main-window-args.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
 import { assertUpdaterCapability, enableMacosDirectContentsUpdates, readPackageType } from './updater-capability.mjs';
 import { relaunchAfterExit } from './linux-relaunch.mjs';
@@ -4895,10 +4896,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_focus_main_window': {
-      const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
-      const directory = typeof args.directory === 'string' ? args.directory.trim() : '';
-      const mode = typeof args.mode === 'string' ? args.mode.trim() : '';
-      const projectId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
+      const { sessionId, directory, mode, projectId } = parseFocusMainWindowArgs(args);
       const hasMainWindow = state.mainWindow && !state.mainWindow.isDestroyed();
 
       if (!hasMainWindow) {
