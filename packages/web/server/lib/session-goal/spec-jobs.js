@@ -87,6 +87,7 @@ const storedJobSchema = z.object({
   error: z.string().nullable(),
   // Stopped by the user while it was written; the message waits like a failed one's.
   cancelled: z.boolean().default(false),
+  sendUncertain: z.boolean().default(false),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -152,6 +153,7 @@ const toPublicJob = (job) => {
     status: job.status,
     error: job.error,
     cancelled: job.cancelled === true,
+    sendUncertain: job.sendUncertain === true,
     content: item.content,
     attachmentCount: item.attachments.length,
     createdAt: job.createdAt,
@@ -247,9 +249,10 @@ export function createGoalSpecJobRuntime({
   const publish = (job) => broadcast({ job: toPublicJob(job) });
   const publishRemoved = (job, outcome) => broadcast({ removed: { id: job.id, sessionId: job.sessionId, directory: job.directory, outcome } });
 
-  const fail = async (job, reason) => {
+  const fail = async (job, reason, { sendUncertain = false } = {}) => {
     job.status = 'failed';
     job.error = reason;
+    job.sendUncertain = sendUncertain;
     job.updatedAt = now();
     await persist().catch((error) => {
       console.warn('[goal-spec-jobs] failed to save a failed job:', error?.message ?? error);
@@ -319,7 +322,7 @@ export function createGoalSpecJobRuntime({
           await persist().catch(() => undefined);
           publishRemoved(job, 'queued');
         } else {
-          await fail(job, RESTART_UNKNOWN_REASON);
+          await fail(job, RESTART_UNKNOWN_REASON, { sendUncertain: true });
         }
       }
     }
@@ -365,6 +368,7 @@ export function createGoalSpecJobRuntime({
       spec: null,
       error: null,
       cancelled: false,
+      sendUncertain: false,
       createdAt: at,
       updatedAt: at,
     };
