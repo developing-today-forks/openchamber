@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { collectForwardProxyHeaders } from '../../proxy-headers.js';
 import { requestOrigin } from '../guests/routes.js';
 import { isRecord, isString } from '../shared/guards.js';
+import { readBoundedResponseBytes, readBoundedResponseJson } from '../shared/response-body.js';
 import { writeFileAtomic } from './atomic-write.js';
 import type { Request, Response as HttpResponse, NextFunction, Application } from '../shared/http-contracts.js';
 import type { JsonObject, JsonValue } from '../shared/json-values.js';
@@ -95,6 +96,8 @@ const UPSTREAM_TIMEOUT_MS = 60_000;
 const CONFIG_PICKUP_TIMEOUT_MS = 8_000;
 const CONFIG_PICKUP_RETRY_MS = 250;
 const MAX_PLANNING_ROUNDS = 3;
+// 16 MiB matches the session-response caps used by the sibling loopback readers.
+const MCP_OAUTH_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
 const RELAY_REFUSAL = 'MCP sign-in cannot finish over the private relay with this OpenCode version, because the provider has to redirect the browser to an address that reaches OpenChamber directly. Update OpenCode to 2.2.6 or newer, or open OpenChamber at its LAN or tunnel address and sign in from there.';
 const OFF_MACHINE_REFUSAL = 'MCP sign-in cannot finish here with this OpenCode version, because OpenCode runs on another machine and only that machine can receive the provider\'s redirect. Update OpenCode to 2.2.6 or newer, sign in where OpenCode runs, or set this server\'s oauth.redirect_uri to an address that reaches that machine.';
@@ -233,10 +236,14 @@ const forwardedQuery = (params: URLSearchParams) => {
 };
 
 const sendUpstream = async (res: HttpResponse, upstream: Response) => {
+  const bounded = await readBoundedResponseBytes(upstream, MCP_OAUTH_RESPONSE_MAX_BYTES);
+  if (bounded.tooLarge) {
+    return refuse(res, 502, 'OpenCode returned a response too large to forward for this MCP sign-in. Try again, or check the OpenCode server log.');
+  }
   res.status(upstream.status);
   const contentType = upstream.headers.get('content-type');
   if (contentType) res.setHeader('content-type', contentType);
-  return res.send(Buffer.from(await upstream.arrayBuffer()));
+  return res.send(bounded.bytes);
 };
 
 const refuse = (res: HttpResponse, status: number, message: string) => res.status(status).json({ _tag: 'InvalidRequestError', message, kind: 'mcp_oauth' });
@@ -359,7 +366,8 @@ export const createMcpOAuthSignIn = ({
         return sendUpstream(res, upstream);
       }
 
-      const payload: unknown = await upstream.json();
+      const payload: unknown = await readBoundedResponseJson(upstream, MCP_OAUTH_RESPONSE_MAX_BYTES);
+      if (payload === null) return refuse(res, 502, 'OpenCode returned a sign-in response too large or unreadable to use. Try again, or check the OpenCode server log.');
       const data = optionalFields(payload)?.data;
       const attempt = requiredFields(isRecord(data) ? data : payload, 'url');
       const authorization = new URL(String(attempt.url));
@@ -396,7 +404,7 @@ export const createMcpOAuthSignIn = ({
     const path = `/api/integration/${integrationID}/connect/oauth${search}`;
     const upstream = await callOpenCode(req, 'POST', path, JSON.stringify(req.body ?? {}));
     if (!upstream.ok) return sendUpstream(res, upstream);
-    const payload: unknown = await upstream.json();
+    const payload: unknown = await readBoundedResponseJson(upstream, MCP_OAUTH_RESPONSE_MAX_BYTES);
     const data = optionalFields(payload)?.data;
     const attempt = optionalFields(isRecord(data) ? data : payload);
     if (attempt?.paste === true) return res.status(upstream.status).json(payload);
@@ -407,7 +415,7 @@ export const createMcpOAuthSignIn = ({
   const readMcpServerName = async (req: Request, integrationID: string, search: string) => {
     const upstream = await callOpenCode(req, 'GET', `/api/integration/${integrationID}${search}`);
     if (!upstream.ok) return { upstream };
-    const payload: unknown = await upstream.json();
+    const payload: unknown = await readBoundedResponseJson(upstream, MCP_OAUTH_RESPONSE_MAX_BYTES);
     const data = optionalFields(payload)?.data;
     const integration = optionalFields(isRecord(data) ? data : payload);
     return { name: optionalFields(integration?.metadata)?.source === 'mcp' && isString(integration?.name) ? integration.name : null };
