@@ -92,6 +92,7 @@ import { settleMainProcessCompileCache } from './compile-cache.mjs';
 import { probeDirectHostWithRetry } from './host-probe-policy.mjs';
 import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
+import { convertAppIconToDataUrl } from './app-icon-conversion.mjs';
 import { parseFocusMainWindowArgs } from './focus-main-window-args.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
 import { assertUpdaterCapability, enableMacosDirectContentsUpdates, readPackageType } from './updater-capability.mjs';
@@ -3522,20 +3523,13 @@ const isAppBundleInstalled = async (appName) => Boolean(await resolveAppBundlePa
 
 const iconToDataUrl = async (iconPath, appName) => {
   if (!iconPath || !(await pathExists(iconPath))) return null;
-  const safeName = String(appName || 'app').replace(/[^a-z0-9]/gi, '_');
-  const tempPath = path.join(os.tmpdir(), `openchamber-icon-${safeName}-${Date.now()}.png`);
-  try {
-    await execFileAsync('sips', ['-s', 'format', 'png', '-Z', '32', iconPath, '--out', tempPath], { stdio: 'ignore' });
-  } catch {
-    return null;
-  }
-  if (!(await pathExists(tempPath))) return null;
-  try {
-    const bytes = await fsp.readFile(tempPath);
-    return `data:image/png;base64,${bytes.toString('base64')}`;
-  } finally {
-    await fsp.rm(tempPath, { force: true }).catch(() => {});
-  }
+  return convertAppIconToDataUrl({
+    iconPath,
+    appName,
+    convert: async (sourcePath, tempPath) => {
+      await execFileAsync('sips', ['-s', 'format', 'png', '-Z', '32', sourcePath, '--out', tempPath], { stdio: 'ignore' });
+    },
+  });
 };
 
 const resolveAppIconPath = async (appPath) => {
