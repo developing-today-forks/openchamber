@@ -522,8 +522,9 @@ submenus (not in VS Code), then Collapse all / Expand all.
   `timeline-mixed`. The list is flat, so subsessions are not opened under
   their parent. One whole-list limit replaces the per-container ones: 20 rows
   plus 20 per Show more (`activity:headerless`), and search still lists every
-  match. Done/Archive navigation follows the rows actually drawn. Desktop
-  first; the phone surface keeps its own persisted choice (see #18).
+  match. Done/Archive navigation follows the rows actually drawn. The phone
+  sheet also offers its own persisted headerless choice and uses one reveal
+  limit across its ordered sections.
 - Below Chats, Pinned and In work it renders one project
   header per project followed by that project's non-archived root sessions
   from every worktree and space, in the shared lifecycle order with pinned
