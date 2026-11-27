@@ -220,7 +220,6 @@ function extractSingleServer(
     const keys = Object.keys(mcpServers);
     if (keys.length === 1) {
       const name = keys[0];
-      if (name === undefined) return null;
       const entry = mcpServers[name];
       if (isObject(entry)) {
         return { name, entry };
@@ -238,7 +237,6 @@ function extractSingleServer(
 
   if (serverKeys.length === 1) {
     const name = serverKeys[0];
-    if (name === undefined) return null;
     const entry = obj[name];
     if (isObject(entry) && isServerConfig(entry)) {
       return { name, entry };
@@ -296,7 +294,6 @@ export function parseImportedMcpSnippet(
       );
     }
     const serverName = keys[0];
-    if (serverName === undefined) return buildError('mcpServers object is empty', parsed);
     const entry = mcpServers[serverName];
     if (!isObject(entry)) {
       return buildError('Server entry is not a valid object', parsed);
@@ -322,7 +319,6 @@ export function parseImportedMcpSnippet(
       );
     }
     const serverName = keys[0];
-    if (serverName === undefined) return buildError('mcp object is empty', parsed);
     const entry = mcp[serverName];
     if (!isObject(entry)) {
       return buildError('Server entry in mcp is not a valid object', parsed);
