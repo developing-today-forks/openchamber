@@ -1,10 +1,36 @@
 import { MCP_PROTOCOLS, type McpCodemodeChoice, type McpDraft, type McpProtocol } from '@/stores/useMcpConfigStore';
+import type { JsonValue } from '@/lib/opencode/model';
 import { normalizeImportedMcpServerName } from './mcpDraft';
+
+type ImportedMcpTransportType = 'local' | 'remote';
+
+interface ImportedMcpJsonObject {
+  [key: string]: JsonValue | undefined;
+}
+
+interface ImportedMcpServerEntry {
+  readonly name: string;
+  readonly entry: ImportedMcpJsonObject;
+}
+
+interface ImportedMcpTimeouts {
+  readonly startup: string;
+  readonly catalog: string;
+  readonly execution: string;
+}
+
+interface ImportedMcpImportOptions {
+  readonly fallbackName?: string;
+}
+
+interface ApplyImportedMcpOptions {
+  readonly isNewServer?: boolean;
+}
 
 export interface ImportedMcpResult {
   readonly ok: true;
   readonly name?: string;
-  readonly type: 'local' | 'remote';
+  readonly type: ImportedMcpTransportType;
   readonly command: string[];
   readonly url: string;
   readonly environment: Array<{ key: string; value: string }>;
@@ -26,19 +52,19 @@ export interface ImportedMcpResult {
 
 type ImportedMcpError =
   | { readonly ok: false; readonly error: string }
-  | { readonly ok: false; readonly error: string; readonly parsed: unknown };
+  | { readonly ok: false; readonly error: string; readonly parsed: JsonValue };
 
 export type ImportedMcpOutcome = ImportedMcpResult | ImportedMcpError;
 
-function isObject(value: unknown): value is Record<string, unknown> {
+function isObject(value: JsonValue | undefined): value is ImportedMcpJsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function stringArray(value: unknown): value is string[] {
+function stringArray(value: JsonValue | undefined): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
 }
 
-function buildError(message: string, parsed?: unknown): ImportedMcpError {
+function buildError(message: string, parsed?: JsonValue): ImportedMcpError {
   return parsed !== undefined
     ? { ok: false, error: message, parsed }
     : { ok: false, error: message };
@@ -46,8 +72,8 @@ function buildError(message: string, parsed?: unknown): ImportedMcpError {
 
 function buildResult(
   name: string | undefined,
-  type: 'local' | 'remote',
-  raw: Record<string, unknown>,
+  type: ImportedMcpTransportType,
+  raw: ImportedMcpJsonObject,
 ): ImportedMcpResult {
   const command: string[] = buildCommand(raw);
   const url = typeof raw.url === 'string' ? raw.url.trim() : '';
@@ -94,7 +120,7 @@ function buildResult(
   };
 }
 
-function readString(source: Record<string, unknown> | null, ...keys: string[]): string {
+function readString(source: ImportedMcpJsonObject | null, ...keys: string[]): string {
   if (!source) return '';
   for (const key of keys) {
     const value = source[key];
@@ -103,7 +129,7 @@ function readString(source: Record<string, unknown> | null, ...keys: string[]): 
   return '';
 }
 
-function readNumeric(source: Record<string, unknown> | null, ...keys: string[]): string {
+function readNumeric(source: ImportedMcpJsonObject | null, ...keys: string[]): string {
   if (!source) return '';
   for (const key of keys) {
     const parsed = positiveInteger(source[key]);
@@ -112,7 +138,7 @@ function readNumeric(source: Record<string, unknown> | null, ...keys: string[]):
   return '';
 }
 
-function positiveInteger(value: unknown): string {
+function positiveInteger(value: JsonValue | undefined): string {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     return String(Math.floor(value));
   }
@@ -123,7 +149,7 @@ function positiveInteger(value: unknown): string {
   return '';
 }
 
-function buildCommand(raw: Record<string, unknown>): string[] {
+function buildCommand(raw: ImportedMcpJsonObject): string[] {
   const cmd = raw.command;
   const args = raw.args;
 
@@ -148,24 +174,27 @@ function buildCommand(raw: Record<string, unknown>): string[] {
 }
 
 function buildEnv(
-  raw: Record<string, unknown>,
+  raw: ImportedMcpJsonObject,
   ...keys: string[]
 ): Array<{ key: string; value: string }> {
   for (const key of keys) {
     const val = raw[key];
     if (!isObject(val)) continue;
 
-    const entries = Object.entries(val as Record<string, unknown>).filter(
-      ([k, v]) => k && typeof v === 'string',
-    );
+    const entries: Array<{ key: string; value: string }> = [];
+    for (const [entryKey, entryValue] of Object.entries(val)) {
+      if (entryKey && typeof entryValue === 'string') {
+        entries.push({ key: entryKey, value: entryValue });
+      }
+    }
     if (entries.length > 0) {
-      return entries.map(([k, v]) => ({ key: k, value: String(v) }));
+      return entries;
     }
   }
   return [];
 }
 
-function buildTimeouts(raw: Record<string, unknown>): { startup: string; catalog: string; execution: string } {
+function buildTimeouts(raw: ImportedMcpJsonObject): ImportedMcpTimeouts {
   if (isObject(raw.timeout)) {
     return {
       startup: positiveInteger(raw.timeout.startup),
@@ -176,7 +205,7 @@ function buildTimeouts(raw: Record<string, unknown>): { startup: string; catalog
   return { startup: '', catalog: '', execution: positiveInteger(raw.timeout) };
 }
 
-function buildDisabled(raw: Record<string, unknown>): boolean {
+function buildDisabled(raw: ImportedMcpJsonObject): boolean {
   if (raw.disabled === true) return true;
   if (raw.disabled === false) return false;
   if ('enabled' in raw) return !raw.enabled;
@@ -184,13 +213,14 @@ function buildDisabled(raw: Record<string, unknown>): boolean {
 }
 
 function extractSingleServer(
-  obj: Record<string, unknown>,
-): { name: string; entry: Record<string, unknown> } | null {
+  obj: ImportedMcpJsonObject,
+): ImportedMcpServerEntry | null {
   const mcpServers = obj.mcpServers;
   if (isObject(mcpServers)) {
     const keys = Object.keys(mcpServers);
     if (keys.length === 1) {
-      const name = keys[0]!;
+      const name = keys[0];
+      if (name === undefined) return null;
       const entry = mcpServers[name];
       if (isObject(entry)) {
         return { name, entry };
@@ -207,9 +237,10 @@ function extractSingleServer(
   });
 
   if (serverKeys.length === 1) {
-    const name = serverKeys[0]!;
-    const entry = obj[name] as Record<string, unknown>;
-    if (isServerConfig(entry)) {
+    const name = serverKeys[0];
+    if (name === undefined) return null;
+    const entry = obj[name];
+    if (isObject(entry) && isServerConfig(entry)) {
       return { name, entry };
     }
   }
@@ -217,7 +248,7 @@ function extractSingleServer(
   return null;
 }
 
-function isServerConfig(val: Record<string, unknown>): boolean {
+function isServerConfig(val: ImportedMcpJsonObject): boolean {
   return (
     val.type === 'local' ||
     val.type === 'remote' ||
@@ -229,9 +260,9 @@ function isServerConfig(val: Record<string, unknown>): boolean {
 
 export function parseImportedMcpSnippet(
   raw: string,
-  options?: { fallbackName?: string },
+  options?: ImportedMcpImportOptions,
 ): ImportedMcpOutcome {
-  let parsed: unknown;
+  let parsed: JsonValue;
   try {
     const trimmed = raw.trim();
     if (!trimmed) {
@@ -248,7 +279,7 @@ export function parseImportedMcpSnippet(
     return buildError('Expected a JSON object, not an array or primitive');
   }
 
-  const obj = parsed as Record<string, unknown>;
+  const obj = parsed;
 
   const mcpServers = obj.mcpServers;
   if (isObject(mcpServers)) {
@@ -264,12 +295,13 @@ export function parseImportedMcpSnippet(
         parsed,
       );
     }
-    const serverName = keys[0]!;
+    const serverName = keys[0];
+    if (serverName === undefined) return buildError('mcpServers object is empty', parsed);
     const entry = mcpServers[serverName];
     if (!isObject(entry)) {
       return buildError('Server entry is not a valid object', parsed);
     }
-    return buildResult(serverName, inferType(entry as Record<string, unknown>), entry as Record<string, unknown>);
+    return buildResult(serverName, inferType(entry), entry);
   }
 
   const mcpSection = obj.mcp;
@@ -289,12 +321,13 @@ export function parseImportedMcpSnippet(
         parsed,
       );
     }
-    const serverName = keys[0]!;
+    const serverName = keys[0];
+    if (serverName === undefined) return buildError('mcp object is empty', parsed);
     const entry = mcp[serverName];
     if (!isObject(entry)) {
       return buildError('Server entry in mcp is not a valid object', parsed);
     }
-    return buildResult(serverName, inferType(entry as Record<string, unknown>), entry as Record<string, unknown>);
+    return buildResult(serverName, inferType(entry), entry);
   }
 
   const single = extractSingleServer(obj);
@@ -320,7 +353,7 @@ export function parseImportedMcpSnippet(
   );
 }
 
-function inferType(entry: Record<string, unknown>): 'local' | 'remote' {
+function inferType(entry: ImportedMcpJsonObject): ImportedMcpTransportType {
   if (entry.type === 'remote') return 'remote';
   if (entry.type === 'local') return 'local';
   if (typeof entry.url === 'string' && entry.url.trim()) return 'remote';
@@ -332,7 +365,7 @@ function inferType(entry: Record<string, unknown>): 'local' | 'remote' {
 export function applyImportedMcpToDraft(
   result: ImportedMcpResult,
   currentDraft: Partial<McpDraft> & { name?: string },
-  options?: { isNewServer?: boolean },
+  options?: ApplyImportedMcpOptions,
 ): Partial<McpDraft> & { name: string } {
   const isNew = options?.isNewServer ?? false;
   const importedName = result.name ? normalizeImportedMcpServerName(result.name) : undefined;
