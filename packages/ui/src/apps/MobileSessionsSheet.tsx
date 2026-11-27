@@ -68,12 +68,10 @@ import {
 import {
   applyMobileSidebarViewMode,
   MOBILE_VIEW_MODE_OPTIONS,
-  MobileHeaderlessList,
-  ShowFewerRow,
-  ShowMoreRow,
   type MobileSidebarViewMode,
   useMobileHeaderlessGroups,
-} from './MobileHeaderlessList';
+} from './mobileHeaderlessSessions';
+import { MobileHeaderlessList, ShowFewerRow, ShowMoreRow } from './MobileHeaderlessList';
 import { getDescendantIds, partitionSidebarSessions } from '@/components/session/sidebar/list/sessionCollection';
 import { rankByLatestActivity, sortProjectsByOrder } from '@/components/session/sidebar/list/projectSort';
 import { collectSessionSubtreeIds, runSessionSubtreeAction, type SessionSubtreeAction } from '@/components/session/sidebar/sessions/sessionSubtreeActions';
