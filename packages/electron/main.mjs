@@ -89,6 +89,7 @@ import { findReusableHostWindowIndex, normalizeNotificationInput, readTrimmedStr
 import { isPackagedUiRuntimeRequest } from './packaged-ui-routing.mjs';
 import { RUNTIME_CONFIG_SCRIPT, RUNTIME_CONFIG_SCRIPT_PATHNAME, createRuntimeConfigGate, injectRuntimeConfig, isRuntimeConfigFrame } from './packaged-runtime-config.mjs';
 import { settleMainProcessCompileCache } from './compile-cache.mjs';
+import { parseDevTunnelCloseArgs, parseDevTunnelOpenArgs } from './dev-tunnel-args.mjs';
 import { probeDirectHostWithRetry } from './host-probe-policy.mjs';
 import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
@@ -3996,44 +3997,26 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_dev_tunnel_open': {
-      const baseUrl = typeof args.baseUrl === 'string' ? args.baseUrl.trim() : '';
-      const port = Number.isFinite(args.port) ? Math.trunc(args.port) : 0;
-      if (!baseUrl) throw new Error('baseUrl is required');
-      if (!(port > 0 && port <= 65535)) throw new Error('A valid port is required');
-      const spaceId = args.spaceId ?? null;
-      if (spaceId !== null && !isSpaceId(spaceId)) throw new Error('A valid space id is required');
-
-      if (args.relay === true) {
-        const targetKey = typeof args.targetKey === 'string' ? args.targetKey.trim() : '';
-        const opened = await relayDevTunnelBridge.open({ targetKey, remotePort: port, spaceId, webContents: browserWindow?.webContents });
-        if (spaceId) await openSpacePreviewPort(spaceId, opened.localPort);
+      const request = parseDevTunnelOpenArgs(args);
+      if (request.relay) {
+        const opened = await relayDevTunnelBridge.open({ targetKey: request.targetKey, remotePort: request.port, spaceId: request.spaceId, webContents: browserWindow?.webContents });
+        if (request.spaceId) await openSpacePreviewPort(request.spaceId, opened.localPort);
         return opened;
       }
 
-      const headers = {};
-      const requestHeaders = args.requestHeaders && typeof args.requestHeaders === 'object' ? args.requestHeaders : {};
-      for (const [name, value] of Object.entries(requestHeaders)) {
-        if (typeof value === 'string' && value) headers[name] = value;
-      }
-      if (typeof args.clientToken === 'string' && args.clientToken) {
-        headers.Authorization = `Bearer ${args.clientToken}`;
-      }
-
       const client = await getDevTunnelClient();
-      const result = await client.open({ baseUrl, port, headers, spaceId });
-      if (spaceId) await openSpacePreviewPort(spaceId, result.localPort);
+      const result = await client.open({ baseUrl: request.baseUrl, port: request.port, headers: request.headers, spaceId: request.spaceId });
+      if (request.spaceId) await openSpacePreviewPort(request.spaceId, result.localPort);
       return { localPort: result.localPort, reused: result.reused, url: `http://openchamber-preview.localhost:${result.localPort}/` };
     }
 
     case 'desktop_dev_tunnel_close': {
-      const baseUrl = typeof args.baseUrl === 'string' ? args.baseUrl.trim() : '';
-      const port = Number.isFinite(args.port) ? Math.trunc(args.port) : 0;
-      if (!baseUrl || !(port > 0)) return { closed: false };
-      const spaceId = isSpaceId(args.spaceId) ? args.spaceId : null;
+      const request = parseDevTunnelCloseArgs(args);
+      if (!request) return { closed: false };
       const client = await getDevTunnelClient();
-      const tunnel = client.list().find((entry) => entry.baseUrl === baseUrl && entry.remotePort === port && entry.spaceId === spaceId);
-      const closed = client.close({ baseUrl, port, spaceId });
-      if (closed && spaceId && tunnel) await closeSpacePreviewPort(spaceId, tunnel.localPort);
+      const tunnel = client.list().find((entry) => entry.baseUrl === request.baseUrl && entry.remotePort === request.port && entry.spaceId === request.spaceId);
+      const closed = client.close({ baseUrl: request.baseUrl, port: request.port, spaceId: request.spaceId });
+      if (closed && request.spaceId && tunnel) await closeSpacePreviewPort(request.spaceId, tunnel.localPort);
       return { closed };
     }
 
