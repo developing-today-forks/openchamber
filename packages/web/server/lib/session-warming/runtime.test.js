@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ACTIVITY_LIMIT, createSessionWarmingRuntime, DEFAULT_WARMING_MINUTES, WARMING_INTERVAL_MS } from './runtime.js';
+import { ACTIVITY_LIMIT, createSessionWarmingRuntime, DEFAULT_WARMING_MINUTES, readSessionCacheLifetime, WARMING_INTERVAL_MS } from './runtime.js';
 
 const SESSION = 'ses_warm_1';
 const DIRECTORY = '/repo';
@@ -166,6 +166,24 @@ describe('session warming runtime', () => {
     await runDue();
     expect(fetchImpl.mock.calls.filter(([url]) => String(url).includes('/api/session/active')).length).toBeGreaterThanOrEqual(2);
     expect(pings(fetchImpl)).toHaveLength(0);
+  });
+
+  it('treats a session body declaring over the 16 MiB cap as unknown instead of parsing it', async () => {
+    const reader = {
+      buildOpenCodeUrl: (route) => `http://127.0.0.1:1${route}`,
+      getOpenCodeAuthHeaders: () => ({}),
+      fetchImpl: async (url) => {
+        const { pathname } = new URL(String(url));
+        if (pathname === `/api/session/${SESSION}`) {
+          return new Response(JSON.stringify({ data: { id: SESSION, model: { id: 'm1', providerID: 'p1' } } }), {
+            headers: { 'content-type': 'application/json', 'content-length': String(17 * 1024 * 1024) },
+          });
+        }
+        return Response.json({ data: [{ id: 'm1', providerID: 'p1', cost: [], settings: { cache: { ttl: '1h' } } }] });
+      },
+    };
+    // Over-cap is refused up front: no lifetime, even though the small body would parse.
+    await expect(readSessionCacheLifetime(reader, SESSION, DIRECTORY)).resolves.toBeNull();
   });
 
   it('parses an active-sessions body at the exact 16 MiB cap, envelope included', async () => {

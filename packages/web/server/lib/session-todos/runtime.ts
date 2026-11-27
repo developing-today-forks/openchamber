@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { z } from 'zod';
 import { unwrapOpenCodeResponse } from '../opencode/response-envelope.js';
+import { readBoundedResponseJson } from '../shared/response-body.js';
 import type { createGlobalMessageStreamHub } from '../event-stream/global-hub.js';
 import type { JsonValue } from '../event-stream/contracts.js';
 
@@ -16,6 +17,8 @@ const MAX_TODOS = 200;
 const MAX_TODO_LENGTH = 2000;
 const PERSIST_DELAY_MS = 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+// 16 MiB matches the session-response caps used by the sibling loopback readers.
+const OPEN_CODE_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{4,128}$/;
 
@@ -232,8 +235,11 @@ export const createSessionTodosRuntime = ({
       headers: headers(directory),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(`${route} answered ${response.status}`);
-    const body: unknown = unwrapOpenCodeResponse(await response.json());
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`${route} answered ${response.status}`);
+    }
+    const body: unknown = unwrapOpenCodeResponse(await readBoundedResponseJson(response, OPEN_CODE_RESPONSE_MAX_BYTES));
     return body;
   };
 
