@@ -130,8 +130,10 @@ const isTaskToolPart = (part: Part | undefined): part is TaskToolPart => (
 
 const readTaskSessionId = (part: Part | undefined): string | undefined => {
   if (!isTaskToolPart(part)) return undefined
+  // SAFETY: part is a tool part here, so its state is a ToolState object whose optional metadata is read as unknown and checked below.
   const metadata = (part.state as { metadata?: unknown } | undefined)?.metadata
   if (!metadata || typeof metadata !== "object") return undefined
+  // SAFETY: metadata is a non-null object per the guard above; sessionId and sessionID are read as unknown and typeof-checked as strings before use.
   const record = metadata as { sessionId?: unknown; sessionID?: unknown }
   const value = typeof record.sessionId === "string" ? record.sessionId : record.sessionID
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined

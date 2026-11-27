@@ -1,3 +1,5 @@
+import type { Session } from "@/lib/opencode/model"
+import { normalizePath } from "@/lib/pathNormalization"
 
 export type SessionDirectorySource =
   | 'authoritative'
@@ -19,6 +21,23 @@ export type SessionDirectoryResolution = {
   directory: string | null
   source: SessionDirectorySource
   conflict: { source: SessionDirectorySource; directory: string } | null
+}
+
+export const resolveSessionOwnedDirectory = (session: Session): string | null => {
+  // SAFETY: the record adds only optional directory and project fields, which are read through typeof checks, so Session is only widened.
+  const record = session as Session & { directory?: string | null; project?: { worktree?: string | null } | null }
+  const raw = typeof record.directory === "string" && record.directory.trim().length > 0
+    ? record.directory
+    : typeof record.project?.worktree === "string" && record.project.worktree.trim().length > 0
+      ? record.project.worktree
+      : null
+  return raw ? normalizePath(raw) : null
+}
+
+export const resolveDirectoryKey = (session: Session): string | null => {
+  // SAFETY: the record adds optional directory and project fields that normalizePath receives as nullable strings, so Session is only widened.
+  const record = session as Session & { directory?: string | null; project?: { worktree?: string | null } | null }
+  return normalizePath(record.directory ?? null) ?? normalizePath(record.project?.worktree ?? null)
 }
 
 const RESOLUTION_ORDER: ReadonlyArray<Exclude<SessionDirectorySource, 'none'>> = [

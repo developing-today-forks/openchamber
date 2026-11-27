@@ -330,6 +330,11 @@ describe('writePromptFile', () => {
     writePromptFile(filePath, payloadA);
 
     const stopFlag = new Int32Array(new SharedArrayBuffer(4));
+    // The reader's read count, so the saves start only once the worker is
+    // reading and keep going until it has raced enough of them: a worker that
+    // starts late under a loaded run would otherwise see the stop flag before
+    // its first read and prove nothing.
+    const readCount = new Int32Array(new SharedArrayBuffer(4));
     const readerSource = `
       const fs = require('fs');
       const { parentPort, workerData } = require('worker_threads');
@@ -345,6 +350,7 @@ describe('writePromptFile', () => {
           continue;
         }
         reads += 1;
+        Atomics.store(workerData.readCount, 0, reads);
         if (!allowed.has(length)) {
           badLength = length;
           break;
@@ -355,11 +361,15 @@ describe('writePromptFile', () => {
     `;
     const worker = new Worker(readerSource, {
       eval: true,
-      workerData: { filePath, lengths: [payloadA.length, payloadB.length], stopFlag },
+      workerData: { filePath, lengths: [payloadA.length, payloadB.length], stopFlag, readCount },
     });
     const resultPromise = new Promise((resolve) => worker.once('message', resolve));
     try {
-      for (let i = 0; i < 60; i += 1) {
+      const startBy = Date.now() + 10_000;
+      while (Atomics.load(readCount, 0) === 0 && Date.now() < startBy) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      for (let i = 0; i < 2_000 && (i < 60 || Atomics.load(readCount, 0) <= 20); i += 1) {
         writePromptFile(filePath, i % 2 === 0 ? payloadB : payloadA);
       }
     } finally {

@@ -61,6 +61,7 @@ export function updateStreamingState(state: State, now = Date.now()) {
   const busySessionIds = new Set<string>()
   for (const [sessionID, status] of Object.entries(state.session_status ?? {})) {
     countSyncPerformance("streamingStatusEntriesVisited")
+    // SAFETY: state.session_status is typed Record<string, SessionStatus>, so each entry already has the status shape and `type` is compared, not trusted.
     if ((status as SessionStatus).type === "busy") {
       busySessionIds.add(sessionID)
     }
@@ -166,19 +167,10 @@ export function updateChangedStreamingSessions(state: State, previous: State, no
   countSyncPerformance("streamingIncrementalReconciliations")
   const changedSessionIds = new Set<string>()
   if (statusChanged) {
-    collectChangedSessionIds(
-      state.session_status as Record<string, unknown> | undefined,
-      previous.session_status as Record<string, unknown> | undefined,
-      changedSessionIds,
-      true,
-    )
+    collectChangedSessionIds(state.session_status, previous.session_status, changedSessionIds, true)
   }
   if (messagesChanged) {
-    collectChangedSessionIds(
-      state.message as Record<string, unknown> | undefined,
-      previous.message as Record<string, unknown> | undefined,
-      changedSessionIds,
-    )
+    collectChangedSessionIds(state.message, previous.message, changedSessionIds)
   }
   if (changedSessionIds.size === 0) return
 
