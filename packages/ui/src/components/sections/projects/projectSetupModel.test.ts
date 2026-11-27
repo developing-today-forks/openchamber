@@ -121,7 +121,7 @@ describe('saveProjectAction', () => {
       ...base,
       personal: { ...base.personal, projectActionsRevision: 'sha256:opened' },
     };
-    const agentAction = { ...action('dev', 'Agent version'), command: 'run dev --agent' };
+    const agentAction: SetupAction = { ...action('dev', 'Agent version'), command: 'run dev --agent' };
     const refreshed = {
       ...opened,
       personal: {
@@ -132,7 +132,7 @@ describe('saveProjectAction', () => {
     };
     const openedRevisions = captureProjectActionBaseRevisions(opened);
     let currentRevision = 'sha256:agent-write';
-    let currentActions = [agentAction];
+    let currentActions: SetupAction[] = [agentAction];
     const write: ProjectSetupWriters = {
       ...recordingWriters().write,
       personalActions: async (actions, baseRevision) => {
