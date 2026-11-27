@@ -111,15 +111,16 @@ describe('goal spec jobs', () => {
     expect(writer.calls[0].input).toMatchObject({ request: 'build the parser', directory: DIRECTORY, writerModelID: 'haiku' });
 
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued).toEqual([{
-      sessionId: SESSION,
-      directory: DIRECTORY,
-      itemId: 'job-1',
-      item: { ...item(), goal: { objective: SPEC, tokenBudget: 5000, settled: true, briefAgent: true } },
-    }]);
-    expect(await runtime.list()).toEqual([]);
-    expect(readFile(dataDir).jobs).toEqual([]);
+    await vi.waitFor(async () => {
+      expect(queue.enqueued).toEqual([{
+        sessionId: SESSION,
+        directory: DIRECTORY,
+        itemId: 'job-1',
+        item: { ...item(), goal: { objective: SPEC, tokenBudget: 5000, settled: true, briefAgent: true } },
+      }]);
+      expect(await runtime.list()).toEqual([]);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     runtime.stop();
   });
 
@@ -207,8 +208,7 @@ describe('goal spec jobs', () => {
     await runtime.create(createInput());
     queue.failNextEnqueue(Object.assign(new Error('message queue is full'), { status: 409 }));
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(await runtime.list()).toMatchObject([{ status: 'failed', error: 'message queue is full' }]);
+    await vi.waitFor(async () => expect(await runtime.list()).toMatchObject([{ status: 'failed', error: 'message queue is full' }]));
     expect((await runtime.take('job-1')).item).toEqual(item());
     runtime.stop();
   });
@@ -224,13 +224,16 @@ describe('goal spec jobs', () => {
   });
 
   it('follows its session to a new directory', async () => {
-    const { runtime, queue, writer, emit } = createRuntime();
+    const { runtime, queue, writer, emit, dataDir } = createRuntime();
     await runtime.start();
     await runtime.create(createInput());
     emit({ type: 'session.updated', properties: { info: { id: SESSION, directory: '/repo-moved' } } });
     writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued[0].directory).toBe('/repo-moved');
+    await vi.waitFor(async () => {
+      expect(queue.enqueued[0]?.directory).toBe('/repo-moved');
+      expect(await runtime.list()).toEqual([]);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     runtime.stop();
   });
 
@@ -261,9 +264,10 @@ describe('goal spec jobs across a restart', () => {
     await second.runtime.start();
     expect(second.writer.calls).toHaveLength(1);
     second.writer.calls[0].resolve({ spec: SPEC });
-    await settle();
-    expect(queue.enqueued.map((entry) => entry.itemId)).toEqual(['job-1']);
-    expect(readFile(dataDir).jobs).toEqual([]);
+    await vi.waitFor(() => {
+      expect(queue.enqueued.map((entry) => entry.itemId)).toEqual(['job-1']);
+      expect(readFile(dataDir).jobs).toEqual([]);
+    });
     second.runtime.stop();
   });
 
