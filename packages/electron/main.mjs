@@ -166,6 +166,30 @@ import { assignInjectedEnv } from '@openchamber/web/server/lib/injected-env.js';
 
 const execFileAsync = promisify(execFile);
 
+// Renderer IPC is untyped; normalize dialog options once and keep invalid fields on their existing defaults.
+const nonBlankDialogStringSchema = z.string().refine((value) => value.trim().length > 0);
+const dialogFilterObjectSchema = z.object({
+  name: nonBlankDialogStringSchema.optional().catch(undefined),
+  extensions: z.array(nonBlankDialogStringSchema.catch(null)).optional().catch(undefined)
+    .transform((extensions) => extensions?.filter((extension) => extension !== null)),
+});
+const dialogFilterSchema = z.union([
+  dialogFilterObjectSchema,
+  z.array(z.unknown()).transform(() => ({})),
+]).catch(null);
+const dialogOpenOptionsSchema = z.object({
+  title: z.string().optional().catch(undefined),
+  defaultPath: z.string().optional().catch(undefined)
+    .transform((value) => value?.trim() || undefined),
+  filters: z.array(dialogFilterSchema).optional().catch(undefined)
+    .transform((filters) => filters?.flatMap((filter) => filter
+      ? [{ name: filter.name || 'Files', extensions: filter.extensions || [] }]
+      : [])),
+  directory: z.unknown().transform(Boolean),
+  multiple: z.unknown().transform(Boolean),
+  returnGrant: z.unknown().transform(Boolean),
+}).catch({});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // external: #3399 Increase Node auto-family connection timeout because 250 ms aborts handshakes to distant providers.
@@ -5443,31 +5467,21 @@ ipcMain.handle('openchamber:dialog:open', async (event, options) => {
     log.warn(`[ipc] rejected dialog:open from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
   }
+  const dialogOptions = dialogOpenOptionsSchema.parse(options);
   const browserWindow = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(browserWindow || undefined, {
-    title: typeof options?.title === 'string' ? options.title : undefined,
-    defaultPath: typeof options?.defaultPath === 'string' && options.defaultPath.trim().length > 0
-      ? options.defaultPath.trim()
-      : undefined,
-    filters: Array.isArray(options?.filters)
-      ? options.filters
-          .filter((filter) => filter && typeof filter === 'object')
-          .map((filter) => ({
-            name: typeof filter.name === 'string' && filter.name.trim().length > 0 ? filter.name : 'Files',
-            extensions: Array.isArray(filter.extensions)
-              ? filter.extensions.filter((extension) => typeof extension === 'string' && extension.trim().length > 0)
-              : [],
-          }))
-      : undefined,
+    title: dialogOptions.title,
+    defaultPath: dialogOptions.defaultPath,
+    filters: dialogOptions.filters,
     properties: [
-      options?.directory ? 'openDirectory' : 'openFile',
-      options?.multiple ? 'multiSelections' : null,
+      dialogOptions.directory ? 'openDirectory' : 'openFile',
+      dialogOptions.multiple ? 'multiSelections' : null,
       'createDirectory',
     ].filter(Boolean),
   });
   if (result.canceled) return null;
   const grantFilePath = async (filePath) => {
-    if (options?.directory) return { path: filePath };
+    if (dialogOptions.directory) return { path: filePath };
     try {
       const canonicalPath = await fsp.realpath(filePath);
       const stats = await fsp.stat(canonicalPath);
@@ -5478,13 +5492,13 @@ ipcMain.handle('openchamber:dialog:open', async (event, options) => {
       return { path: filePath };
     }
   };
-  if (options?.returnGrant) {
-    if (options?.multiple) {
+  if (dialogOptions.returnGrant) {
+    if (dialogOptions.multiple) {
       return Promise.all(result.filePaths.map((filePath) => grantFilePath(filePath)));
     }
     return result.filePaths[0] ? grantFilePath(result.filePaths[0]) : null;
   }
-  if (options?.multiple) return result.filePaths;
+  if (dialogOptions.multiple) return result.filePaths;
   return result.filePaths[0] || null;
 });
 
