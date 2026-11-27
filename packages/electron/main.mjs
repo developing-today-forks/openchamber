@@ -166,28 +166,14 @@ import { assignInjectedEnv } from '@openchamber/web/server/lib/injected-env.js';
 
 const execFileAsync = promisify(execFile);
 
-// Renderer IPC is untyped; normalize dialog options once and keep invalid fields on their existing defaults.
-const nonBlankDialogStringSchema = z.string().refine((value) => value.trim().length > 0);
-const dialogFilterObjectSchema = z.object({
-  name: nonBlankDialogStringSchema.optional().catch(undefined),
-  extensions: z.array(nonBlankDialogStringSchema.catch(null)).optional().catch(undefined)
-    .transform((extensions) => extensions?.filter((extension) => extension !== null)),
-});
-const dialogFilterSchema = z.union([
-  dialogFilterObjectSchema,
-  z.array(z.unknown()).transform(() => ({})),
-]).catch(null);
 const dialogOpenOptionsSchema = z.object({
-  title: z.string().optional().catch(undefined),
-  defaultPath: z.string().optional().catch(undefined)
-    .transform((value) => value?.trim() || undefined),
-  filters: z.array(dialogFilterSchema).optional().catch(undefined)
-    .transform((filters) => filters?.flatMap((filter) => filter
-      ? [{ name: filter.name || 'Files', extensions: filter.extensions || [] }]
-      : [])),
-  directory: z.unknown().transform(Boolean),
-  multiple: z.unknown().transform(Boolean),
-  returnGrant: z.unknown().transform(Boolean),
+  title: z.string().optional().catch(undefined), defaultPath: z.string().optional().catch(undefined).transform((value) => value?.trim() || undefined),
+  filters: z.array(z.object({
+    name: z.string().refine((value) => value.trim().length > 0).optional().catch(undefined),
+    extensions: z.array(z.string().refine((value) => value.trim().length > 0).catch(null)).optional().catch(undefined)
+      .transform((extensions) => extensions?.filter((extension) => extension !== null)),
+  }).catch(null)).optional().catch(undefined).transform((filters) => filters?.filter(Boolean).map((filter) => ({ name: filter.name || 'Files', extensions: filter.extensions || [] }))),
+  directory: z.unknown().transform(Boolean), multiple: z.unknown().transform(Boolean), returnGrant: z.unknown().transform(Boolean),
 }).catch({});
 
 const __filename = fileURLToPath(import.meta.url);
