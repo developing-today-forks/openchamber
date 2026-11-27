@@ -17,7 +17,7 @@ try {
 
 test('chat Markdown tables expand into spare transcript width and show hidden-edge fades', {
   skip: !chrome && 'Set OPENCHAMBER_TEST_CHROME to run this browser regression',
-  timeout: 120_000,
+  timeout: 240_000,
 }, async () => {
   mkdirSync(path.join(repo, 'tmp'), { recursive: true });
   const fixture = mkdtempSync(path.join(repo, 'tmp/markdown-table-'));
@@ -107,8 +107,8 @@ test('chat Markdown tables expand into spare transcript width and show hidden-ed
     await client.send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await client.send('Page.navigate', { url: server.resolvedUrls.local[0] });
 
-    const evaluate = async (expression) => {
-      const response = await client.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, { timeoutMs: 30_000 });
+    const evaluate = async (expression, { timeoutMs = 30_000 } = {}) => {
+      const response = await client.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, { timeoutMs });
       assert.equal(response.exceptionDetails, undefined, response.exceptionDetails?.exception?.description);
       return response.result.value;
     };
@@ -117,15 +117,20 @@ test('chat Markdown tables expand into spare transcript width and show hidden-ed
       const tick = () => ++frames >= 5 ? resolve(true) : requestAnimationFrame(tick);
       requestAnimationFrame(tick);
     })`);
+    // The first load transforms the UI modules and compiles the stylesheet;
+    // with the other browser suites running concurrently that took longer
+    // than 20 s in CI (run 45816978349: Fixture not ready, 47/48 files
+    // passed), so this uses the 90 s first-load budget the sibling browser
+    // fixtures already use, with a CDP timeout that outlasts the deadline.
     const waitReady = () => evaluate(`new Promise((resolve, reject) => {
-      const deadline = performance.now() + 20000;
+      const deadline = performance.now() + 90000;
       const poll = () => {
         if (window.renderFixture) resolve(true);
         else if (performance.now() > deadline) reject(new Error('Fixture not ready'));
         else requestAnimationFrame(poll);
       };
       poll();
-    })`);
+    })`, { timeoutMs: 120_000 });
     const metrics = () => evaluate(`(() => {
       const table = document.querySelector('#main [data-streamdown="table-wrapper"]');
       const other = document.querySelector('#sibling [data-streamdown="table-wrapper"]');
