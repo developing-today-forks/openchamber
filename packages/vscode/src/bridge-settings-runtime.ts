@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { BUILT_IN_SKILL_LOCATION, readCappedFileSync, type DiscoveredSkill, type SkillScope, type SkillSource } from './opencodeConfig';
 import type { BridgeContext } from './bridge';
+import type { JsonValue } from './project-setup';
 import { filterPersistableSettingsChanges, withoutSecretSettings } from './settings-registry-gate';
 import { renameSyncWithRetry, renameWithRetry } from './bridge-atomic-write';
 import { readOpenCodeSkillsPayload } from './opencode-skills-response';
@@ -25,6 +26,9 @@ import {
   type PreferenceFields,
   VSCODE_SETTINGS_SURFACE,
 } from './settings-files';
+
+type SettingsValue = JsonValue | undefined;
+export type SettingsDocument = Record<string, SettingsValue>;
 
 const SETTINGS_KEY = 'openchamber.settings';
 const OPENCHAMBER_SHARED_SETTINGS_PATH = path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
@@ -100,7 +104,9 @@ const getProjectAncestors = (workingDirectory?: string): string[] => {
   return result;
 };
 
-const inferSkillScopeAndSourceFromLocation = (location: string, workingDirectory?: string): { scope: SkillScope; source: SkillSource } => {
+type SkillScopeAndSource = { scope: SkillScope; source: SkillSource };
+
+const inferSkillScopeAndSourceFromLocation = (location: string, workingDirectory?: string): SkillScopeAndSource => {
   const resolvedPath = path.resolve(location);
   const source: SkillSource = resolvedPath.includes(`${path.sep}.agents${path.sep}skills${path.sep}`)
     ? 'agents'
@@ -207,14 +213,14 @@ export const fetchOpenCodeSkillsFromApi = async (
   }
 };
 
-const readSettingsJsonFromDisk = (): Record<string, unknown> => {
+const readSettingsJsonFromDisk = (): SettingsDocument => {
   try {
     const raw = readSharedStoreSync(OPENCHAMBER_SHARED_SETTINGS_PATH, SHARED_SETTINGS_MAX_BYTES);
     // SAFETY: JSON.parse returns untyped data; the check below keeps only a plain object.
     const parsed = JSON.parse(raw) as unknown;
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      // SAFETY: a non-array object parsed from JSON is a string-keyed dictionary.
-      return parsed as Record<string, unknown>;
+      // SAFETY: a non-array object parsed from JSON is a string-keyed dictionary of JSON values.
+      return parsed as SettingsDocument;
     }
     return {};
   } catch {
@@ -283,7 +289,7 @@ const writeJsonAtomicSync = (filePath: string, text: string): void => {
   }
 };
 
-const readSharedSettingsFromDisk = (): Record<string, unknown> => {
+const readSharedSettingsFromDisk = () => {
   const settings = readSettingsJsonFromDisk();
   let preferences = readPreferencesFromDisk();
   if (preferences.status === 'missing') {
@@ -298,11 +304,13 @@ const readSharedSettingsFromDisk = (): Record<string, unknown> => {
   if (preferences.status !== 'ok') {
     return settings;
   }
-  return { ...settings, ...flattenPreferences(preferences.fields, VSCODE_SETTINGS_SURFACE) };
+  // SAFETY: flattened preference values come from parsePreferencesDocument's JSON.parse
+  // or from settings documents this module wrote, so each value is a settings value.
+  return { ...settings, ...(flattenPreferences(preferences.fields, VSCODE_SETTINGS_SURFACE) as SettingsDocument) } satisfies SettingsDocument;
 };
 
 const writeSharedSettingsToDisk = async (
-  document: Record<string, unknown>,
+  document: SettingsDocument,
   changedKeys: Iterable<string> | null = null,
 ): Promise<void> => {
   const preferences = readPreferencesFromDisk();
@@ -326,8 +334,8 @@ const writeSharedSettingsToDisk = async (
 
 const DERIVED_FIELDS = new Set(['themeVariant', 'lastDirectory']);
 
-const stripDerived = (source: Record<string, unknown>): Record<string, unknown> => {
-  const next: Record<string, unknown> = { ...source };
+const stripDerived = (source: SettingsDocument) => {
+  const next = { ...source } satisfies SettingsDocument;
   for (const key of DERIVED_FIELDS) {
     delete next[key];
   }
@@ -336,32 +344,34 @@ const stripDerived = (source: Record<string, unknown>): Record<string, unknown> 
 
 let eagerMigrationAttempted = false;
 
-const readPersistedSettings = (ctx?: BridgeContext): Record<string, unknown> => {
+const readPersistedSettings = (ctx?: BridgeContext) => {
   const fromGlobalState = stripDerived(
-    ctx?.context?.globalState.get<Record<string, unknown>>(SETTINGS_KEY) || {},
+    ctx?.context?.globalState.get<SettingsDocument>(SETTINGS_KEY) || {},
   );
   const fromDisk = stripDerived(readSharedSettingsFromDisk());
 
   if (!eagerMigrationAttempted) {
     eagerMigrationAttempted = true;
-    const missingFromDisk: Record<string, unknown> = {};
+    const missingFromDisk: SettingsDocument = {};
     for (const [key, value] of Object.entries(fromGlobalState)) {
       if (!(key in fromDisk)) {
         missingFromDisk[key] = value;
       }
     }
     if (Object.keys(missingFromDisk).length > 0) {
-      void writeSharedSettingsToDisk({ ...fromDisk, ...missingFromDisk }).catch((error: unknown) => {
+      void writeSharedSettingsToDisk({ ...fromDisk, ...missingFromDisk }).catch((error: Error) => {
         console.warn('[OpenChamber] Failed to migrate settings from globalState:', error instanceof Error ? error.message : String(error));
       });
     }
   }
 
-  return { ...fromGlobalState, ...fromDisk };
+  return { ...fromGlobalState, ...fromDisk } satisfies SettingsDocument;
 };
 
-export const readSettings = (ctx?: BridgeContext): Record<string, unknown> => {
-  const persisted = withoutSecretSettings(readPersistedSettings(ctx));
+export const readSettings = (ctx?: BridgeContext) => {
+  // SAFETY: withoutSecretSettings only drops keys from the settings document it is
+  // given, so the entries it returns keep that document's value contract.
+  const persisted = withoutSecretSettings(readPersistedSettings(ctx)) as SettingsDocument;
   const persistedOpencodeBinary =
     typeof persisted.opencodeBinary === 'string' ? String(persisted.opencodeBinary).trim() : '';
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
@@ -376,12 +386,14 @@ export const readSettings = (ctx?: BridgeContext): Record<string, unknown> => {
     themeVariant,
     lastDirectory: workspaceFolder,
     opencodeBinary: persistedOpencodeBinary || undefined,
-  };
+  } satisfies SettingsDocument;
 };
 
-export const persistSettings = async (changes: Record<string, unknown>, ctx?: BridgeContext): Promise<Record<string, unknown>> => {
+export const persistSettings = async (changes: SettingsDocument, ctx?: BridgeContext): Promise<SettingsDocument> => {
   const current = readSettings(ctx);
-  const restChanges = filterPersistableSettingsChanges(stripDerived({ ...(changes || {}) }));
+  // SAFETY: filterPersistableSettingsChanges only drops keys from the settings
+  // document it is given, so the entries it returns keep that document's value contract.
+  const restChanges = filterPersistableSettingsChanges(stripDerived({ ...(changes || {}) })) as SettingsDocument;
 
   const keysToClear = new Set<string>();
 
@@ -429,7 +441,7 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
   }
 
   const persistedCurrent = readPersistedSettings(ctx);
-  const persistable: Record<string, unknown> = { ...persistedCurrent, ...restChanges };
+  const persistable = { ...persistedCurrent, ...restChanges } satisfies SettingsDocument;
   for (const key of keysToClear) {
     delete persistable[key];
   }
@@ -438,7 +450,9 @@ export const persistSettings = async (changes: Record<string, unknown>, ctx?: Br
   await ctx?.context?.globalState.update(SETTINGS_KEY, persistable);
 
   return {
-    ...withoutSecretSettings(persistable),
+    // SAFETY: withoutSecretSettings only drops keys from the settings document it is
+    // given, so the entries it returns keep that document's value contract.
+    ...(withoutSecretSettings(persistable) as SettingsDocument),
     themeVariant: current.themeVariant,
     lastDirectory: current.lastDirectory,
     opencodeBinary:
