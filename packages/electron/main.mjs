@@ -139,7 +139,12 @@ import {
   setLinuxAutostartEnabled,
 } from './linux-autostart.mjs';
 import { reconcileAppImageDesktopEntry } from './linux-desktop-entry.mjs';
-import { unsupportedAppSpecificOpenError, validateLocalPath } from './path-open-utils.mjs';
+import {
+  parseFileOpenWithAppRequest,
+  parseProjectOpenWithAppRequest,
+  unsupportedAppSpecificOpenError,
+  validateLocalPath,
+} from './path-open-utils.mjs';
 import { keepSessionCookies } from './browser-panel-cookies.mjs';
 import {
   applyBrowserPanelUserAgent,
@@ -4393,12 +4398,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_open_in_app': {
-      const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
-      const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
-      const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      if (!projectPath || !appId || !appName) {
-        throw new Error('Project path, app id, and app name are required');
-      }
+      const { path: projectPath, appId, appName } = parseProjectOpenWithAppRequest(args);
       const validated = await validateLocalPath(projectPath, 'Project path');
       if (process.platform === 'win32') {
         if (appId === 'finder') {
@@ -4428,12 +4428,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_open_file_in_app': {
-      const filePath = typeof args.filePath === 'string' ? args.filePath.trim() : '';
-      const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
-      const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      if (!filePath || !appId || !appName) {
-        throw new Error('File path, app id, and app name are required');
-      }
+      const { path: filePath, appId, appName } = parseFileOpenWithAppRequest(args);
       const validated = await validateLocalPath(filePath, 'File path');
       if (process.platform === 'win32') {
         if (appId === 'finder') {
