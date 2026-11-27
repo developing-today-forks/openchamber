@@ -100,6 +100,64 @@ describe('ui auth client credential seam', () => {
     });
   });
 
+  it('enforces an explicit scoped client token even when a valid session cookie is present', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({
+      password: 'secret',
+      clientAuthController: {
+        authenticateBearerToken: async (token) => token === 'oc_client_scoped'
+          ? { ok: true, clientId: 'device-1', client: { id: 'device-1', scopes: ['session-read'] } }
+          : null,
+      },
+    });
+    const loginRes = createResponse();
+    await auth.handleSessionCreate({ method: 'POST', headers: {}, body: { password: 'secret' } }, loginRes);
+    const cookie = String(loginRes.getHeader('set-cookie') || '').split(';', 1)[0];
+    const req = {
+      method: 'POST',
+      path: '/api/session/ses_1/message',
+      originalUrl: '/api/session/ses_1/message',
+      headers: { cookie, authorization: 'Bearer oc_client_scoped' },
+    };
+    const res = createResponse();
+    let called = false;
+
+    await auth.requireAuth(req, res, () => { called = true; });
+
+    expect(called).toBe(false);
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({ error: 'Client route scope denied' });
+    auth.dispose();
+  });
+
+  it('applies route scopes when password auth is disabled too', async () => {
+    const createUiAuth = await loadCreateUiAuth();
+    const auth = createUiAuth({
+      requireClientAuth: true,
+      clientAuthController: {
+        authenticateBearerToken: async () => ({
+          ok: true,
+          clientId: 'device-1',
+          client: { id: 'device-1', scopes: ['session-read'] },
+        }),
+      },
+    });
+    const req = {
+      method: 'GET',
+      path: '/api/quota/providers',
+      originalUrl: '/api/quota/providers',
+      headers: { authorization: 'Bearer oc_client_scoped' },
+    };
+    const res = createResponse();
+    let called = false;
+
+    await auth.requireClientAuth(req, res, () => { called = true; });
+
+    expect(called).toBe(false);
+    expect(res.statusCode).toBe(403);
+    auth.dispose();
+  });
+
   it('does not accept bearer client credentials for UI-session-only auth', async () => {
     const createUiAuth = await loadCreateUiAuth();
     const auth = createUiAuth({

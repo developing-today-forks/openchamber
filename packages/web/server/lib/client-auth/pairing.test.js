@@ -35,6 +35,23 @@ const makeRuntime = async (options = {}) => {
 };
 
 describe('client auth pairing runtime', () => {
+  it('persists pairing scopes and carries them onto the redeemed client', async () => {
+    const { runtime, remoteClientAuthRuntime } = await makeRuntime();
+    const scopes = ['session-read', 'quota-read'];
+    const created = await runtime.createPairingSession({ scopes, allowedClientKinds: ['programmatic'] });
+
+    expect(created.pairing.scopes).toEqual(scopes);
+    expect((await runtime.getPairingSession(created.pairing.id))?.scopes).toEqual(scopes);
+
+    await runtime.redeemPairingSession({
+      pairingId: created.pairing.id,
+      secret: created.pairing.secret,
+      clientKind: 'programmatic',
+    });
+
+    expect(remoteClientAuthRuntime.createClient).toHaveBeenCalledWith(expect.objectContaining({ scopes }));
+  });
+
   it('redeems a pairing session once and propagates client metadata', async () => {
     const { runtime, remoteClientAuthRuntime } = await makeRuntime();
     const created = await runtime.createPairingSession({ allowedClientKinds: ['mobile'] });
