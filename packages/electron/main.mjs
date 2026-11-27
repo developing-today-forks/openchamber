@@ -1241,10 +1241,10 @@ const clearSessionNotifications = (sessionId) => {
 };
 
 const getNativeNotificationClaimKey = (payload) => {
-  const tag = typeof payload?.tag === 'string' ? payload.tag.trim() : '';
+  const tag = payload?.tag?.trim() ?? '';
   if (tag) return tag;
   return [payload?.sessionId, payload?.kind, payload?.title, payload?.body]
-    .filter((value) => typeof value === 'string' && value.trim())
+    .filter((value) => value?.trim())
     .map((value) => value.trim())
     .join('|');
 };
@@ -1285,16 +1285,10 @@ const maybeShowNativeNotification = (rawInput) => {
     return;
   }
 
-  const title = typeof payload.title === 'string' && payload.title.trim()
-    ? payload.title.trim()
-    : 'OpenChamber';
-  const body = typeof payload.body === 'string' ? payload.body : '';
-  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim()
-    ? payload.sessionId.trim()
-    : null;
-  const directory = typeof payload.directory === 'string' && payload.directory.trim()
-    ? payload.directory.trim()
-    : null;
+  const title = payload.title?.trim() || 'OpenChamber';
+  const body = payload.body ?? '';
+  const sessionId = payload.sessionId?.trim() || null;
+  const directory = payload.directory?.trim() || null;
   const runtimeKey = readTrimmedString(payload.runtimeKey) || null;
 
   const notificationId = globalThis.crypto.randomUUID();
