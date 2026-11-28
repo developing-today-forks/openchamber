@@ -273,6 +273,66 @@ describe('realtime proxy', () => {
     }
   });
 
+  it('aborts an SSE upstream that never returns response headers after the handshake deadline (#2698)', async () => {
+    const sockets = new Set();
+    const upstreamServer = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.on('close', () => sockets.delete(socket));
+      // Accept the connection and the request, then never send headers.
+      socket.on('data', () => {});
+    });
+    const upstreamOrigin = await listen(upstreamServer);
+    const { origin, runtime } = await startProxyServer({
+      apiBaseUrl: upstreamOrigin,
+      proxyOptions: { handshakeTimeoutMs: 300 },
+    });
+
+    try {
+      const startedAt = Date.now();
+      const response = await fetch(buildRealtimeProxySseUrl(origin, `${upstreamOrigin}/api/global/event`), {
+        headers: { Origin: 'openchamber-ui://app' },
+      });
+
+      expect(response.status).toBe(504);
+      expect(await response.json()).toEqual({ error: 'Realtime proxy upstream handshake timed out' });
+      expect(Date.now() - startedAt).toBeLessThan(5000);
+    } finally {
+      runtime.stop();
+      for (const socket of sockets) socket.destroy();
+    }
+  });
+
+  it('keeps an SSE stream open after headers beyond the handshake deadline (#2698)', async () => {
+    const upstreamServer = http.createServer((req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      });
+      res.write('data: first\n\n');
+      // Stay open well past the 300 ms handshake deadline, then finish.
+      setTimeout(() => {
+        res.end('data: second\n\n');
+      }, 800);
+    });
+    const upstreamOrigin = await listen(upstreamServer);
+    const { origin, runtime } = await startProxyServer({
+      apiBaseUrl: upstreamOrigin,
+      proxyOptions: { handshakeTimeoutMs: 300 },
+    });
+
+    try {
+      const response = await fetch(buildRealtimeProxySseUrl(origin, `${upstreamOrigin}/api/global/event`), {
+        headers: { Origin: 'openchamber-ui://app' },
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe('data: first\n\ndata: second\n\n');
+    } finally {
+      runtime.stop();
+    }
+  });
+
   it('closes a WebSocket proxy upgrade with a repeated url parameter instead of dialing the first (#2324)', async () => {
     let upstreamConnections = 0;
     const upstreamServer = http.createServer();
