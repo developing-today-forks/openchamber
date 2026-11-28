@@ -1,9 +1,15 @@
 import { execFile } from 'node:child_process';
+import { readBoundedResponseJson } from '../shared/response-body.js';
 import type { OpenCodeLoad, OpenCodeLoadOptions, OpenCodeProcessInfo, ProcessEntry, ProcessSummary } from './contracts.js';
 
 
 const REQUEST_TIMEOUT_MS = 4_000;
 const PS_TIMEOUT_MS = 4_000;
+// The two loopback payloads are tiny (a location count, a pid), but the cap
+// follows the 16 MiB convention of the other loopback bounded reads: what
+// matters is that the body streams through the cap instead of buffering
+// whole behind a bare JSON parse guarded only by the time deadline.
+const OPEN_CODE_LOAD_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 
 const hasOpenCodePid = (value: unknown): value is OpenCodeProcessInfo => value !== null
   && typeof value === 'object' && 'pid' in value
@@ -61,16 +67,19 @@ export async function readOpenCodeLoad({ buildOpenCodeUrl, getOpenCodeAuthHeader
       headers: getOpenCodeAuthHeaders(),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`HTTP ${response.status}`);
+    }
     return response;
   };
 
   const readLocations = async () => {
-    const result: unknown = await (await readResponse('/api/debug/location')).json();
+    const result: unknown = await readBoundedResponseJson(await readResponse('/api/debug/location'), OPEN_CODE_LOAD_RESPONSE_MAX_BYTES);
     return Array.isArray(result) ? result.length : null;
   };
   const readInfo = async () => {
-    const result: unknown = await (await readResponse('/api/info')).json();
+    const result: unknown = await readBoundedResponseJson(await readResponse('/api/info'), OPEN_CODE_LOAD_RESPONSE_MAX_BYTES);
     return hasOpenCodePid(result) ? result.pid : null;
   };
   const [locations, info] = await Promise.allSettled([readLocations(), readInfo()]);
