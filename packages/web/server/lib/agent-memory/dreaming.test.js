@@ -113,6 +113,23 @@ describe('when a pass runs', () => {
     expect(openCode.calls.map((call) => `${call.method} ${call.pathname}`)).toEqual(['GET /api/session']);
   });
 
+  test('fails the check instead of reading an over-cap active-sessions body as empty', async () => {
+    await fill(12);
+    const openCode = createOpenCode();
+    const inner = openCode.fetchImpl;
+    openCode.fetchImpl = async (url, init = {}) => {
+      const { pathname } = new URL(url);
+      if ((init.method ?? 'GET') === 'GET' && pathname === '/api/session/active') {
+        return new Response(JSON.stringify({ data: { pad: 'x'.repeat(17 * 1024 * 1024) } }), { status: 200 });
+      }
+      return inner(url, init);
+    };
+    const logs = [];
+    await createDreaming({ openCode, log: (message) => logs.push(message) }).check();
+    expect(logs.some((message) => message.includes('check failed') && message.includes('over'))).toBe(true);
+    expect(openCode.calls.some((call) => call.method === 'POST' && call.pathname === '/api/session')).toBe(false);
+  });
+
   test('waits while a session is running', async () => {
     await fill(12);
     const openCode = createOpenCode({ active: { ses_user: { type: 'busy' } } });
