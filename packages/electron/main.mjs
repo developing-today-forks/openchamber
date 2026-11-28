@@ -94,6 +94,7 @@ import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
 import { convertAppIconToDataUrl } from './app-icon-conversion.mjs';
 import { boundedAppNames, mapWithConcurrency, INSTALLED_APP_PROBE_CONCURRENCY } from './app-name-bounds.mjs';
+import { isSafeMacosAppName, macosAppBundleCandidates, macosAppBundleName, planMacosOpenArgs } from './macos-open-app.mjs';
 import { parseFocusMainWindowArgs } from './focus-main-window-args.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
 import { assertUpdaterCapability, enableMacosDirectContentsUpdates, readPackageType } from './updater-capability.mjs';
@@ -3501,13 +3502,11 @@ const pathExists = async (candidate) => {
 
 const resolveAppBundlePath = async (appName) => {
   if (process.platform !== 'darwin') return null;
-  const bundleName = appName.endsWith('.app') ? appName : `${appName}.app`;
-  const candidates = [
-    `/Applications/${bundleName}`,
-    `/System/Applications/${bundleName}`,
-    `/System/Applications/Utilities/${bundleName}`,
-    path.join(os.homedir(), 'Applications', bundleName),
-  ];
+  // Renderer-supplied names with separators or '..' are not app names:
+  // never let one reach the bundle-path joins or mdfind (#2729).
+  if (!isSafeMacosAppName(appName)) return null;
+  const bundleName = macosAppBundleName(appName);
+  const candidates = macosAppBundleCandidates(appName, os.homedir());
   for (const candidate of candidates) {
     if (await pathExists(candidate)) return candidate;
   }
@@ -4356,7 +4355,13 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const appName = typeof args.app === 'string' ? args.app.trim() : '';
       const validated = await validateLocalPath(targetPath);
       if (process.platform === 'darwin') {
-        const openArgs = appName ? ['-a', appName, validated.path] : [validated.path];
+        // Only a name that resolves to an installed bundle may reach
+        // `open -a`, and only as the resolved bundle path — a raw
+        // renderer `app` could otherwise be a planted bundle path
+        // (#2729). Unsafe or uninstalled names fail closed to a
+        // default open of the validated path.
+        const bundlePath = appName ? await resolveAppBundlePath(appName) : null;
+        const openArgs = planMacosOpenArgs({ appName, targetPath: validated.path, bundlePath });
         spawn('open', openArgs, { detached: true, stdio: 'ignore' }).unref();
         return null;
       }
