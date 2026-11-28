@@ -177,12 +177,21 @@ const hasRepoAccess = async ({ github, owner, repo, pr }) => {
 // `role_name` tells maintain from write, which `permission` reports alike. An
 // account that no longer exists has no role.
 const isMaintainer = async ({ github, owner, repo, username }) => {
-  try {
-    const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
-    return ["admin", "maintain"].includes(data.role_name);
-  } catch (error) {
-    if (error.status === 404) return false;
-    throw error;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+      return ["admin", "maintain"].includes(data.role_name);
+    } catch (error) {
+      if (error.status === 404) return false;
+      // A transient GitHub API error (the 502 that took the stale job down,
+      // #2736) is not an answer, so retry it a few times. If it still fails,
+      // throw: a caller that acts on a "not a maintainer" answer (the
+      // in-house gate) must fail closed rather than read a maintainer as an
+      // outsider, and the stale workflow skips its stale step instead.
+      const transient = error.status === undefined || error.status >= 500;
+      if (!transient || attempt >= 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+    }
   }
 };
 

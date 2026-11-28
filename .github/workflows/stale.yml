@@ -68,6 +68,7 @@ jobs:
       # catches what it missed, and a failed read stops the job before it can
       # close a pull request that lacks the label.
       - name: Label team pull requests
+        id: label-team
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # Same fallback as the stale step below (and repo-sweeper.yml):
@@ -79,14 +80,31 @@ jobs:
             const { TEAM_LABEL, isMaintainer } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/pr-checks.cjs`);
             const { owner, repo } = context.repo;
             const pulls = await github.paginate(github.rest.pulls.list, { owner, repo, state: "open", per_page: 100 });
+            // Fail soft on a permission read that stays down (#2736): one
+            // transient GitHub API error must not turn main red, but an
+            // unchecked pull request must not be marked stale either, so a
+            // failed check skips the stale step for this run (below) and
+            // the next scheduled run retries.
+            let checksComplete = true;
             for (const pull of pulls) {
               if (pull.labels.some((label) => label.name === TEAM_LABEL.name)) continue;
-              if (await isMaintainer({ github, owner, repo, username: pull.user.login })) {
+              let maintainer;
+              try {
+                maintainer = await isMaintainer({ github, owner, repo, username: pull.user.login });
+              } catch (error) {
+                checksComplete = false;
+                core.warning(`Maintainer check for #${pull.number} (@${pull.user.login}) failed: ${error.message}; skipping it this run.`);
+                continue;
+              }
+              if (maintainer) {
                 await github.rest.issues.addLabels({ owner, repo, issue_number: pull.number, labels: [TEAM_LABEL.name] });
               }
             }
+            core.setOutput("checks-complete", String(checksComplete));
+            if (!checksComplete) core.warning("A maintainer check failed, so the stale step is skipped for this run.");
 
       - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        if: steps.label-team.outputs.checks-complete == 'true'
         with:
           repo-token: ${{ steps.app-token.outputs.token || github.token }}
           days-before-stale: 28
