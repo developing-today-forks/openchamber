@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { test } from 'node:test';
 
-const { evaluateRuntimeProof, evaluateVisualEvidence, linkedIssueNumbers } = createRequire(import.meta.url)('../.github/scripts/pr-checks.cjs');
+const { evaluateRuntimeProof, evaluateVisualEvidence, isMaintainer, linkedIssueNumbers } = createRequire(import.meta.url)('../.github/scripts/pr-checks.cjs');
 
 const body = (rows, known) => `## Affected surfaces\n<!-- not run is banned -->\n| Runtime | What you ran and saw |\n|---|---|\n${Object.entries(rows).map(([k,v])=>`| ${k} | ${v} |`).join('\n')}\n\n## Known problems\n\n${known}\n\n<!-- x -->\n`;
 const f = (...names) => names.map((filename) => ({ filename, status: 'modified' }));
@@ -106,4 +106,35 @@ test('a Part of link inside an HTML comment links nothing', async () => {
   assert.deepEqual(await linked('Part of #7\n<!-- Part of #8 -->\n<!-- e.g. Part of #9'), [5, 7]);
   assert.deepEqual(await linked('Part of https://github.com/openchamber/openchamber/issues/10'), [5, 10]);
   assert.deepEqual(await linked('Part of #12<!-- note -->3'), [5, 12]);
+});
+
+test('isMaintainer retries a transient permission error and still answers', async () => {
+  let calls = 0;
+  const github = { rest: { repos: { getCollaboratorPermissionLevel: async () => {
+    calls += 1;
+    if (calls < 3) { const error = new Error('Server Error'); error.status = 502; throw error; }
+    return { data: { role_name: 'maintain' } };
+  } } } };
+  assert.equal(await isMaintainer({ github, owner: 'o', repo: 'r', username: 'u' }), true);
+  assert.equal(calls, 3);
+});
+
+test('isMaintainer reads roles, 404 as not-a-maintainer, and fails closed on a persistent 502', async () => {
+  const githubWith = (impl) => ({ rest: { repos: { getCollaboratorPermissionLevel: impl } } });
+  assert.equal(await isMaintainer({ github: githubWith(async () => ({ data: { role_name: 'admin' } })), owner: 'o', repo: 'r', username: 'u' }), true);
+  assert.equal(await isMaintainer({ github: githubWith(async () => ({ data: { role_name: 'write' } })), owner: 'o', repo: 'r', username: 'u' }), false);
+  assert.equal(await isMaintainer({ github: githubWith(async () => { const e = new Error('Not Found'); e.status = 404; throw e; }), owner: 'o', repo: 'r', username: 'gone' }), false);
+  let calls = 0;
+  await assert.rejects(
+    isMaintainer({ github: githubWith(async () => { calls += 1; const e = new Error('Server Error'); e.status = 502; throw e; }), owner: 'o', repo: 'r', username: 'u' }),
+    (error) => error.status === 502,
+  );
+  assert.equal(calls, 3);
+  // A non-transient error is not retried.
+  calls = 0;
+  await assert.rejects(
+    isMaintainer({ github: githubWith(async () => { calls += 1; const e = new Error('Forbidden'); e.status = 403; throw e; }), owner: 'o', repo: 'r', username: 'u' }),
+    (error) => error.status === 403,
+  );
+  assert.equal(calls, 1);
 });
