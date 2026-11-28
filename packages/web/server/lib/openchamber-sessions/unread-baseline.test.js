@@ -63,6 +63,39 @@ describe('createUnreadBaseline', () => {
     const baseline = createUnreadBaseline({ dataDir: makeDataDir(), fsPromises, now: () => 1000 });
     expect(await baseline.get()).toBe(1000);
   });
+
+  it('does not follow a planted symlink at the legacy temp path', async () => {
+    const dataDir = makeDataDir();
+    const victim = path.join(dataDir, 'victim.txt');
+    fs.writeFileSync(victim, 'ORIGINAL');
+    fs.symlinkSync(victim, path.join(dataDir, `sessions-unread.json.${process.pid}.tmp`));
+    expect(await createUnreadBaseline({ dataDir, now: () => 1234567890 }).get()).toBe(1234567890);
+    expect(fs.readFileSync(victim, 'utf8')).toBe('ORIGINAL');
+    expect(JSON.parse(fs.readFileSync(filePath(dataDir), 'utf8'))).toEqual({ since: 1234567890 });
+  });
+
+  it('gives concurrent writes distinct temp files', async () => {
+    const dataDir = makeDataDir();
+    const tmpPaths = [];
+    const fsPromises = {
+      ...fs.promises,
+      writeFile: (target, ...rest) => {
+        tmpPaths.push(String(target));
+        return fs.promises.writeFile(target, ...rest);
+      },
+    };
+    const [first, second] = await Promise.all([
+      createUnreadBaseline({ dataDir, fsPromises, now: () => 1000 }).get(),
+      createUnreadBaseline({ dataDir, fsPromises, now: () => 2000 }).get(),
+    ]);
+    expect(first).toBe(1000);
+    expect(second).toBe(2000);
+    expect(tmpPaths).toHaveLength(2);
+    expect(new Set(tmpPaths).size).toBe(2);
+    for (const tmpPath of tmpPaths) {
+      expect(tmpPath.startsWith(`${filePath(dataDir)}.`)).toBe(true);
+    }
+  });
 });
 
 describe('withUnreadBaseline', () => {

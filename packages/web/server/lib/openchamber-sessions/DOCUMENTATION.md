@@ -51,6 +51,10 @@ This module owns server-side session creation, dispatch, forking, archive and me
 
 The server and VS Code extension share the data directory's `sessions-unread.json` baseline because earlier clients record no viewed watermark. Proxy responses treat turns ending by that baseline as viewed without writing OpenCode; an unreadable existing baseline stays unchanged because replacing it would silently mark newer turns seen. A save failure leaves the process using its in-memory baseline and permits another attempt on restart.
 
+### Why the unread baseline writes through a random exclusive temp file
+
+The baseline temp name carries a per-write random suffix and is created with `wx`/`0o600`, so a planted symlink or file at the temp path fails the write closed instead of being followed and renamed over. A failed save keeps the process on its in-memory baseline and retries on restart. Only a temp file the same write created is removed on failure; anything already at the path belongs to someone else.
+
 ### Why require branch naming in the task-name call and not a prose reminder
 
 An unpushed OpenChamber placeholder branch requires a branch name in the same call because agents can otherwise name the task and omit renaming the branch. User branches, pushed branches, and main-checkout branches remain untouched, and responses explicitly distinguish a kept branch from a successful rename.
