@@ -7,6 +7,7 @@ import {
   macosAppBundleCandidates,
   macosAppBundleName,
   planMacosOpenArgs,
+  planMacosOpenInAppSpecs,
 } from './macos-open-app.mjs';
 
 test('plain installed-app names are safe', () => {
@@ -82,5 +83,69 @@ test('a known installed app opens through its resolved bundle path', () => {
   assert.deepEqual(
     planMacosOpenArgs({ appName: 'Safari', targetPath, bundlePath: '/Applications/Safari.app' }),
     ['-a', '/Applications/Safari.app', targetPath],
+  );
+});
+
+test('in-app gate: a resolved bundle path replaces the raw app name in -a and -na specs', () => {
+  const targetPath = '/Users/tester/project';
+  const specs = [
+    { program: 'open', args: ['-a', 'Visual Studio Code', targetPath] },
+    { program: 'open', args: ['-na', 'Visual Studio Code', '--args', targetPath] },
+  ];
+  assert.deepEqual(
+    planMacosOpenInAppSpecs({
+      specs,
+      appName: 'Visual Studio Code',
+      bundlePath: '/Applications/Visual Studio Code.app',
+      targetPath,
+    }),
+    [
+      { program: 'open', args: ['-a', '/Applications/Visual Studio Code.app', targetPath] },
+      { program: 'open', args: ['-na', '/Applications/Visual Studio Code.app', '--args', targetPath] },
+    ],
+  );
+});
+
+test('in-app gate: an evil app value never reaches open -a — its specs drop out', () => {
+  const targetPath = '/Users/tester/project';
+  for (const evil of ['/tmp/Evil.app', '../../tmp/Evil', 'Foo/Bar']) {
+    // Unsafe names resolve to no bundle (resolveAppBundlePath returns
+    // null), so every spec carrying the raw value must disappear.
+    const gated = planMacosOpenInAppSpecs({
+      specs: [
+        { program: 'code', args: ['-n', targetPath] },
+        { program: 'open', args: ['-a', evil, targetPath] },
+      ],
+      appName: evil,
+      bundlePath: null,
+      targetPath,
+    });
+    assert.deepEqual(gated, [{ program: 'code', args: ['-n', targetPath] }]);
+    assert.ok(!JSON.stringify(gated).includes(evil));
+  }
+});
+
+test('in-app gate: CLI and Finder specs pass through untouched', () => {
+  const targetPath = '/Users/tester/project';
+  const specs = [
+    { program: 'open', args: [targetPath] },
+    { program: 'cursor', args: ['-n', targetPath] },
+  ];
+  assert.deepEqual(
+    planMacosOpenInAppSpecs({ specs, appName: 'Cursor', bundlePath: null, targetPath }),
+    specs,
+  );
+});
+
+test('in-app gate: gating away the only spec fails closed to a default open', () => {
+  const targetPath = '/Users/tester/project';
+  assert.deepEqual(
+    planMacosOpenInAppSpecs({
+      specs: [{ program: 'open', args: ['-a', 'No Such App', targetPath] }],
+      appName: 'No Such App',
+      bundlePath: null,
+      targetPath,
+    }),
+    [{ program: 'open', args: [targetPath] }],
   );
 });

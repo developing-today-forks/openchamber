@@ -94,7 +94,7 @@ import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
 import { convertAppIconToDataUrl } from './app-icon-conversion.mjs';
 import { boundedAppNames, mapWithConcurrency, INSTALLED_APP_PROBE_CONCURRENCY } from './app-name-bounds.mjs';
-import { isSafeMacosAppName, macosAppBundleCandidates, macosAppBundleName, planMacosOpenArgs } from './macos-open-app.mjs';
+import { isSafeMacosAppName, macosAppBundleCandidates, macosAppBundleName, planMacosOpenArgs, planMacosOpenInAppSpecs } from './macos-open-app.mjs';
 import { parseFocusMainWindowArgs } from './focus-main-window-args.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
 import { assertUpdaterCapability, enableMacosDirectContentsUpdates, readPackageType } from './updater-capability.mjs';
@@ -4431,7 +4431,20 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (process.platform !== 'darwin') {
         throw new Error(unsupportedAppSpecificOpenError('projects'));
       }
-      await runSpecChain(buildOpenProjectSpecs({ projectPath: validated.path, appId, appName }), appName);
+      // The raw renderer appName must never reach `open -a` (#2731):
+      // only a name that resolves to an installed bundle earns the
+      // `-a` form, as the resolved bundle path; unsafe or uninstalled
+      // names lose their `-a` specs and fail closed per the gate.
+      const bundlePath = appName ? await resolveAppBundlePath(appName) : null;
+      await runSpecChain(
+        planMacosOpenInAppSpecs({
+          specs: buildOpenProjectSpecs({ projectPath: validated.path, appId, appName }),
+          appName,
+          bundlePath,
+          targetPath: validated.path,
+        }),
+        appName,
+      );
       return null;
     }
 
@@ -4460,7 +4473,17 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (process.platform !== 'darwin') {
         throw new Error(unsupportedAppSpecificOpenError('files'));
       }
-      await runSpecChain(buildOpenFileSpecs({ filePath: validated.path, appId, appName }), appName);
+      // Same `open -a` gate as desktop_open_in_app (#2731).
+      const bundlePath = appName ? await resolveAppBundlePath(appName) : null;
+      await runSpecChain(
+        planMacosOpenInAppSpecs({
+          specs: buildOpenFileSpecs({ filePath: validated.path, appId, appName }),
+          appName,
+          bundlePath,
+          targetPath: validated.path,
+        }),
+        appName,
+      );
       return null;
     }
 
