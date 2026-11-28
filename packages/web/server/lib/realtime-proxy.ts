@@ -241,11 +241,23 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
 
     const abort = new AbortController();
     req.on('close', () => abort.abort());
+    // Bound only obtaining the upstream response with the handshake
+    // deadline (#2698): a remote that accepts the connection but never
+    // sends response headers must not pin this handler forever. The
+    // timer is cleared as soon as response headers arrive, so a valid
+    // long-lived SSE stream is not cut off by it; downstream disconnect
+    // still aborts the fetch through the same controller.
+    let handshakeTimedOut = false;
+    const handshakeTimer = setTimeout(() => {
+      handshakeTimedOut = true;
+      abort.abort();
+    }, handshakeTimeoutMs);
     try {
       const response = await fetch(resolved.target.toString(), {
         headers: buildSseRequestHeaders(req, resolved.requestHeaders),
         signal: abort.signal,
       });
+      clearTimeout(handshakeTimer);
       if (!response.ok || !response.body) {
         res.status(response.status || 502).end();
         return;
@@ -262,7 +274,10 @@ export const attachRealtimeProxy = ({ app, server, getDesktopRuntimeConfig, getU
       }
       res.end();
     } catch (error) {
-      if (!abort.signal.aborted && !res.headersSent) {
+      clearTimeout(handshakeTimer);
+      if (handshakeTimedOut && !res.headersSent) {
+        res.status(504).json({ error: 'Realtime proxy upstream handshake timed out' });
+      } else if (!abort.signal.aborted && !res.headersSent) {
         res.status(502).json({ error: error instanceof Error ? error.message : 'Realtime proxy failed' });
       } else if (!res.destroyed) {
         res.end();
