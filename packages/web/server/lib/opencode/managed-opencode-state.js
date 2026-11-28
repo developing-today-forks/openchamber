@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { renameSyncWithRetry } from '../shared/atomic-rename.js';
 import { readBoundedFileSync } from '../shared/bounded-file-read.js';
@@ -241,8 +241,33 @@ export const writeManagedOpenCodeStore = (storePath, store) => {
     }
   }
   mkdirSync(path.dirname(storePath), { recursive: true, mode: 0o700 });
-  const tmpPath = `${storePath}.${process.pid}.tmp`;
-  writeFileSync(tmpPath, text, { mode: 0o600 });
+  // The temp file is unique per write and created exclusively (#2678):
+  // the old pid-predictable path let a same-uid actor plant a symlink
+  // there, so a store write copied live launch credentials to the
+  // symlink target and the rename then replaced store.json itself with
+  // the link, wedging every later read. 'wx' refuses any pre-existing
+  // path instead of following it.
+  let tmpPath;
+  let fd;
+  for (let attempt = 0; attempt < 10 && fd === undefined; attempt += 1) {
+    tmpPath = `${storePath}.${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fd = openSync(tmpPath, 'wx', 0o600);
+    } catch (error) {
+      if (error?.code !== 'EEXIST' || attempt === 9) throw error;
+    }
+  }
+  try {
+    writeSync(fd, text);
+    closeSync(fd);
+    fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* the write error is the one to surface */ }
+    }
+    try { unlinkSync(tmpPath); } catch { /* best-effort temp cleanup */ }
+    throw error;
+  }
   renameSyncWithRetry((from, to) => renameSync(from, to), tmpPath, storePath);
 };
 

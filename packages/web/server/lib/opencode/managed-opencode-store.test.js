@@ -82,6 +82,22 @@ describe('v2 store file', () => {
     expect(fs.statSync(storePath).mode & 0o777).toBe(0o600);
   });
 
+  it('does not follow a planted symlink at the old predictable temp path (#2678)', () => {
+    if (process.platform === 'win32') return;
+    let store = createEmptyManagedOpenCodeStore();
+    store = appendGeneration(store, generation({ password: 'live-secret', agent_tool_token: 'live-token' }));
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    const victimPath = path.join(root, 'victim.json');
+    fs.writeFileSync(victimPath, 'victim-original\n');
+    fs.symlinkSync(victimPath, `${storePath}.${process.pid}.tmp`);
+
+    writeManagedOpenCodeStore(storePath, store);
+
+    expect(fs.readFileSync(victimPath, 'utf8')).toBe('victim-original\n');
+    expect(fs.lstatSync(storePath).isSymbolicLink()).toBe(false);
+    expect(readManagedOpenCodeStore(storePath)).toEqual({ ...store, schema_version: 2 });
+  });
+
   it('returns null only for a missing document and rejects corrupt or oversized files', () => {
     expect(readManagedOpenCodeStore(path.join(root, 'missing.json'))).toBeNull();
 
