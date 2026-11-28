@@ -1,5 +1,6 @@
 
 import fsDefault from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import pathDefault from 'node:path';
 import { z } from 'zod';
 import { hasCode, hasMessage, isTimestamp } from './contracts.js';
@@ -49,12 +50,21 @@ export const createUnreadBaseline = ({
 
   const create = async () => {
     const since = now();
+    // Set once the exclusive temp file exists, so cleanup only removes a file
+    // this write created and never a pre-existing entry at the temp path.
+    let createdTmp: string | null = null;
     try {
       await fsPromises.mkdir(dataDir, { recursive: true });
-      const tmpPath = `${filePath}.${process.pid}.tmp`;
-      await fsPromises.writeFile(tmpPath, JSON.stringify({ since }), 'utf8');
+      // Unpredictable per-write name, created exclusively: a planted symlink
+      // or file at the temp path fails closed instead of being followed.
+      const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+      await fsPromises.writeFile(tmpPath, JSON.stringify({ since }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      createdTmp = tmpPath;
+      await fsPromises.chmod(tmpPath, 0o600);
       await fsPromises.rename(tmpPath, filePath);
+      createdTmp = null;
     } catch (error) {
+      if (createdTmp) await fsPromises.rm(createdTmp, { force: true }).catch(() => {});
       console.warn('[openchamber-sessions] could not save the unread baseline:', (hasMessage(error) ? error.message : undefined) ?? error);
     }
     return since;
