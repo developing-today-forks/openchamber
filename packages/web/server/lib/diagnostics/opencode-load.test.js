@@ -39,8 +39,8 @@ describe('summarizeOpenCodeTree', () => {
 describe('readOpenCodeLoad', () => {
   const answer = (routes) => vi.fn(async (url) => {
     const route = new URL(url).pathname;
-    if (!(route in routes)) return { ok: false, status: 500, json: async () => null };
-    return { ok: true, status: 200, json: async () => routes[route] };
+    if (!(route in routes)) return new Response('null', { status: 500 });
+    return new Response(JSON.stringify(routes[route]), { status: 200, headers: { 'content-type': 'application/json' } });
   });
   const deps = (fetchImpl, extra = {}) => ({
     buildOpenCodeUrl: (route) => `http://127.0.0.1:4096${route}`,
@@ -95,5 +95,53 @@ describe('readOpenCodeLoad', () => {
     }), { listProcesses }));
     expect(listProcesses).toHaveBeenCalledTimes(1);
     expect(result.processes).toEqual({ openCodeMb: 2, childProcesses: 0, childMb: 0 });
+  });
+  it('an over-cap chunked body with an understated content-length falls back to unknown and is cancelled early', async () => {
+    let cancelled = false;
+    let pulls = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(120);
+    const stream = new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = vi.fn(async (url) => {
+      const route = new URL(url).pathname;
+      if (route === '/api/debug/location') {
+        // Declared length lies far below the streamed size; the cap must
+        // trip on the streamed count, not the header.
+        return new Response(stream, { status: 200, headers: { 'content-length': '2' } });
+      }
+      return new Response(JSON.stringify({ pid: 500 }), { status: 200 });
+    });
+    const load = await readOpenCodeLoad(deps(fetchImpl));
+    expect(load.locations).toBeNull();
+    expect(load.processes).toEqual({ openCodeMb: 200, childProcesses: 3, childMb: 160 });
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(64);
+  });
+
+  it('a non-OK body is discarded, not left dangling', async () => {
+    let cancelled = false;
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('error detail'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = vi.fn(async (url) => {
+      const route = new URL(url).pathname;
+      if (route === '/api/info') return new Response(stream, { status: 500 });
+      return new Response(JSON.stringify([]), { status: 200 });
+    });
+    const load = await readOpenCodeLoad(deps(fetchImpl));
+    expect(load).toEqual({ locations: 0, processes: null });
+    expect(cancelled).toBe(true);
   });
 });
