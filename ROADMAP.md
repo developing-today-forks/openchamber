@@ -35,7 +35,6 @@ Sources: open issues, [`TODO.md`](TODO.md), tracker issue #25 and the merged PRs
 
 | Title                                 | Horizon | Status   | Intent                                                  | Links |
 | ------------------------------------- | ------- | -------- | ------------------------------------------------------- | ----- |
-| Sidebar view mode without headers     | Next    | proposed | Keep the section order and drop the headers.            | #21   |
 | Choose session row lines and elements | Next    | proposed | Let the user pick what a session row shows.             | #22   |
 
 ## Nested subagents
