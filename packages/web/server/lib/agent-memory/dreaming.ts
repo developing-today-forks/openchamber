@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { asNonEmptyString } from '../shared/guards.js';
+import { readBoundedResponseText } from '../shared/response-body.js';
 import { isMemoryRecord as isRecord } from './contracts.js';
 import type { MemoryChangedEvent, MemoryEntry, MemoryScope, MemoryTarget } from './contracts.js';
 import type { AgentMemoryRuntime, DreamState } from './runtime.js';
@@ -109,6 +110,8 @@ const RETRY_AFTER_FAILURE_MS = 6 * 60 * 60 * 1000;
 const POLL_INTERVAL_MS = 5000;
 const START_GRACE_MS = 30 * 1000;
 const REQUEST_TIMEOUT_MS = 60 * 1000;
+// 16 MiB matches the session-activity sibling cap (../shared/response-body.js).
+const DREAMING_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
 const LEFTOVER_PAGES = 10;
 
 const DREAM_PERMISSIONS = [
@@ -280,9 +283,13 @@ export const createMemoryDreaming = (deps: DreamDependencies) => {
       init.body = JSON.stringify(body);
     }
     const response = await fetchImpl(buildOpenCodeUrl(pathname, ''), init);
-    if (!response.ok) throw new Error(`${method} ${pathname} answered ${response.status}`);
-    const text = await response.text();
-    const answer: unknown = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(`${method} ${pathname} answered ${response.status}`);
+    }
+    const bounded = await readBoundedResponseText(response, DREAMING_RESPONSE_MAX_BYTES);
+    if (bounded.tooLarge) throw new Error(`${method} ${pathname} answered a body over ${DREAMING_RESPONSE_MAX_BYTES} bytes`);
+    const answer: unknown = bounded.text ? JSON.parse(bounded.text) : null;
     return answer;
   };
 
