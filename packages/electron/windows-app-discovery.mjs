@@ -4,6 +4,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
 
+import { boundedAppNames } from './app-name-bounds.mjs';
+
 
 const execFileAsync = promisify(execFile);
 
@@ -216,10 +218,7 @@ export const createWindowsAppDiscovery = ({ run = execFileAsync, getFileIcon, en
   };
 
   const buildWindowsInstalledApps = async (apps) => {
-    const seen = new Set();
-    const candidates = (Array.isArray(apps) ? apps : [])
-      .map((appName) => String(appName || '').trim())
-      .filter((appName) => appName && !seen.has(appName) && seen.add(appName));
+    const candidates = boundedAppNames(apps);
     const results = [];
     for (const name of candidates) {
       if (!(await isWindowsAppInstalled({ appId: getWindowsAppIdForName(name), appName: name }))) continue;
@@ -233,9 +232,7 @@ export const createWindowsAppDiscovery = ({ run = execFileAsync, getFileIcon, en
 
   const fetchWindowsAppIcons = async (apps) => {
     const results = [];
-    for (const name of Array.isArray(apps) ? apps : []) {
-      const appName = String(name || '').trim();
-      if (!appName) continue;
+    for (const appName of boundedAppNames(apps)) {
       const dataUrl = await resolveWindowsAppIcon(appName);
       if (dataUrl) results.push({ app: appName, data_url: dataUrl });
     }

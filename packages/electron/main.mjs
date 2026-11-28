@@ -93,6 +93,7 @@ import { probeDirectHostWithRetry } from './host-probe-policy.mjs';
 import { probeElectronHostWithDeadline } from './electron-host-probe.mjs';
 import { fetchFaviconDataUrl } from './favicon-fetch.mjs';
 import { convertAppIconToDataUrl } from './app-icon-conversion.mjs';
+import { boundedAppNames, mapWithConcurrency, INSTALLED_APP_PROBE_CONCURRENCY } from './app-name-bounds.mjs';
 import { parseFocusMainWindowArgs } from './focus-main-window-args.mjs';
 import { requestRemoteHostUpdate } from './remote-host-update.mjs';
 import { assertUpdaterCapability, enableMacosDirectContentsUpdates, readPackageType } from './updater-capability.mjs';
@@ -3547,10 +3548,7 @@ const resolveAppIconPath = async (appPath) => {
 };
 
 const buildInstalledApps = async (apps) => {
-  const seen = new Set();
-  const names = apps
-    .map((raw) => String(raw || '').trim())
-    .filter((raw) => raw && !seen.has(raw) && seen.add(raw));
+  const names = boundedAppNames(apps);
   const results = [];
   for (const name of names) {
     const appPath = await resolveAppBundlePath(name);
@@ -4471,9 +4469,11 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (process.platform !== 'darwin') {
         throw new Error('desktop_filter_installed_apps is only supported on macOS, Windows, and Linux');
       }
-      if (!Array.isArray(args.apps)) return [];
-      const results = await Promise.all(
-        args.apps.map(async (appName) => (await isAppBundleInstalled(String(appName))) ? String(appName) : null)
+      const names = boundedAppNames(args.apps);
+      const results = await mapWithConcurrency(
+        names,
+        INSTALLED_APP_PROBE_CONCURRENCY,
+        async (appName) => (await isAppBundleInstalled(appName)) ? appName : null
       );
       return results.filter(Boolean);
     }
@@ -4488,13 +4488,13 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (process.platform !== 'darwin') {
         throw new Error('desktop_fetch_app_icons is only supported on macOS, Windows, and Linux');
       }
-      const names = Array.isArray(args.apps) ? args.apps : [];
+      const names = boundedAppNames(args.apps);
       const results = [];
       for (const name of names) {
-        const appPath = await resolveAppBundlePath(String(name));
+        const appPath = await resolveAppBundlePath(name);
         if (!appPath) continue;
-        const dataUrl = await iconToDataUrl(await resolveAppIconPath(appPath), String(name));
-        if (dataUrl) results.push({ app: String(name), dataUrl });
+        const dataUrl = await iconToDataUrl(await resolveAppIconPath(appPath), name);
+        if (dataUrl) results.push({ app: name, dataUrl });
       }
       return results;
     }
@@ -4520,7 +4520,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
             cachePath,
             now,
             version: INSTALLED_APPS_CACHE_VERSION,
-            apps: Array.isArray(args.apps) ? args.apps : [],
+            apps: boundedAppNames(args.apps),
             buildApps: buildPlatformInstalledApps,
             mkdir: () => fsp.mkdir(path.dirname(cachePath), { recursive: true }),
             writeFile: fsp.writeFile.bind(fsp),
