@@ -71,3 +71,40 @@ test('builds editor launch specs from the CLI, the executable and the app name',
 
   assert.deepEqual(specs, [{ program: 'C:\\Tools\\VS Code\\Code.exe', args: ['C:\\work\\a.txt'] }]);
 });
+
+test('fetchWindowsAppIcons dedupes names before resolving icons', async () => {
+  const calls = [];
+  const discovery = createWindowsAppDiscovery({
+    run: createRunner(calls),
+    getFileIcon: async (filePath) => fakeIcon(filePath),
+    env: TEST_ENV,
+  });
+
+  const icons = await discovery.fetchWindowsAppIcons(['Visual Studio Code', 'Visual Studio Code', 'Visual Studio Code']);
+
+  assert.equal(icons.length, 1);
+  assert.equal(icons[0].app, 'Visual Studio Code');
+  assert.equal(calls.filter((program) => program === 'code.exe').length, 1);
+});
+
+test('installed-app lookups skip oversize entries and stop at the cap', async () => {
+  const calls = [];
+  const discovery = createWindowsAppDiscovery({
+    run: createRunner(calls),
+    getFileIcon: async (filePath) => fakeIcon(filePath),
+    env: TEST_ENV,
+  });
+
+  const oversize = 'A'.repeat(1024 * 1024);
+  const apps = await discovery.buildWindowsInstalledApps([
+    oversize,
+    ...Array.from({ length: 5000 }, (_, i) => `Missing App ${i}`),
+  ]);
+
+  assert.deepEqual(apps, []);
+  // 100 capped names, each probed by name only (no known app id): the
+  // oversize entry never reaches where.exe, and neither do names past
+  // the cap.
+  assert.equal(calls.length, 100);
+  assert.ok(calls.every((program) => program.length <= 128 + '.exe'.length));
+});

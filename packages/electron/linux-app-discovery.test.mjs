@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  buildLinuxInstalledApps,
   buildLinuxOpenSpecs,
   filterLinuxInstalledApps,
   parseDesktopEntry,
@@ -480,4 +481,35 @@ Icon=vscode-douyin`, 'vscode-douyin');
   });
   assert.equal(specs.length, 1);
   assert.equal(specs[0].program, '/usr/local/bin/vscode-douyin');
+});
+
+test('filterLinuxInstalledApps dedupes repeated names', async () => {
+  const entry = parseEntryAt(`[Desktop Entry]
+Type=Application
+Name=Visual Studio Code
+Exec=/usr/bin/code %F
+Icon=code`, 'code');
+  const installed = await filterLinuxInstalledApps(
+    ['Visual Studio Code', 'Visual Studio Code', 'Visual Studio Code'],
+    { entries: [entry] },
+  );
+  assert.deepEqual(installed, ['Visual Studio Code']);
+});
+
+test('buildLinuxInstalledApps caps the names it scans', async () => {
+  const entries = Array.from({ length: 150 }, (_, i) => parseEntryAt(`[Desktop Entry]
+Type=Application
+Name=App ${i}
+Exec=/usr/bin/app-${i}
+Icon=app-${i}`, `app-${i}`));
+  const names = Array.from({ length: 150 }, (_, i) => `App ${i}`);
+  const built = await buildLinuxInstalledApps(names, { entries, env: TEST_ENV });
+  assert.equal(built.length, 100);
+  assert.equal(built[0].name, 'App 0');
+  assert.equal(built[built.length - 1].name, 'App 99');
+});
+
+test('buildLinuxInstalledApps skips oversize entries', async () => {
+  const built = await buildLinuxInstalledApps(['A'.repeat(1024 * 1024), 'Terminal'], { entries: [], env: TEST_ENV });
+  assert.deepEqual(built.map((app) => app.name), ['Terminal']);
 });

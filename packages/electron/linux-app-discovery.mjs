@@ -4,6 +4,8 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { boundedAppNames } from './app-name-bounds.mjs';
+
 const DEFAULT_XDG_DATA_DIRS = ['/usr/local/share', '/usr/share'];
 
 // .desktop entries are a few-KiB stubs: 512 KiB matches MAX_FAVICON_BYTES in
@@ -452,10 +454,9 @@ export const runLinuxSpecChain = async (specs, appName, { shell, env = process.e
 
 export const filterLinuxInstalledApps = async (apps, options = {}) => {
   const entries = options.entries || await readLinuxDesktopEntries(options);
-  const requested = Array.isArray(apps) ? apps : [];
+  const requested = boundedAppNames(apps);
   return requested
-    .map((appName) => String(appName || '').trim())
-    .filter((appName) => appName && entries.some((entry) => desktopEntryMatchesApp(entry, appName)));
+    .filter((appName) => entries.some((entry) => desktopEntryMatchesApp(entry, appName)));
 };
 
 const FILE_MANAGER_FALLBACK_IDS = [
@@ -677,7 +678,7 @@ const knownLinuxAppIdForName = (name) => {
 export const buildLinuxInstalledApps = async (apps, options = {}) => {
   const entries = options.entries || await readLinuxDesktopEntries(options);
   const env = options.env || process.env;
-  const names = uniqueStrings(Array.isArray(apps) ? apps.map(String) : []);
+  const names = boundedAppNames(apps);
   const fileManagerEntry = findLinuxFileManagerEntry(entries, { ...options, env });
   return names
     .filter((name) => {
